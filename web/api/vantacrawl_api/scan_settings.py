@@ -472,6 +472,27 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
 ]
 
 
+def available_wordlists() -> List[Dict[str, str]]:
+    """Bundled Wordlist/ files the web UI can select without uploading."""
+    folder = ROOT / "Wordlist"
+    items: List[Dict[str, str]] = []
+    if not folder.is_dir():
+        return items
+    for path in sorted(folder.glob("*.txt")):
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        items.append(
+            {
+                "id": path.name,
+                "label": f"{path.name} ({max(1, size // 1024)} KB)",
+                "path": str(path.resolve()),
+            }
+        )
+    return items
+
+
 def meta_payload() -> Dict[str, Any]:
     return {
         "modes": {
@@ -482,6 +503,7 @@ def meta_payload() -> Dict[str, Any]:
         "default_settings": default_settings(),
         "setting_groups": SETTING_GROUPS,
         "setting_fields": setting_fields(),
+        "wordlists": available_wordlists(),
     }
 
 

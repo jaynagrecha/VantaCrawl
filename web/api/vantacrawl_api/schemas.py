@@ -86,3 +86,5 @@ class MetaOut(BaseModel):
     speeds: Dict[str, Any]
     default_settings: Dict[str, Any]
     setting_groups: List[Dict[str, Any]]
+    setting_fields: Dict[str, Any] = Field(default_factory=dict)
+    wordlists: List[Dict[str, str]] = Field(default_factory=list)

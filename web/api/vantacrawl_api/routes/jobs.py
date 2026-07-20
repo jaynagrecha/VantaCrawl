@@ -16,7 +16,7 @@ from ..models import ScanJob
 from ..schemas import JobCreateRequest, JobListOut, JobOut, JobSettingsPatch, MessageOut
 from ..security import decode_access_token
 from ..services.queue import clear_job_command, enqueue_job, publish_progress, redis_client, set_job_command
-from ..scan_settings import MODE_PRESETS, concurrency_for_speed
+from ..scan_settings import MODE_PRESETS, available_wordlists, concurrency_for_speed
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -142,6 +142,7 @@ async def create_job_with_files(
     targets_file: Optional[UploadFile] = File(None),
     wordlist_file: Optional[UploadFile] = File(None),
     extra_wordlist_file: Optional[UploadFile] = File(None),
+    wordlist_id: str = Form(""),
 ):
     if not authorized_confirmed:
         raise HTTPException(status_code=400, detail="You must confirm this is an authorized target before starting a scan.")
@@ -186,11 +187,27 @@ async def create_job_with_files(
     uploads = Path(settings.jobs_dir) / job.id / "uploads"
     uploads.mkdir(parents=True, exist_ok=True)
     cfg = dict(job.config_json or {})
+
+    chosen_id = (wordlist_id or "").strip()
+    if chosen_id and chosen_id != "__upload__":
+        match = next((w for w in available_wordlists() if w["id"] == chosen_id), None)
+        if not match:
+            raise HTTPException(status_code=400, detail=f"Unknown wordlist: {chosen_id}")
+        src = Path(match["path"])
+        if not src.is_file():
+            raise HTTPException(status_code=400, detail=f"Wordlist file missing on server: {chosen_id}")
+        dest = uploads / src.name
+        shutil.copy2(src, dest)
+        cfg["wordlist_file"] = str(dest)
+        cfg["use_wordlist"] = True
+        cfg["wordlist_id"] = chosen_id
+
     if wordlist_file is not None and wordlist_file.filename:
         dest = uploads / Path(wordlist_file.filename).name
         dest.write_bytes(await wordlist_file.read())
         cfg["wordlist_file"] = str(dest)
         cfg["use_wordlist"] = True
+        cfg["wordlist_id"] = "upload"
     if extra_wordlist_file is not None and extra_wordlist_file.filename:
         dest = uploads / ("extra_" + Path(extra_wordlist_file.filename).name)
         dest.write_bytes(await extra_wordlist_file.read())
@@ -284,11 +301,27 @@ def resume_job(job_id: str, session: SessionDep, user: CurrentUser):
     return MessageOut(message="Resume requested")
 
 
+def _force_cancel(job: ScanJob, session, *, note: str) -> MessageOut:
+    set_job_command(job.id, "stop")
+    job.status = "cancelled"
+    job.finished_at = datetime.utcnow()
+    job.updated_at = datetime.utcnow()
+    job.error_message = job.error_message or note
+    session.add(job)
+    session.commit()
+    publish_progress(job.id, {"status": "cancelled", "message": "Force-cancelled"})
+    return MessageOut(message="Force-cancelled")
+
+
 @router.post("/{job_id}/stop", response_model=MessageOut)
 def stop_job(job_id: str, session: SessionDep, user: CurrentUser):
     job = _owned(session.get(ScanJob, job_id), user)
     if job.status in ("completed", "cancelled", "failed"):
         raise HTTPException(status_code=400, detail=f"Already finished ({job.status})")
+
+    # Second Stop click while stuck in stopping → force cancel
+    if job.status == "stopping":
+        return _force_cancel(job, session, note="Force-cancelled (stop was stuck)")
 
     if job.status in ("queued", "scheduled") or (job.status == "paused" and not job.started_at):
         job.status = "cancelled"
@@ -307,6 +340,15 @@ def stop_job(job_id: str, session: SessionDep, user: CurrentUser):
     session.commit()
     publish_progress(job_id, {"status": "stopping", "message": "Stop requested"})
     return MessageOut(message="Stop requested")
+
+
+@router.post("/{job_id}/force-cancel", response_model=MessageOut)
+def force_cancel_job(job_id: str, session: SessionDep, user: CurrentUser):
+    """Immediately mark cancelled when a stop hangs (e.g. Cloudflare-blocked requests)."""
+    job = _owned(session.get(ScanJob, job_id), user)
+    if job.status in ("completed", "cancelled", "failed"):
+        return MessageOut(message=f"Already {job.status}")
+    return _force_cancel(job, session, note="Force-cancelled by user")
 
 
 @router.websocket("/{job_id}/ws")

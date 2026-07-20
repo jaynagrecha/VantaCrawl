@@ -312,20 +312,55 @@ async def run_job(job_id: str) -> None:
             use_browser = bool(config.selenium_fallback or config.deep_mirror or config.screenshot_capture)
             fetcher = make_browser_fetcher(config) if use_browser else None
 
-            await run_full_crawl_async(
-                config,
-                output_callback,
-                lambda: not stop_flag["stop"],
-                manager=manager,
-                update_progress=update_progress,
-                page_html_fetcher=fetcher,
-                stats=stats,
-                pause_controller=pause,
+            crawl_task = asyncio.create_task(
+                run_full_crawl_async(
+                    config,
+                    output_callback,
+                    lambda: not stop_flag["stop"],
+                    manager=manager,
+                    update_progress=update_progress,
+                    page_html_fetcher=fetcher,
+                    stats=stats,
+                    pause_controller=pause,
+                )
             )
+            stop_requested_at: float | None = None
+            while not crawl_task.done():
+                if stop_flag["stop"]:
+                    if stop_requested_at is None:
+                        stop_requested_at = time.time()
+                        try:
+                            manager.cancel_all()
+                        except Exception:
+                            pass
+                        crawl_task.cancel()
+                    elif time.time() - stop_requested_at > 12:
+                        # Hard cut — do not wait forever on blocked HTTP/Cloudflare
+                        crawl_task.cancel()
+                        break
+                done, _pending = await asyncio.wait({crawl_task}, timeout=0.5)
+                if done:
+                    break
+            if not crawl_task.done():
+                crawl_task.cancel()
+            try:
+                await crawl_task
+            except asyncio.CancelledError:
+                output_callback("Scan stop confirmed.")
+            except Exception:
+                if stop_flag["stop"]:
+                    output_callback("Scan stop confirmed.")
+                else:
+                    raise
 
         html_matches = sorted(report_dir.glob("*_SEARCH_REPORT.html")) if report_dir.is_dir() else []
         txt_matches = sorted(report_dir.glob("*_SEARCH_REPORT.txt")) if report_dir.is_dir() else []
-        status = "cancelled" if stop_flag["stop"] else "completed"
+        # Honour force-cancel from API while we were winding down
+        latest = _get_job(job_id)
+        if latest and latest.status == "cancelled":
+            status = "cancelled"
+        else:
+            status = "cancelled" if stop_flag["stop"] else "completed"
         findings_preview = []
         try:
             for f in list(getattr(stats, "findings", []) or [])[:40]:

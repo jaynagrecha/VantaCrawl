@@ -103,13 +103,14 @@ export default function JobPage() {
     el.scrollTop = el.scrollHeight;
   }, [logText]);
 
-  async function runAction(kind: "pause" | "resume" | "stop") {
+  async function runAction(kind: "pause" | "resume" | "stop" | "force-cancel") {
     if (!job) return;
     setActionError("");
     try {
       if (kind === "pause") await api.pauseJob(job.id);
       if (kind === "resume") await api.resumeJob(job.id);
       if (kind === "stop") await api.stopJob(job.id);
+      if (kind === "force-cancel") await api.forceCancelJob(job.id);
       const fresh = await api.getJob(job.id);
       setJob(fresh);
     } catch (err: any) {
@@ -149,15 +150,19 @@ export default function JobPage() {
             </p>
           </div>
           <div style={{ display: "flex", gap: ".5rem", alignItems: "center", flexWrap: "wrap" }}>
-            <span className={`badge ${job.status}`}>{job.status}</span>
             <button className="btn" type="button" disabled={!canPause} onClick={() => runAction("pause")}>
               Pause
             </button>
             <button className="btn" type="button" disabled={!canResume} onClick={() => runAction("resume")}>
               Resume
             </button>
-            <button className="btn danger" type="button" disabled={!canStop} onClick={() => runAction("stop")}>
-              Stop
+            <button
+              className="btn danger"
+              type="button"
+              disabled={!canStop}
+              onClick={() => runAction(job.status === "stopping" ? "force-cancel" : "stop")}
+            >
+              {job.status === "stopping" ? "Force cancel" : "Stop"}
             </button>
             <Link className="btn" to="/">
               All jobs
@@ -173,7 +178,14 @@ export default function JobPage() {
             API while paused are applied on Resume.
           </p>
         ) : null}
-        <ScanActivity status={job.status} />
+        {/* Single status strip — no duplicate badge + "Stopping…" */}
+        {["queued", "running", "paused", "stopping"].includes(job.status) ? (
+          <ScanActivity status={job.status} />
+        ) : (
+          <div style={{ marginTop: "1rem" }}>
+            <span className={`badge ${job.status}`}>{job.status}</span>
+          </div>
+        )}
         <div className="stats" style={{ marginTop: "1.1rem" }}>
           <div className="stat">
             <div className="stat-num">{String(progress.pages_crawled ?? "—")}</div>

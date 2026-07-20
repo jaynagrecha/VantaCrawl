@@ -54,9 +54,9 @@ export default function DashboardPage() {
                       {job.start_url}
                     </td>
                     <td>
-                      <div style={{ display: "flex", alignItems: "center", gap: ".45rem", flexWrap: "wrap" }}>
+                      <div className="status-cell">
                         <span className={`badge ${job.status}`}>{job.status}</span>
-                        <ScanActivity status={job.status} compact label={job.status === "running" ? "Scanning" : undefined} />
+                        <ScanActivity status={job.status} compact />
                       </div>
                     </td>
                     <td className="muted">{job.mode}</td>
@@ -74,7 +74,7 @@ export default function DashboardPage() {
         <section className="card">
           <h2>Quick start</h2>
           <p className="muted">
-            Confirm authorization, pick a mode (Fast Scan / Site Map / Full Audit), tune speed, then watch live
+            Confirm authorization, pick a mode, choose a wordlist (or upload your own), tune speed, then watch live
             progress and open the VantaCrawl HTML report.
           </p>
           <Link className="btn primary" to="/scans/new">

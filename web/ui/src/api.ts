@@ -102,6 +102,8 @@ export const api = {
   pauseJob: (id: string) => request<{ message: string }>(`/api/jobs/${id}/pause`, { method: "POST" }),
   resumeJob: (id: string) => request<{ message: string }>(`/api/jobs/${id}/resume`, { method: "POST" }),
   stopJob: (id: string) => request<{ message: string }>(`/api/jobs/${id}/stop`, { method: "POST" }),
+  forceCancelJob: (id: string) =>
+    request<{ message: string }>(`/api/jobs/${id}/force-cancel`, { method: "POST" }),
   patchJobSettings: (id: string, settings: Record<string, unknown>) =>
     request<{ message: string }>(`/api/jobs/${id}/settings`, {
       method: "PATCH",

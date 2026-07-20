@@ -11,12 +11,15 @@ type FieldMeta = {
   presets: { value: string; label: string }[];
 };
 
+type WordlistItem = { id: string; label: string; path?: string };
+
 type Meta = {
   modes: Record<string, { label: string; preset: Record<string, unknown> }>;
   speeds: Record<string, { label: string }>;
   default_settings: Record<string, unknown>;
   setting_groups: { id: string; title: string; keys: string[] }[];
   setting_fields?: Record<string, FieldMeta>;
+  wordlists?: WordlistItem[];
 };
 
 function humanize(key: string) {
@@ -157,6 +160,7 @@ export default function NewScanPage() {
   const [targetsFile, setTargetsFile] = useState<File | null>(null);
   const [wordlistFile, setWordlistFile] = useState<File | null>(null);
   const [extraWordlistFile, setExtraWordlistFile] = useState<File | null>(null);
+  const [wordlistId, setWordlistId] = useState("");
 
   useEffect(() => {
     api
@@ -166,6 +170,10 @@ export default function NewScanPage() {
         const preset = m.modes?.full_audit?.preset || {};
         setSettings({ ...m.default_settings, ...preset });
         if (preset.speed) setSpeed(String(preset.speed));
+        const lists = m.wordlists || [];
+        const preferred =
+          lists.find((w: WordlistItem) => w.id.includes("directory-list")) || lists[0];
+        if (preferred) setWordlistId(preferred.id);
       })
       .catch((err) => setError(String(err.message || err)));
   }, []);
@@ -201,6 +209,7 @@ export default function NewScanPage() {
       form.append("authorized_confirmed", String(authorized));
       form.append("settings_json", JSON.stringify(settings));
       form.append("targets_text", targetsText);
+      form.append("wordlist_id", wordlistFile ? "__upload__" : wordlistId);
       if (targetsFile) form.append("targets_file", targetsFile);
       if (wordlistFile) form.append("wordlist_file", wordlistFile);
       if (extraWordlistFile) form.append("extra_wordlist_file", extraWordlistFile);
@@ -271,11 +280,42 @@ export default function NewScanPage() {
               />
             </div>
             <div className="field">
-              <label>Directory wordlist (optional upload)</label>
-              <input type="file" accept=".txt,text/plain" onChange={(e) => setWordlistFile(e.target.files?.[0] || null)} />
+              <label>Directory wordlist</label>
+              <select
+                value={wordlistFile ? "__upload__" : wordlistId}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "__upload__") {
+                    setWordlistId("__upload__");
+                    return;
+                  }
+                  setWordlistId(v);
+                  setWordlistFile(null);
+                }}
+              >
+                <option value="">Default (built-in)</option>
+                {(meta.wordlists || []).map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.label}
+                  </option>
+                ))}
+                <option value="__upload__">Upload my own file…</option>
+              </select>
+              {(wordlistId === "__upload__" || wordlistFile) && (
+                <input
+                  type="file"
+                  accept=".txt,text/plain"
+                  required={wordlistId === "__upload__" && !wordlistFile}
+                  onChange={(e) => setWordlistFile(e.target.files?.[0] || null)}
+                  style={{ marginTop: ".45rem" }}
+                />
+              )}
+              <p className="setting-help-inline" style={{ marginTop: ".35rem" }}>
+                Used for folder/file enumeration. Pick a bundled list or upload a custom .txt.
+              </p>
             </div>
             <div className="field">
-              <label>Extra / CMS wordlist (optional)</label>
+              <label>Extra / CMS wordlist (optional upload)</label>
               <input
                 type="file"
                 accept=".txt,text/plain"
