@@ -9,8 +9,8 @@ MODES = ("fast_scan", "site_map", "full_audit", "deep_audit")
 MODE_LABELS = {
     "fast_scan": "Fast Scan — quick hidden-path hunt (capped wordlist)",
     "site_map": "Site Map — crawl and mirror",
-    "full_audit": "Full Audit — crawl + security + practical enum (finishes small sites)",
-    "deep_audit": "Deep Audit — opt-in heavy enum (prefixes, depth, large wordlist)",
+    "full_audit": "Full Audit — crawl + security (directory enum opt-in)",
+    "deep_audit": "Deep Audit — crawl + security + heavy directory enum",
 }
 
 # Parallelism sweet-spot profiles (asyncio in-flight limits, not OS threads)
@@ -47,6 +47,7 @@ MODE_PRESETS: Dict[str, Dict[str, Any]] = {
     "fast_scan": {
         "profile": "gobuster",
         "enum_only": True,
+        "directory_enum": True,
         "enum_flat_scan": True,
         "download_files": False,
         "use_wordlist": True,
@@ -73,8 +74,9 @@ MODE_PRESETS: Dict[str, Dict[str, Any]] = {
     "site_map": {
         "profile": "full",
         "enum_only": False,
+        "directory_enum": False,
         "download_files": True,
-        "use_wordlist": True,
+        "use_wordlist": False,
         "mutation_enum": False,
         "wildcard_detection": True,
         "security_scan": False,
@@ -91,13 +93,14 @@ MODE_PRESETS: Dict[str, Dict[str, Any]] = {
         "enum_concurrency": 20,
         "download_concurrency": 8,
     },
-    # Default audit: finishes small sites in minutes (enum is post-crawl, kept sharp not nuclear)
+    # Default audit: crawl + security; directory enum is opt-in (slowest phase)
     "full_audit": {
         "profile": "full",
         "enum_only": False,
+        "directory_enum": False,
         "download_files": False,
-        "use_wordlist": True,
-        "mutation_enum": True,
+        "use_wordlist": False,
+        "mutation_enum": False,
         "mutation_builtin": True,
         "mutation_from_seeds": True,
         "security_scan": True,
@@ -127,10 +130,11 @@ MODE_PRESETS: Dict[str, Dict[str, Any]] = {
         "vuln_active_probe": True,
         "speed": "fast",
     },
-    # Opt-in previous Full Audit intensity — prefixes × depth × large wordlist
+    # Opt-in heavy directory enum — prefixes × depth × large wordlist
     "deep_audit": {
         "profile": "full",
         "enum_only": False,
+        "directory_enum": True,
         "download_files": False,
         "use_wordlist": True,
         "mutation_enum": True,
@@ -208,6 +212,7 @@ def apply_mode_preset(app, mode: str):
     preset = MODE_PRESETS.get(mode, {})
     mapping = {
         "enum_only_cb": "enum_only",
+        "directory_enum_cb": "directory_enum",
         "enum_flat_cb": "enum_flat_scan",
         "download_radio": "download_files",
         "crawl_only_radio": lambda p: not p.get("download_files", False),

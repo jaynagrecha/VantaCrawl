@@ -205,6 +205,15 @@ class CrawlerApp(QMainWindow):
 
         source_box = QGroupBox("Directory scan source")
         source_layout = QVBoxLayout(source_box)
+        self.directory_enum_cb = QCheckBox(
+            "Run directory enum (opt-in — usually the slowest phase)"
+        )
+        self.directory_enum_cb.setChecked(False)
+        self.directory_enum_cb.setToolTip(
+            "Probe folder/file names after crawl (or only, in Fast Scan). "
+            "Full Audit leaves this off; Deep Audit turns it on."
+        )
+        source_layout.addWidget(self.directory_enum_cb)
         src_row = QHBoxLayout()
         self.use_wordlist_cb = QCheckBox("Use wordlist file")
         self.use_wordlist_cb.setChecked(True)
@@ -832,6 +841,7 @@ class CrawlerApp(QMainWindow):
         results_layout.addLayout(results_btn_row)
         tabs.addTab(results_tab, "Results")
 
+        self.directory_enum_cb.toggled.connect(self._on_directory_enum_toggled)
         self.use_wordlist_cb.toggled.connect(self._sync_wordlist_controls)
         self.mutation_enum_cb.toggled.connect(self._sync_wordlist_controls)
         self._set_expert_visible(False)
@@ -875,11 +885,19 @@ class CrawlerApp(QMainWindow):
         finally:
             self._applying_speed = False
 
+    def _on_directory_enum_toggled(self, enabled: bool):
+        if enabled and not self.use_wordlist_cb.isChecked() and not self.mutation_enum_cb.isChecked():
+            self.use_wordlist_cb.setChecked(True)
+        self._sync_wordlist_controls()
+
     def _sync_wordlist_controls(self):
-        use_wordlist = self.use_wordlist_cb.isChecked()
+        enum_on = self.directory_enum_cb.isChecked() or self.mode_fast_rb.isChecked()
+        use_wordlist = self.use_wordlist_cb.isChecked() and enum_on
+        self.use_wordlist_cb.setEnabled(enum_on or self.mode_fast_rb.isChecked())
+        self.mutation_enum_cb.setEnabled(enum_on or self.mode_fast_rb.isChecked())
         self.wordlist_button.setEnabled(use_wordlist)
         self.wordlist_label.setEnabled(use_wordlist)
-        if not use_wordlist and not self.mutation_enum_cb.isChecked():
+        if enum_on and not use_wordlist and not self.mutation_enum_cb.isChecked():
             self.mutation_enum_cb.setChecked(True)
 
     def _on_download_mode_toggled(self, enabled: bool):
@@ -999,6 +1017,7 @@ class CrawlerApp(QMainWindow):
             skip_enum_download=self.skip_enum_dl_cb.isChecked(),
             enum_word_limit=self.enum_word_limit_spin.value(),
             extra_wordlists=list(self.extra_wordlists),
+            directory_enum=self.directory_enum_cb.isChecked() or self.mode_fast_rb.isChecked(),
             use_wordlist=self.use_wordlist_cb.isChecked(),
             mutation_enum=self.mutation_enum_cb.isChecked(),
             mutation_builtin=self.mutation_builtin_cb.isChecked(),

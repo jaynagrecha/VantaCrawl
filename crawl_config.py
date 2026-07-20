@@ -76,6 +76,9 @@ class CrawlConfig:
     enum_word_limit: int = 0
 
     # Gobuster-beater enum engine
+    # Master switch for post-crawl (or enum-only) directory/file name probing.
+    # Full Audit leaves this off by default; Deep Audit / Fast Scan turn it on.
+    directory_enum: bool = False
     enum_only: bool = False
     enum_flat_scan: bool = False
     gobuster_style_extensions: bool = True

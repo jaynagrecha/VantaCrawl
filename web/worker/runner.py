@@ -452,7 +452,14 @@ async def run_job(job_id: str) -> None:
             job.config_json = cfg_overlay
             config = _build_crawl_config(job)
             config.start_url = url
-            if bool(getattr(config, "use_wordlist", True)) and not Path(config.wordlist_file).is_file():
+            enum_on = bool(
+                getattr(config, "enum_only", False) or getattr(config, "directory_enum", False)
+            )
+            if (
+                enum_on
+                and bool(getattr(config, "use_wordlist", True))
+                and not Path(config.wordlist_file).is_file()
+            ):
                 raise FileNotFoundError(
                     f"Directory wordlist not found: {config.wordlist_file}. "
                     "Choose a catalog wordlist again or re-upload (ephemeral upload copies are not used for catalog lists)."

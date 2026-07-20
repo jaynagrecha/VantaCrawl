@@ -235,8 +235,8 @@ export default function NewScanPage() {
       <section className="card">
         <h1>New scan</h1>
         <p className="lead">
-          Full Audit finishes small sites. Deep Audit is the opt-in heavy pass (large wordlist, prefixes,
-          recursive enum). Fine-tune expert options below if needed.
+          Full Audit = crawl + security (directory enum off unless you opt in). Deep Audit turns on heavy
+          directory enum. Fast Scan is enum-only.
         </p>
         {error && <div className="error">{error}</div>}
         <div className="grid-2">
@@ -259,8 +259,33 @@ export default function NewScanPage() {
                 ))}
               </select>
               <span className="setting-help-inline" style={{ display: "block", marginTop: ".45rem" }}>
-                Default Full Audit = practical. Choose Deep Audit only when you want the old overnight-style enum.
+                Full Audit skips directory enum by default. Deep Audit / Fast Scan enable it.
               </span>
+            </div>
+            <div className="field">
+              <label className="checkbox" style={{ display: "flex", gap: ".65rem", alignItems: "flex-start" }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(settings.directory_enum) || mode === "fast_scan"}
+                  disabled={mode === "fast_scan"}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setSettings((prev) => ({
+                      ...prev,
+                      directory_enum: on,
+                      use_wordlist: on ? true : false,
+                      mutation_enum: on ? Boolean(prev.mutation_enum ?? true) : false,
+                    }));
+                  }}
+                />
+                <span>
+                  <strong>Run directory enum</strong>
+                  <br />
+                  <span className="muted">
+                    Opt-in folder/file name probing — usually the slowest phase. Off for Full Audit unless you check this.
+                  </span>
+                </span>
+              </label>
             </div>
             <div className="field">
               <label>Parallelism</label>
@@ -289,49 +314,53 @@ export default function NewScanPage() {
                 onChange={(e) => setTargetsFile(e.target.files?.[0] || null)}
               />
             </div>
-            <div className="field">
-              <label>Directory wordlist</label>
-              <select
-                value={wordlistFile ? "__upload__" : wordlistId}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (v === "__upload__") {
-                    setWordlistId("__upload__");
-                    return;
-                  }
-                  setWordlistId(v);
-                  setWordlistFile(null);
-                }}
-              >
-                <option value="">Server default</option>
-                {(meta.wordlists || []).map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.label}
-                  </option>
-                ))}
-                <option value="__upload__">Upload my own file…</option>
-              </select>
-              {(wordlistId === "__upload__" || wordlistFile) && (
-                <input
-                  type="file"
-                  accept=".txt,text/plain"
-                  required={wordlistId === "__upload__" && !wordlistFile}
-                  onChange={(e) => setWordlistFile(e.target.files?.[0] || null)}
-                  style={{ marginTop: ".45rem" }}
-                />
-              )}
-              <p className="setting-help-inline" style={{ marginTop: ".35rem" }}>
-                Bundled lists from the repo <code>Wordlist/</code> folder on the server — or upload your own .txt.
-              </p>
-            </div>
-            <div className="field">
-              <label>Extra wordlist (optional upload)</label>
-              <input
-                type="file"
-                accept=".txt,text/plain"
-                onChange={(e) => setExtraWordlistFile(e.target.files?.[0] || null)}
-              />
-            </div>
+            {(Boolean(settings.directory_enum) || mode === "fast_scan" || mode === "deep_audit") && (
+              <>
+                <div className="field">
+                  <label>Directory wordlist</label>
+                  <select
+                    value={wordlistFile ? "__upload__" : wordlistId}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === "__upload__") {
+                        setWordlistId("__upload__");
+                        return;
+                      }
+                      setWordlistId(v);
+                      setWordlistFile(null);
+                    }}
+                  >
+                    <option value="">Server default</option>
+                    {(meta.wordlists || []).map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.label}
+                      </option>
+                    ))}
+                    <option value="__upload__">Upload my own file…</option>
+                  </select>
+                  {(wordlistId === "__upload__" || wordlistFile) && (
+                    <input
+                      type="file"
+                      accept=".txt,text/plain"
+                      required={wordlistId === "__upload__" && !wordlistFile}
+                      onChange={(e) => setWordlistFile(e.target.files?.[0] || null)}
+                      style={{ marginTop: ".45rem" }}
+                    />
+                  )}
+                  <p className="setting-help-inline" style={{ marginTop: ".35rem" }}>
+                    Bundled lists from the repo <code>Wordlist/</code> folder on the server — or upload your own .txt.
+                  </p>
+                </div>
+                <div className="field">
+                  <label>Extra wordlist (optional upload)</label>
+                  <input
+                    type="file"
+                    accept=".txt,text/plain"
+                    onChange={(e) => setExtraWordlistFile(e.target.files?.[0] || null)}
+                  />
+                </div>
+              </>
+            )}
             <div className="field">
               <label>Postman collection (optional)</label>
               <input

@@ -741,7 +741,7 @@ async def run_full_crawl_async(
         elif config.enum_only:
             output_callback("=== Enum-only mode (Gobuster-beater) — skipping crawl phase ===")
 
-        if running():
+        if running() and _directory_enum_enabled(config):
             await _run_full_enum_suite(
                 config,
                 client,
@@ -757,6 +757,11 @@ async def run_full_crawl_async(
                 use_priority,
                 update_progress,
                 list(discovered) + extra_seeds,
+            )
+        elif running():
+            output_callback(
+                "Directory enumeration skipped — enable “Run directory enum” "
+                "(or choose Deep Audit / Fast Scan) to probe folder/file names."
             )
 
         if running() and getattr(config, "api_recon", False):
@@ -855,6 +860,16 @@ async def run_full_crawl_async(
     return stats, report_paths, reporter.last_conclusion
 
 
+def _directory_enum_enabled(config) -> bool:
+    """Whether to run post-crawl (or enum-only) directory/file name probing."""
+    if getattr(config, "enum_only", False):
+        return True
+    if hasattr(config, "directory_enum"):
+        return bool(getattr(config, "directory_enum"))
+    # Legacy configs without the flag: infer from wordlist / mutation toggles
+    return bool(getattr(config, "use_wordlist", False) or getattr(config, "mutation_enum", False))
+
+
 async def _run_full_enum_suite(
     config,
     client,
@@ -877,6 +892,10 @@ async def _run_full_enum_suite(
         if callable(extensions):
             return extensions()
         return extensions
+
+    if not _directory_enum_enabled(config):
+        output_callback("Directory enumeration skipped (directory enum is off).")
+        return
 
     async def on_enum_hit(probe):
         if not (config.enum_auto_crawl_hits or config.enum_auto_vuln_scan):
