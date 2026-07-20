@@ -82,6 +82,9 @@ class CrawlConfig:
     legacy_wordlist_expansion: bool = False
     enum_status_whitelist: str = ""
     enum_status_blacklist: str = "404"
+    # Follow same-host redirects and score the final response (cuts HTTP→HTTPS→404 FPs)
+    enum_follow_redirects: bool = True
+    enum_redirect_max_hops: int = 5
     enum_extensions: str = "php,asp,aspx,bak,old,txt,zip,sql,config,env"
     exclude_lengths: str = ""
     exclude_body_hashes: str = ""

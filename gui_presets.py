@@ -170,6 +170,7 @@ def apply_mode_preset(app, mode: str):
         "mutation_builtin_cb": "mutation_builtin",
         "mutation_seeds_cb": "mutation_from_seeds",
         "wildcard_cb": "wildcard_detection",
+        "enum_follow_redirects_cb": "enum_follow_redirects",
         "gobuster_ext_cb": "gobuster_style_extensions",
         "ext_wordlist_cb": "legacy_wordlist_expansion",
         "smart_wl_cb": "smart_wordlist_order",

@@ -372,6 +372,14 @@ class CrawlerApp(QMainWindow):
         self.enum_flat_cb.setChecked(True)
         self.wildcard_cb = QCheckBox("Wildcard detection (multi-probe filter)")
         self.wildcard_cb.setChecked(True)
+        self.enum_follow_redirects_cb = QCheckBox(
+            "Follow same-host redirects and score final status (recommended)"
+        )
+        self.enum_follow_redirects_cb.setChecked(True)
+        self.enum_follow_redirects_cb.setToolTip(
+            "Resolves 301/302 chains on the same host before counting a hit. "
+            "Stops HTTP→HTTPS→404 false positives (e.g. .well-known paths)."
+        )
         self.smart_wl_cb = QCheckBox("Smart wordlist order (Wayback/crawl seeds first)")
         self.smart_wl_cb.setChecked(True)
         self.auto_prefix_cb = QCheckBox("Auto prefix-scoped enum from discovered paths")
@@ -387,7 +395,7 @@ class CrawlerApp(QMainWindow):
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Status whitelist (empty=default):"))
         self.status_whitelist_input = QLineEdit()
-        self.status_whitelist_input.setPlaceholderText("200,204,301,302,401,403")
+        self.status_whitelist_input.setPlaceholderText("200,204,401,403 (final status after redirects)")
         filter_row.addWidget(self.status_whitelist_input)
         filter_row.addWidget(QLabel("Blacklist:"))
         self.status_blacklist_input = QLineEdit("404")
@@ -433,7 +441,8 @@ class CrawlerApp(QMainWindow):
         self.extra_wl_label = QLabel("No extra wordlists")
         for w in (
             self.smart_fp_cb, self.gobuster_ext_cb, self.ext_wordlist_cb, self.enum_only_cb,
-            self.enum_flat_cb, self.wildcard_cb, self.smart_wl_cb, self.auto_prefix_cb,
+            self.enum_flat_cb, self.wildcard_cb, self.enum_follow_redirects_cb,
+            self.smart_wl_cb, self.auto_prefix_cb,
             self.fp_learn_cb, self.enum_auto_vuln_cb, self.vhost_cb, self.s3_cb, self.gcs_cb,
             self.resume_enum_cb,
         ):
@@ -968,6 +977,7 @@ class CrawlerApp(QMainWindow):
             enum_only=self.enum_only_cb.isChecked(),
             enum_flat_scan=self.enum_flat_cb.isChecked(),
             wildcard_detection=self.wildcard_cb.isChecked(),
+            enum_follow_redirects=self.enum_follow_redirects_cb.isChecked(),
             smart_wordlist_order=self.smart_wl_cb.isChecked(),
             auto_prefix_enum=self.auto_prefix_cb.isChecked(),
             false_positive_learning=self.fp_learn_cb.isChecked(),

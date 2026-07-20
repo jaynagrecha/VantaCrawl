@@ -9,7 +9,7 @@ import os
 import uuid
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -27,6 +27,8 @@ from crawler_common import (
     enqueue_discovered_url,
     save_enum_hit_async,
 )
+
+REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 from false_positive_store import FalsePositiveStore
 
 DEFAULT_ENUM_EXTENSIONS = ("php", "asp", "aspx", "bak", "old", "txt", "zip", "sql", "config", "env")
@@ -47,6 +49,8 @@ class ProbeResult:
     content_length: int
     body_hash: str
     path_segments: List[str]
+    final_url: str = ""
+    redirect_hops: int = 0
 
 
 @dataclass
@@ -95,10 +99,70 @@ def body_fingerprint(body: bytes, max_bytes: int = 512) -> str:
 
 
 def build_status_filter(config: CrawlConfig) -> StatusCodeFilter:
-    default_whitelist = {200, 204, 301, 302, 307, 401, 403}
+    # Redirects are resolved before scoring — whitelist applies to the *final* status.
+    default_whitelist = {200, 204, 401, 403}
     whitelist = parse_status_code_list(config.enum_status_whitelist, default_whitelist)
     blacklist = parse_status_code_list(config.enum_status_blacklist, {404}) or {404}
     return StatusCodeFilter(whitelist, blacklist)
+
+
+def hosts_compatible(url_a: str, url_b: str) -> bool:
+    """Same host for redirect following (scheme may change; www ↔ apex allowed)."""
+    ha = (urlparse(url_a).netloc or "").lower().split(":")[0]
+    hb = (urlparse(url_b).netloc or "").lower().split(":")[0]
+    if not ha or not hb:
+        return False
+    if ha == hb:
+        return True
+    if ha.startswith("www.") and ha[4:] == hb:
+        return True
+    if hb.startswith("www.") and hb[4:] == ha:
+        return True
+    return False
+
+
+async def follow_same_host_redirects(
+    client: httpx.AsyncClient,
+    start_url: str,
+    *,
+    max_hops: int = 5,
+    timeout: float = 8,
+) -> Tuple[int, int, str, bytes, str, int]:
+    """
+    Follow Location hops on the same host. Returns
+    (status, length, body_hash, body, final_url, hops_taken).
+    """
+    current = start_url
+    seen: Set[str] = set()
+    body = b""
+    status = 0
+    hops = 0
+    max_hops = max(0, int(max_hops) or 0)
+    for _ in range(max_hops + 1):
+        if current in seen:
+            break
+        seen.add(current)
+        try:
+            response = await client.get(current, timeout=timeout, follow_redirects=False)
+        except httpx.HTTPError:
+            return 0, 0, "", b"", current, hops
+        status = response.status_code
+        body = response.content or b""
+        length = len(body) or response_length(response)
+        digest = body_fingerprint(body)
+        if status not in REDIRECT_STATUSES:
+            return status, length, digest, body, current, hops
+        location = (response.headers.get("location") or "").strip()
+        if not location:
+            return status, length, digest, body, current, hops
+        nxt = urljoin(current, location)
+        if not hosts_compatible(start_url, nxt):
+            # Off-site redirect: keep redirect status (usually not a hit after whitelist change)
+            return status, length, digest, body, current, hops
+        current = nxt
+        hops += 1
+    length = len(body) or 0
+    return status, length, body_fingerprint(body), body, current, hops
 
 
 def iter_gobuster_word_variants(word: str, config: CrawlConfig) -> List[str]:
@@ -270,7 +334,14 @@ async def probe_candidate(
     *,
     use_head: bool = True,
     bypass_forbidden: bool = True,
-) -> Tuple[int, int, str, bytes]:
+    follow_redirects: bool = True,
+    max_redirect_hops: int = 5,
+) -> Tuple[int, int, str, bytes, str, int]:
+    """
+    Probe a URL. When follow_redirects is on, same-host redirects are resolved and the
+    *final* status/body are returned (hops > 0). Tuple:
+    (status, length, body_hash, body, final_url, redirect_hops).
+    """
     body = b""
     try:
         if use_head:
@@ -282,19 +353,46 @@ async def probe_candidate(
                 204,
                 301,
                 302,
+                303,
                 307,
+                308,
                 401,
                 403,
             ):
+                if follow_redirects and status in REDIRECT_STATUSES:
+                    return await follow_same_host_redirects(
+                        client, url, max_hops=max_redirect_hops, timeout=8
+                    )
                 response = await client.get(url, timeout=8, follow_redirects=False)
                 body = response.content or b""
-                return response.status_code, len(body) or response_length(response), body_fingerprint(body), body
-            return status, response_length(response), "head-only", body
+                status = response.status_code
+                if follow_redirects and status in REDIRECT_STATUSES:
+                    return await follow_same_host_redirects(
+                        client, url, max_hops=max_redirect_hops, timeout=8
+                    )
+                return status, len(body) or response_length(response), body_fingerprint(body), body, url, 0
+            return status, response_length(response), "head-only", body, url, 0
+        if follow_redirects:
+            # Start resolve from the requested URL (handles HEAD-skipped GET path too)
+            first = await client.get(url, timeout=8, follow_redirects=False)
+            if first.status_code in REDIRECT_STATUSES:
+                return await follow_same_host_redirects(
+                    client, url, max_hops=max_redirect_hops, timeout=8
+                )
+            body = first.content or b""
+            return (
+                first.status_code,
+                len(body) or response_length(first),
+                body_fingerprint(body),
+                body,
+                url,
+                0,
+            )
         response = await client.get(url, timeout=8, follow_redirects=False)
         body = response.content or b""
-        return response.status_code, len(body) or response_length(response), body_fingerprint(body), body
+        return response.status_code, len(body) or response_length(response), body_fingerprint(body), body, url, 0
     except httpx.HTTPError:
-        return 0, 0, "", b""
+        return 0, 0, "", b"", url, 0
 
 
 def is_probe_hit(
@@ -452,7 +550,10 @@ async def run_pro_directory_enum(
         found_set.add(probe.url)
         stats.enum_hits += 1
         stats.enum_hit_urls.append(probe.url)
-        output_callback(f"HIT [{probe.status}] {probe.url} (size={probe.content_length})")
+        via = ""
+        if probe.redirect_hops and probe.final_url and probe.final_url != probe.url:
+            via = f" → {probe.final_url} ({probe.redirect_hops} hop(s))"
+        output_callback(f"HIT [{probe.status}] {probe.url}{via} (size={probe.content_length})")
         log_to_file(config.output_file_path, probe.url)
         discovered.add(probe.url)
         stats.discovered_urls.add(probe.url)
@@ -499,15 +600,26 @@ async def run_pro_directory_enum(
             test_url = build_enum_url(config.start_url, path_segments, variant)
             if not test_url:
                 continue
-            status, length, body_hash, _body = await probe_candidate(
+            status, length, body_hash, _body, final_url, hops = await probe_candidate(
                 client,
                 test_url,
                 use_head=config.enum_method.upper() != "GET",
                 bypass_forbidden=config.bypass_forbidden,
+                follow_redirects=bool(getattr(config, "enum_follow_redirects", True)),
+                max_redirect_hops=int(getattr(config, "enum_redirect_max_hops", 5) or 5),
             )
             if config.status_code_report and status:
                 stats.record_status(status, enum=True)
-            probe = ProbeResult(test_url, variant, status, length, body_hash, list(path_segments))
+            probe = ProbeResult(
+                test_url,
+                variant,
+                status,
+                length,
+                body_hash,
+                list(path_segments),
+                final_url=final_url or test_url,
+                redirect_hops=hops,
+            )
             if is_probe_hit(
                 probe,
                 status_filter=status_filter,

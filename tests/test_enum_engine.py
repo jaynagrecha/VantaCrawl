@@ -6,6 +6,8 @@ from enum_engine import (
     build_smart_wordlist,
     build_status_filter,
     body_fingerprint,
+    follow_same_host_redirects,
+    hosts_compatible,
     is_probe_hit,
     iter_gobuster_word_variants,
     parse_int_list,
@@ -29,6 +31,17 @@ def test_status_filter_blacklist():
     assert not filt.allows(404)
     assert not filt.allows(500)
     assert filt.allows(200)
+
+
+def test_default_status_filter_scores_final_not_redirect():
+    """Redirect codes are resolved before scoring — 301 alone is not a hit."""
+    filt = build_status_filter(CrawlConfig(start_url="https://example.com"))
+    assert filt.allows(200)
+    assert filt.allows(401)
+    assert filt.allows(403)
+    assert not filt.allows(301)
+    assert not filt.allows(302)
+    assert not filt.allows(404)
 
 
 def test_wildcard_rejects_cluster():
@@ -130,6 +143,68 @@ def test_build_smart_wordlist_respects_enum_word_limit_at_load():
     )
     assert calls.get("max_words") == 25
     assert len(words) <= 25
+
+
+def test_hosts_compatible_www_and_scheme():
+    assert hosts_compatible("http://www.example.com/a", "https://www.example.com/a")
+    assert hosts_compatible("https://example.com/a", "https://www.example.com/a")
+    assert not hosts_compatible("https://example.com/a", "https://evil.com/a")
+
+
+def test_follow_redirect_to_404_final_status():
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.startswith("http://www.example.com/"):
+            return httpx.Response(
+                301,
+                headers={"Location": "https://www.example.com/.well-known/change-password"},
+            )
+        if "change-password" in url:
+            return httpx.Response(404, text="We can't seem to find the page")
+        return httpx.Response(500)
+
+    transport = httpx.MockTransport(handler)
+
+    async def _run():
+        async with httpx.AsyncClient(transport=transport) as client:
+            status, _length, _hash, body, final, hops = await follow_same_host_redirects(
+                client,
+                "http://www.example.com/.well-known/change-password",
+                max_hops=5,
+            )
+            return status, body, final, hops
+
+    status, body, final, hops = asyncio.run(_run())
+    assert status == 404
+    assert hops == 1
+    assert final.startswith("https://www.example.com/")
+    assert b"can't seem to find" in body
+    filt = build_status_filter(CrawlConfig(start_url="https://www.example.com"))
+    assert not filt.allows(status)
+
+
+def test_follow_redirect_to_200_is_hit():
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/admin") and request.url.scheme == "http":
+            return httpx.Response(302, headers={"Location": "https://example.com/admin"})
+        return httpx.Response(200, text="login form")
+
+    transport = httpx.MockTransport(handler)
+
+    async def _run():
+        async with httpx.AsyncClient(transport=transport) as client:
+            return await follow_same_host_redirects(client, "http://example.com/admin", max_hops=3)
+
+    status, _length, _hash, body, final, hops = asyncio.run(_run())
+    assert status == 200
+    assert hops == 1
+    assert b"login" in body
+    filt = build_status_filter(CrawlConfig(start_url="https://example.com"))
+    assert filt.allows(status)
 
 
 def test_active_probe_detects_reflected_xss():

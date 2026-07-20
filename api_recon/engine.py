@@ -129,6 +129,8 @@ async def run_api_recon(
             running=running,
             output_callback=output_callback,
             update_progress=update_progress,
+            follow_redirects=bool(getattr(config, "enum_follow_redirects", True)),
+            max_redirect_hops=int(getattr(config, "enum_redirect_max_hops", 5) or 5),
         )
         result.probed = limit
         result.hits = len(active_hits)
