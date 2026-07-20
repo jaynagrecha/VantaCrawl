@@ -29,8 +29,10 @@ export default function JobPage() {
   const { id = "" } = useParams();
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState("");
+  const [actionError, setActionError] = useState("");
   const [logExtra, setLogExtra] = useState("");
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [artifacts, setArtifacts] = useState<{ name: string; path: string; size: number; kind: string }[]>([]);
   const logRef = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
 
@@ -77,11 +79,17 @@ export default function JobPage() {
   }, [id]);
 
   useEffect(() => {
-    const active = job && ["queued", "running", "paused", "stopping"].includes(job.status);
+    const active = job && ["queued", "running", "paused", "stopping", "scheduled"].includes(job.status);
     if (!active) return;
     const t = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(t);
   }, [job?.status]);
+
+  useEffect(() => {
+    if (!id || !job) return;
+    if (!["completed", "failed", "cancelled"].includes(job.status) && !job.report_html_path) return;
+    api.listArtifacts(id).then(setArtifacts).catch(() => setArtifacts([]));
+  }, [id, job?.status, job?.report_html_path]);
 
   const progress = job?.progress_json || {};
   const logText = useMemo(() => {
@@ -95,6 +103,20 @@ export default function JobPage() {
     el.scrollTop = el.scrollHeight;
   }, [logText]);
 
+  async function runAction(kind: "pause" | "resume" | "stop") {
+    if (!job) return;
+    setActionError("");
+    try {
+      if (kind === "pause") await api.pauseJob(job.id);
+      if (kind === "resume") await api.resumeJob(job.id);
+      if (kind === "stop") await api.stopJob(job.id);
+      const fresh = await api.getJob(job.id);
+      setJob(fresh);
+    } catch (err: any) {
+      setActionError(String(err.message || err));
+    }
+  }
+
   if (!job) {
     return <div className="card muted">{error || "Loading job…"}</div>;
   }
@@ -104,8 +126,17 @@ export default function JobPage() {
   const htmlUrl = `/api/reports/${job.id}/html?token=${tok}`;
   const txtUrl = `/api/reports/${job.id}/txt?token=${tok}`;
   const embedUrl = `/api/reports/${job.id}/embed?token=${tok}`;
+  const logUrl = `/api/reports/${job.id}/log?token=${tok}`;
+  const zipUrl = `/api/reports/${job.id}/bundle.zip?token=${tok}`;
   const durationSecs = jobDurationSeconds(job, nowMs);
   const durationLabel = durationSecs == null ? "—" : formatDuration(durationSecs);
+
+  const canPause = job.status === "running" || job.status === "queued";
+  const canResume = job.status === "paused" || job.status === "scheduled";
+  const canStop = !["completed", "cancelled", "failed"].includes(job.status);
+
+  const enumHits = (progress.enum_hit_urls as string[]) || [];
+  const findings = (progress.findings_preview as { severity?: string; title?: string; url?: string }[]) || [];
 
   return (
     <div>
@@ -117,15 +148,15 @@ export default function JobPage() {
               {job.start_url}
             </p>
           </div>
-          <div style={{ display: "flex", gap: ".5rem", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: ".5rem", alignItems: "center", flexWrap: "wrap" }}>
             <span className={`badge ${job.status}`}>{job.status}</span>
-            <button className="btn" type="button" onClick={() => api.pauseJob(job.id)}>
+            <button className="btn" type="button" disabled={!canPause} onClick={() => runAction("pause")}>
               Pause
             </button>
-            <button className="btn" type="button" onClick={() => api.resumeJob(job.id)}>
+            <button className="btn" type="button" disabled={!canResume} onClick={() => runAction("resume")}>
               Resume
             </button>
-            <button className="btn danger" type="button" onClick={() => api.stopJob(job.id)}>
+            <button className="btn danger" type="button" disabled={!canStop} onClick={() => runAction("stop")}>
               Stop
             </button>
             <Link className="btn" to="/">
@@ -134,7 +165,14 @@ export default function JobPage() {
           </div>
         </div>
         {error && <div className="error" style={{ marginTop: "1rem" }}>{error}</div>}
+        {actionError && <div className="error" style={{ marginTop: "1rem" }}>{actionError}</div>}
         {job.error_message && <div className="error" style={{ marginTop: "1rem" }}>{job.error_message}</div>}
+        {job.status === "paused" ? (
+          <p className="muted" style={{ marginTop: ".85rem" }}>
+            Paused. Change expert settings on a new draft is not required — use Resume to continue. Settings patched via
+            API while paused are applied on Resume.
+          </p>
+        ) : null}
         <ScanActivity status={job.status} />
         <div className="stats" style={{ marginTop: "1.1rem" }}>
           <div className="stat">
@@ -163,9 +201,9 @@ export default function JobPage() {
       <section className="card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "1rem" }}>
           <h2 style={{ margin: 0 }}>Live Logs</h2>
-          <span className="muted" style={{ fontSize: ".78rem" }}>
-            Auto-scrolls to latest
-          </span>
+          <a className="btn" href={logUrl} download={`${job.id}_logs.txt`}>
+            Export log
+          </a>
         </div>
         <div
           ref={logRef}
@@ -182,20 +220,93 @@ export default function JobPage() {
         </div>
       </section>
 
+      {(enumHits.length > 0 || findings.length > 0) && (
+        <section className="card">
+          <h2>Results</h2>
+          <div className="grid-2">
+            <div>
+              <h3 style={{ marginTop: 0 }}>Enum hits</h3>
+              {enumHits.length === 0 ? (
+                <p className="muted">None yet</p>
+              ) : (
+                <ul className="mono" style={{ fontSize: ".8rem", maxHeight: 240, overflow: "auto" }}>
+                  {enumHits.slice(0, 60).map((url) => (
+                    <li key={url}>
+                      <a href={url} target="_blank" rel="noreferrer">
+                        {url}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div>
+              <h3 style={{ marginTop: 0 }}>Findings</h3>
+              {findings.length === 0 ? (
+                <p className="muted">None yet</p>
+              ) : (
+                <ul style={{ fontSize: ".85rem", maxHeight: 240, overflow: "auto", paddingLeft: "1.1rem" }}>
+                  {findings.map((f, i) => (
+                    <li key={`${f.url}-${i}`}>
+                      <strong>{f.severity || "info"}</strong> — {f.title || "Finding"}
+                      {f.url ? (
+                        <>
+                          {" "}
+                          <a className="mono" href={f.url} target="_blank" rel="noreferrer">
+                            {f.url}
+                          </a>
+                        </>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
       <section className="card">
-        <h2>Report</h2>
+        <h2>Report & artifacts</h2>
         {!reportReady ? (
-          <p className="muted">HTML report appears when the worker finishes writing artifacts.</p>
+          <p className="muted">HTML report and artifacts appear when the worker finishes writing files.</p>
         ) : (
           <>
-            <div style={{ display: "flex", gap: ".6rem", marginBottom: ".75rem" }}>
+            <div style={{ display: "flex", gap: ".6rem", marginBottom: ".75rem", flexWrap: "wrap" }}>
               <a className="btn primary" href={htmlUrl} target="_blank" rel="noreferrer">
                 Open HTML report
               </a>
               <a className="btn" href={txtUrl} target="_blank" rel="noreferrer">
                 Download text
               </a>
+              <a className="btn" href={zipUrl}>
+                Download all (zip)
+              </a>
             </div>
+            {artifacts.length > 0 ? (
+              <table className="table" style={{ marginBottom: "1rem" }}>
+                <thead>
+                  <tr>
+                    <th>File</th>
+                    <th>Size</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {artifacts.map((a) => (
+                    <tr key={a.path}>
+                      <td className="mono">{a.name}</td>
+                      <td className="muted">{Math.max(1, Math.round(a.size / 1024))} KB</td>
+                      <td>
+                        <a className="btn" href={`/api/reports/${job.id}/artifacts/${encodeURIComponent(a.path)}?token=${tok}`}>
+                          Download
+                        </a>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : null}
             <iframe className="report-frame" title="Report" src={embedUrl} />
           </>
         )}

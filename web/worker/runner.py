@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from sqlmodel import Session
 
@@ -27,10 +25,12 @@ from vantacrawl_api.database import engine  # noqa: E402
 from vantacrawl_api.models import ScanJob  # noqa: E402
 from vantacrawl_api.services.queue import (  # noqa: E402
     clear_job_command,
+    enqueue_job,
     get_job_command,
     publish_progress,
 )
 
+from browser_fetch import apply_selenium_login, make_browser_fetcher, quit_selenium_driver  # noqa: E402
 from crawl_config import CrawlConfig  # noqa: E402
 from crawl_orchestrator import PauseController, run_full_crawl_async  # noqa: E402
 from crawl_stats import CrawlStats  # noqa: E402
@@ -49,6 +49,11 @@ def _update_job(job_id: str, **fields: Any) -> None:
         job.updated_at = datetime.utcnow()
         session.add(job)
         session.commit()
+
+
+def _get_job(job_id: str) -> Optional[ScanJob]:
+    with Session(engine) as session:
+        return session.get(ScanJob, job_id)
 
 
 def _append_log(job_id: str, line: str, *, max_chars: int = 24000) -> str:
@@ -76,6 +81,11 @@ def _build_crawl_config(job: ScanJob) -> CrawlConfig:
     overlay = dict(job.config_json or {})
     overlay.pop("mode", None)
     overlay.pop("speed", None)
+    overlay.pop("target_urls", None)
+    overlay.pop("pending_live_settings", None)
+
+    wordlist = overlay.pop("wordlist_file", None)
+    extras = overlay.pop("extra_wordlists", None)
 
     cfg = CrawlConfig(
         start_url=job.start_url,
@@ -84,8 +94,11 @@ def _build_crawl_config(job: ScanJob) -> CrawlConfig:
         checkpoint_file=str(job_dir / "crawl_checkpoint.json"),
         enum_checkpoint_file=str(job_dir / "enum_checkpoint.json"),
         false_positive_file=str(job_dir / "false_positives.json"),
+        wordlist_file=str(wordlist) if wordlist else cfg_default_wordlist(),
     )
-    # Point reports into per-job folder via monkeypatch of report_dir method if needed
+    if isinstance(extras, list) and extras:
+        cfg.extra_wordlists = [str(p) for p in extras if p]
+
     for key, value in overlay.items():
         if hasattr(cfg, key) and key not in {
             "start_url",
@@ -94,56 +107,156 @@ def _build_crawl_config(job: ScanJob) -> CrawlConfig:
             "checkpoint_file",
             "enum_checkpoint_file",
             "false_positive_file",
+            "wordlist_file",
         }:
             try:
                 setattr(cfg, key, value)
             except Exception:
                 pass
 
-    # Web UI sends extensions as a comma-separated string
     ext = getattr(cfg, "extensions", None)
     if isinstance(ext, str):
         parts = [p.strip() for p in ext.split(",") if p.strip()]
         cfg.extensions = parts or None
 
-    # Override report_dir()
     cfg.report_dir = lambda: str(report_dir)  # type: ignore[method-assign]
     return cfg
 
 
-async def run_job(job_id: str) -> None:
+def cfg_default_wordlist() -> str:
+    from crawl_config import DEFAULT_DIR_WORDLIST
+
+    return DEFAULT_DIR_WORDLIST
+
+
+def _target_urls(job: ScanJob) -> List[str]:
+    raw = (job.config_json or {}).get("target_urls")
+    urls: List[str] = []
+    if isinstance(raw, list):
+        urls = [str(u).strip() for u in raw if str(u).strip()]
+    if not urls:
+        urls = [job.start_url]
+    return urls
+
+
+def _schedule_followup(job: ScanJob) -> None:
+    hours = float((job.config_json or {}).get("schedule_interval_hours") or 0)
+    if hours <= 0:
+        return
+    run_at = datetime.utcnow() + timedelta(hours=hours)
+    clone = ScanJob(
+        user_id=job.user_id,
+        title=f"{job.title} (scheduled)",
+        start_url=job.start_url,
+        mode=job.mode,
+        speed=job.speed,
+        status="scheduled",
+        authorized_confirmed=True,
+        config_json=dict(job.config_json or {}),
+        progress_json={"phase": "scheduled", "run_at": run_at.isoformat() + "Z", "message": f"Next run at {run_at.isoformat()}Z"},
+        report_dir=str(Path(get_settings().reports_dir) / "pending"),
+    )
     with Session(engine) as session:
-        job = session.get(ScanJob, job_id)
-        if not job:
-            log.error("Job missing: %s", job_id)
-            return
-        if job.status in ("completed", "cancelled", "failed"):
-            return
-        start_url = job.start_url
-        cfg_snapshot = dict(job.config_json or {})
+        session.add(clone)
+        session.commit()
+        session.refresh(clone)
+        settings = get_settings()
+        job_dir = Path(settings.jobs_dir) / clone.id
+        report_dir = Path(settings.reports_dir) / clone.id
+        job_dir.mkdir(parents=True, exist_ok=True)
+        report_dir.mkdir(parents=True, exist_ok=True)
+        clone.report_dir = str(report_dir)
+        session.add(clone)
+        session.commit()
+        clone_id = clone.id
+    # Store delayed enqueue marker
+    from vantacrawl_api.services.queue import schedule_job
+
+    schedule_job(clone_id, run_at.timestamp())
+    log.info("Scheduled follow-up job %s at %s", clone_id, run_at.isoformat())
+
+
+async def run_job(job_id: str) -> None:
+    job = _get_job(job_id)
+    if not job:
+        log.error("Job missing: %s", job_id)
+        return
+
+    # Honour stop/cancel before any work (fixes queued stop + pause races)
+    if job.status in ("completed", "cancelled", "failed"):
+        clear_job_command(job_id)
+        return
+    if job.status == "stopping" or get_job_command(job_id) == "stop":
+        clear_job_command(job_id)
+        _update_job(job_id, status="cancelled", finished_at=datetime.utcnow(), error_message="")
+        publish_progress(job_id, {"status": "cancelled", "message": "Cancelled before start"})
+        return
+    if job.status == "paused" and not job.started_at:
+        # Paused while still queued — wait until resume re-enqueues
+        clear_job_command(job_id)
+        publish_progress(job_id, {"status": "paused", "message": "Paused before start"})
+        return
 
     clear_job_command(job_id)
     _update_job(
         job_id,
         status="running",
-        started_at=datetime.utcnow(),
+        started_at=job.started_at or datetime.utcnow(),
         error_message="",
         progress_json={"phase": "starting", "message": "Worker picked up job"},
     )
-    publish_progress(job_id, {"status": "running", "message": "Scan starting"})
+    publish_progress(job_id, {"status": "running", "message": "Scan starting", "started_at": datetime.utcnow().isoformat() + "Z"})
 
     stop_flag = {"stop": False}
     pause = PauseController(lambda: not stop_flag["stop"])
+    manager = DownloadManager()
+    live_config_holder: Dict[str, CrawlConfig] = {}
 
     def output_callback(message: str):
         text = str(message)
         _append_log(job_id, text)
-        publish_progress(job_id, {"status": pause.paused and "paused" or "running", "log": text})
+        status = "paused" if pause.paused else ("stopping" if stop_flag["stop"] else "running")
+        publish_progress(job_id, {"status": status, "log": text})
 
     def update_progress(payload):
         if isinstance(payload, dict):
             _update_job(job_id, progress_json=payload)
-            publish_progress(job_id, {"status": "running", "progress": payload})
+            publish_progress(
+                job_id,
+                {"status": "paused" if pause.paused else "running", "progress": payload},
+            )
+
+    def apply_pending_live_settings():
+        cfg = live_config_holder.get("cfg")
+        if cfg is None:
+            return
+        fresh_job = _get_job(job_id)
+        if not fresh_job:
+            return
+        pending = dict((fresh_job.config_json or {}).get("pending_live_settings") or {})
+        if not pending:
+            # Also allow full config_json overlay (minus frozen keys)
+            pending = {k: v for k, v in (fresh_job.config_json or {}).items() if k not in ("mode", "speed", "target_urls", "pending_live_settings")}
+            # Only apply if marked dirty
+            if not (fresh_job.config_json or {}).get("_live_dirty"):
+                return
+        try:
+            fresh = _build_crawl_config(fresh_job)
+            changed = cfg.apply_live_settings(fresh)
+            overlay = dict(fresh_job.config_json or {})
+            overlay.pop("pending_live_settings", None)
+            overlay["_live_dirty"] = False
+            _update_job(job_id, config_json=overlay)
+            if changed:
+                preview = ", ".join(changed[:12])
+                extra = f" (+{len(changed) - 12} more)" if len(changed) > 12 else ""
+                output_callback(f"Resumed with updated settings: {preview}{extra}")
+            else:
+                output_callback("Resumed.")
+        except Exception:
+            log.exception("Live settings apply failed for %s", job_id)
+
+    pause.on_resume(apply_pending_live_settings)
 
     async def command_watcher():
         while not stop_flag["stop"]:
@@ -151,65 +264,106 @@ async def run_job(job_id: str) -> None:
             if cmd == "pause":
                 pause.pause()
                 _update_job(job_id, status="paused")
-                publish_progress(job_id, {"status": "paused", "message": "Paused"})
+                publish_progress(job_id, {"status": "paused", "message": "Paused — edit settings then Resume"})
                 clear_job_command(job_id)
             elif cmd == "resume":
                 pause.resume()
                 _update_job(job_id, status="running")
-                publish_progress(job_id, {"status": "running", "message": "Resumed"})
+                publish_progress(job_id, {"status": "running", "message": "Resume requested"})
                 clear_job_command(job_id)
             elif cmd == "stop":
                 stop_flag["stop"] = True
                 pause.resume()
+                try:
+                    manager.cancel_all()
+                except Exception:
+                    pass
                 _update_job(job_id, status="stopping")
                 publish_progress(job_id, {"status": "stopping", "message": "Stopping"})
                 clear_job_command(job_id)
                 break
-            await asyncio.sleep(0.4)
+            await asyncio.sleep(0.35)
 
-    with Session(engine) as session:
-        job = session.get(ScanJob, job_id)
-        assert job is not None
-        config = _build_crawl_config(job)
-        report_dir = Path(job.report_dir)
-
+    job = _get_job(job_id)
+    assert job is not None
+    report_dir = Path(job.report_dir)
+    targets = _target_urls(job)
     stats = CrawlStats()
     watcher = asyncio.create_task(command_watcher())
+    use_browser = False
     try:
-        await run_full_crawl_async(
-            config,
-            output_callback,
-            lambda: not stop_flag["stop"],
-            manager=DownloadManager(),
-            update_progress=update_progress,
-            stats=stats,
-            pause_controller=pause,
-        )
-        # Discover report paths
-        html_matches = sorted(report_dir.glob("*_SEARCH_REPORT.html"))
-        txt_matches = sorted(report_dir.glob("*_SEARCH_REPORT.txt"))
+        for index, url in enumerate(targets):
+            if stop_flag["stop"]:
+                break
+            job = _get_job(job_id)
+            assert job is not None
+            # Refresh start_url for this target
+            cfg_overlay = dict(job.config_json or {})
+            cfg_overlay.pop("pending_live_settings", None)
+            job.config_json = cfg_overlay
+            config = _build_crawl_config(job)
+            config.start_url = url
+            live_config_holder["cfg"] = config
+
+            output_callback(f"\n=== Target {index + 1}/{len(targets)}: {url} ===\n")
+            if config.use_selenium_login:
+                config = apply_selenium_login(config, output=output_callback)
+
+            use_browser = bool(config.selenium_fallback or config.deep_mirror or config.screenshot_capture)
+            fetcher = make_browser_fetcher(config) if use_browser else None
+
+            await run_full_crawl_async(
+                config,
+                output_callback,
+                lambda: not stop_flag["stop"],
+                manager=manager,
+                update_progress=update_progress,
+                page_html_fetcher=fetcher,
+                stats=stats,
+                pause_controller=pause,
+            )
+
+        html_matches = sorted(report_dir.glob("*_SEARCH_REPORT.html")) if report_dir.is_dir() else []
+        txt_matches = sorted(report_dir.glob("*_SEARCH_REPORT.txt")) if report_dir.is_dir() else []
         status = "cancelled" if stop_flag["stop"] else "completed"
+        findings_preview = []
+        try:
+            for f in list(getattr(stats, "findings", []) or [])[:40]:
+                if isinstance(f, dict):
+                    findings_preview.append(
+                        {
+                            "severity": str(f.get("severity") or f.get("severity_label") or ""),
+                            "title": str(f.get("title") or f.get("detail") or f.get("type") or "")[:160],
+                            "url": str(f.get("url") or ""),
+                        }
+                    )
+        except Exception:
+            findings_preview = []
+
+        progress = {
+            "phase": status,
+            "pages_crawled": stats.pages_crawled,
+            "findings": len(stats.findings),
+            "enum_hits": stats.enum_hits,
+            "enum_hit_urls": list(getattr(stats, "enum_hit_urls", []) or [])[:80],
+            "findings_preview": findings_preview,
+            "elapsed_seconds": stats.elapsed_seconds() if hasattr(stats, "elapsed_seconds") else None,
+        }
+        finished_job = _get_job(job_id)
         _update_job(
             job_id,
             status=status,
             finished_at=datetime.utcnow(),
             report_html_path=str(html_matches[-1]) if html_matches else "",
             report_txt_path=str(txt_matches[-1]) if txt_matches else "",
-            progress_json={
-                "phase": status,
-                "pages_crawled": stats.pages_crawled,
-                "findings": len(stats.findings),
-                "enum_hits": stats.enum_hits,
-            },
+            progress_json=progress,
         )
-        publish_progress(
-            job_id,
-            {
-                "status": status,
-                "message": "Scan finished",
-                "progress": {"pages_crawled": stats.pages_crawled, "findings": len(stats.findings)},
-            },
-        )
+        publish_progress(job_id, {"status": status, "message": "Scan finished", "progress": progress})
+        if status == "completed" and finished_job:
+            try:
+                _schedule_followup(finished_job)
+            except Exception:
+                log.exception("Failed to schedule follow-up for %s", job_id)
     except Exception as exc:
         log.exception("Job %s failed", job_id)
         _update_job(
@@ -221,6 +375,11 @@ async def run_job(job_id: str) -> None:
         publish_progress(job_id, {"status": "failed", "message": str(exc)})
     finally:
         stop_flag["stop"] = True
+        if use_browser:
+            try:
+                quit_selenium_driver()
+            except Exception:
+                pass
         watcher.cancel()
         try:
             await watcher

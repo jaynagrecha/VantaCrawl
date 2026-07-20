@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..config import get_settings
-from .queue import redis_client
+from .queue import claim_due_scheduled_jobs, redis_client
 
 log = logging.getLogger("vantacrawl.worker")
 
@@ -29,7 +29,7 @@ def _ensure_paths() -> None:
 
 def worker_loop(stop: threading.Event) -> None:
     _ensure_paths()
-    from runner import run_job  # noqa: WPS433 — worker package beside API
+    from runner import run_job  # noqa: WPS433
 
     settings = get_settings()
     client = redis_client()
@@ -39,6 +39,25 @@ def worker_loop(stop: threading.Event) -> None:
         settings.redis_url,
     )
     while not stop.is_set():
+        try:
+            due = claim_due_scheduled_jobs()
+            for job_id in due:
+                log.info("Promoted scheduled job %s", job_id)
+                from vantacrawl_api.database import engine
+                from vantacrawl_api.models import ScanJob
+                from sqlmodel import Session
+                from datetime import datetime
+
+                with Session(engine) as session:
+                    job = session.get(ScanJob, job_id)
+                    if job and job.status == "scheduled":
+                        job.status = "queued"
+                        job.updated_at = datetime.utcnow()
+                        session.add(job)
+                        session.commit()
+        except Exception as exc:
+            log.error("Delayed queue error: %s", exc)
+
         try:
             item = client.brpop(settings.job_queue_key, timeout=2)
         except Exception as exc:

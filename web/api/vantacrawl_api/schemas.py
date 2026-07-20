@@ -50,6 +50,11 @@ class JobCreateRequest(BaseModel):
     authorized_confirmed: bool = False
     # Full CrawlConfig overlay (bools/ints/strings). Unknown keys ignored by worker.
     settings: Dict[str, Any] = Field(default_factory=dict)
+    target_urls: List[str] = Field(default_factory=list)
+
+
+class JobSettingsPatch(BaseModel):
+    settings: Dict[str, Any] = Field(default_factory=dict)
 
 
 class JobOut(BaseModel):

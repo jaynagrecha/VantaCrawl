@@ -87,7 +87,26 @@ export const api = {
   getJob: (id: string) => request<Job>(`/api/jobs/${id}`),
   createJob: (body: Record<string, unknown>) =>
     request<Job>("/api/jobs", { method: "POST", body: JSON.stringify(body) }),
+  createJobWithFiles: async (form: FormData) => {
+    const headers = new Headers();
+    const token = getToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const res = await fetch("/api/jobs/with-files", { method: "POST", headers, body: form });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = data?.detail;
+      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail || res.statusText));
+    }
+    return data as Job;
+  },
   pauseJob: (id: string) => request<{ message: string }>(`/api/jobs/${id}/pause`, { method: "POST" }),
   resumeJob: (id: string) => request<{ message: string }>(`/api/jobs/${id}/resume`, { method: "POST" }),
   stopJob: (id: string) => request<{ message: string }>(`/api/jobs/${id}/stop`, { method: "POST" }),
+  patchJobSettings: (id: string, settings: Record<string, unknown>) =>
+    request<{ message: string }>(`/api/jobs/${id}/settings`, {
+      method: "PATCH",
+      body: JSON.stringify({ settings }),
+    }),
+  listArtifacts: (id: string) =>
+    request<{ name: string; path: string; size: number; kind: string }[]>(`/api/reports/${id}/artifacts`),
 };

@@ -69,6 +69,7 @@ h2 { margin: 0 0 .75rem; font-size: 1.15rem; }
   background: var(--bg-soft); border: 1px solid var(--line); color: var(--text);
   border-radius: 12px; padding: .7rem .85rem;
 }
+.field textarea { resize: vertical; min-height: 4.5rem; font-family: "IBM Plex Mono", Consolas, monospace; font-size: .82rem; }
 .field input:focus, .field select:focus, .field textarea:focus {
   outline: 2px solid rgba(61,214,198,.3); border-color: var(--accent);
 }

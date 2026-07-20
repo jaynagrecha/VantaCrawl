@@ -7,6 +7,7 @@ import VerifyPage from "./pages/VerifyPage";
 import DashboardPage from "./pages/DashboardPage";
 import NewScanPage from "./pages/NewScanPage";
 import JobPage from "./pages/JobPage";
+import ToolsPage from "./pages/ToolsPage";
 
 function Shell({ user, onLogout, children }: { user: User; onLogout: () => void; children: React.ReactNode }) {
   return (
@@ -25,6 +26,9 @@ function Shell({ user, onLogout, children }: { user: User; onLogout: () => void;
           </a>
           <a className="btn primary" href="/scans/new">
             New scan
+          </a>
+          <a className="btn" href="/tools">
+            Tools
           </a>
           <button className="btn" type="button" onClick={onLogout}>
             Log out
@@ -110,6 +114,18 @@ export default function App() {
           user ? (
             <Shell user={user} onLogout={logout}>
               <JobPage />
+            </Shell>
+          ) : (
+            <Navigate to="/login" replace />
+          )
+        }
+      />
+      <Route
+        path="/tools"
+        element={
+          user ? (
+            <Shell user={user} onLogout={logout}>
+              <ToolsPage />
             </Shell>
           ) : (
             <Navigate to="/login" replace />

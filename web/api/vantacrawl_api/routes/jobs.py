@@ -1,20 +1,21 @@
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from sqlmodel import select
 
 from ..config import get_settings
 from ..deps import CurrentUser, SessionDep
 from ..models import ScanJob
-from ..schemas import JobCreateRequest, JobListOut, JobOut, MessageOut
+from ..schemas import JobCreateRequest, JobListOut, JobOut, JobSettingsPatch, MessageOut
 from ..security import decode_access_token
-from ..services.queue import enqueue_job, publish_progress, redis_client, set_job_command
+from ..services.queue import clear_job_command, enqueue_job, publish_progress, redis_client, set_job_command
 from ..scan_settings import MODE_PRESETS, concurrency_for_speed
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -42,6 +43,12 @@ def _to_out(job: ScanJob) -> JobOut:
     )
 
 
+def _owned(job: Optional[ScanJob], user) -> ScanJob:
+    if not job or (job.user_id != user.id and not user.is_admin):
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
 def _build_config_json(body: JobCreateRequest) -> dict:
     preset = dict(MODE_PRESETS.get(body.mode, {}))
     speed = body.speed or preset.pop("speed", "balanced")
@@ -56,33 +63,23 @@ def _build_config_json(body: JobCreateRequest) -> dict:
         "mode": body.mode,
         "speed": speed,
     }
+    if body.target_urls:
+        merged["target_urls"] = [u.strip() for u in body.target_urls if u and str(u).strip()]
     return merged
 
 
-@router.post("", response_model=JobOut)
-def create_job(body: JobCreateRequest, session: SessionDep, user: CurrentUser):
-    if not body.authorized_confirmed:
-        raise HTTPException(
-            status_code=400,
-            detail="You must confirm this is an authorized target before starting a scan.",
-        )
-    start = (body.start_url or "").strip()
-    if not start.startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="start_url must be http(s)")
-    host = urlparse(start).netloc
-    if not host:
-        raise HTTPException(status_code=400, detail="Invalid start_url")
-
+def _persist_and_enqueue(session, user, start: str, title: str, mode: str, speed: str, config: dict) -> ScanJob:
     settings = get_settings()
+    host = urlparse(start).netloc
     job = ScanJob(
         user_id=user.id,
-        title=body.title.strip() or host,
+        title=(title or "").strip() or host,
         start_url=start,
-        mode=body.mode,
-        speed=body.speed,
+        mode=mode,
+        speed=speed,
         status="queued",
         authorized_confirmed=True,
-        config_json=_build_config_json(body),
+        config_json=config,
         progress_json={"phase": "queued", "message": "Waiting for worker"},
         report_dir=str(Path(settings.reports_dir) / "pending"),
     )
@@ -94,6 +91,7 @@ def create_job(body: JobCreateRequest, session: SessionDep, user: CurrentUser):
     report_dir = Path(settings.reports_dir) / job.id
     job_dir.mkdir(parents=True, exist_ok=True)
     report_dir.mkdir(parents=True, exist_ok=True)
+    (job_dir / "uploads").mkdir(parents=True, exist_ok=True)
     job.report_dir = str(report_dir)
     job.updated_at = datetime.utcnow()
     session.add(job)
@@ -110,6 +108,100 @@ def create_job(body: JobCreateRequest, session: SessionDep, user: CurrentUser):
         raise HTTPException(status_code=503, detail="Job queue unavailable (is Redis running?)") from exc
 
     publish_progress(job.id, {"status": "queued", "message": "Job enqueued"})
+    return job
+
+
+@router.post("", response_model=JobOut)
+def create_job(body: JobCreateRequest, session: SessionDep, user: CurrentUser):
+    if not body.authorized_confirmed:
+        raise HTTPException(
+            status_code=400,
+            detail="You must confirm this is an authorized target before starting a scan.",
+        )
+    start = (body.start_url or "").strip()
+    if not start.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="start_url must be http(s)")
+    if not urlparse(start).netloc:
+        raise HTTPException(status_code=400, detail="Invalid start_url")
+    config = _build_config_json(body)
+    job = _persist_and_enqueue(session, user, start, body.title, body.mode, body.speed, config)
+    return _to_out(job)
+
+
+@router.post("/with-files", response_model=JobOut)
+async def create_job_with_files(
+    session: SessionDep,
+    user: CurrentUser,
+    start_url: str = Form(...),
+    title: str = Form(""),
+    mode: str = Form("full_audit"),
+    speed: str = Form("balanced"),
+    authorized_confirmed: bool = Form(False),
+    settings_json: str = Form("{}"),
+    targets_text: str = Form(""),
+    targets_file: Optional[UploadFile] = File(None),
+    wordlist_file: Optional[UploadFile] = File(None),
+    extra_wordlist_file: Optional[UploadFile] = File(None),
+):
+    if not authorized_confirmed:
+        raise HTTPException(status_code=400, detail="You must confirm this is an authorized target before starting a scan.")
+    start = start_url.strip()
+    if not start.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="start_url must be http(s)")
+
+    urls: List[str] = []
+    if targets_text.strip():
+        for line in targets_text.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and line.startswith(("http://", "https://")):
+                urls.append(line)
+    if targets_file is not None and targets_file.filename:
+        raw = (await targets_file.read()).decode("utf-8", errors="ignore")
+        for line in raw.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and line.startswith(("http://", "https://")):
+                urls.append(line)
+    if not urls:
+        urls = [start]
+    start = urls[0]
+
+    try:
+        settings_obj = json.loads(settings_json or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="settings_json must be JSON") from exc
+
+    req = JobCreateRequest(
+        start_url=start,
+        title=title,
+        mode=mode,
+        speed=speed,
+        authorized_confirmed=True,
+        settings=settings_obj,
+        target_urls=urls,
+    )
+    config = _build_config_json(req)
+    job = _persist_and_enqueue(session, user, start, title, mode, speed, config)
+
+    settings = get_settings()
+    uploads = Path(settings.jobs_dir) / job.id / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+    cfg = dict(job.config_json or {})
+    if wordlist_file is not None and wordlist_file.filename:
+        dest = uploads / Path(wordlist_file.filename).name
+        dest.write_bytes(await wordlist_file.read())
+        cfg["wordlist_file"] = str(dest)
+        cfg["use_wordlist"] = True
+    if extra_wordlist_file is not None and extra_wordlist_file.filename:
+        dest = uploads / ("extra_" + Path(extra_wordlist_file.filename).name)
+        dest.write_bytes(await extra_wordlist_file.read())
+        extras = list(cfg.get("extra_wordlists") or [])
+        extras.append(str(dest))
+        cfg["extra_wordlists"] = extras
+    job.config_json = cfg
+    job.updated_at = datetime.utcnow()
+    session.add(job)
+    session.commit()
+    session.refresh(job)
     return _to_out(job)
 
 
@@ -124,21 +216,42 @@ def list_jobs(session: SessionDep, user: CurrentUser):
 
 @router.get("/{job_id}", response_model=JobOut)
 def get_job(job_id: str, session: SessionDep, user: CurrentUser):
-    job = session.get(ScanJob, job_id)
-    if not job or (job.user_id != user.id and not user.is_admin):
-        raise HTTPException(status_code=404, detail="Job not found")
-    return _to_out(job)
+    return _to_out(_owned(session.get(ScanJob, job_id), user))
+
+
+@router.patch("/{job_id}/settings", response_model=MessageOut)
+def patch_settings(job_id: str, body: JobSettingsPatch, session: SessionDep, user: CurrentUser):
+    job = _owned(session.get(ScanJob, job_id), user)
+    if job.status not in ("paused", "running", "queued"):
+        raise HTTPException(status_code=400, detail=f"Cannot edit settings in status {job.status}")
+    cfg = dict(job.config_json or {})
+    pending = dict(cfg.get("pending_live_settings") or {})
+    pending.update(body.settings or {})
+    cfg["pending_live_settings"] = pending
+    cfg.update(body.settings or {})
+    cfg["_live_dirty"] = True
+    job.config_json = cfg
+    job.updated_at = datetime.utcnow()
+    session.add(job)
+    session.commit()
+    return MessageOut(message="Settings saved — applied on Resume")
 
 
 @router.post("/{job_id}/pause", response_model=MessageOut)
 def pause_job(job_id: str, session: SessionDep, user: CurrentUser):
-    job = session.get(ScanJob, job_id)
-    if not job or (job.user_id != user.id and not user.is_admin):
-        raise HTTPException(status_code=404, detail="Job not found")
-    if job.status not in ("running", "queued"):
+    job = _owned(session.get(ScanJob, job_id), user)
+    if job.status == "queued":
+        job.status = "paused"
+        job.updated_at = datetime.utcnow()
+        session.add(job)
+        session.commit()
+        set_job_command(job_id, "pause")
+        publish_progress(job_id, {"status": "paused", "message": "Paused before start"})
+        return MessageOut(message="Paused before start")
+    if job.status != "running":
         raise HTTPException(status_code=400, detail=f"Cannot pause from status {job.status}")
     set_job_command(job_id, "pause")
-    job.status = "paused" if job.status == "running" else job.status
+    job.status = "paused"
     job.updated_at = datetime.utcnow()
     session.add(job)
     session.commit()
@@ -148,12 +261,22 @@ def pause_job(job_id: str, session: SessionDep, user: CurrentUser):
 
 @router.post("/{job_id}/resume", response_model=MessageOut)
 def resume_job(job_id: str, session: SessionDep, user: CurrentUser):
-    job = session.get(ScanJob, job_id)
-    if not job or (job.user_id != user.id and not user.is_admin):
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = _owned(session.get(ScanJob, job_id), user)
+    if job.status not in ("paused", "scheduled"):
+        raise HTTPException(status_code=400, detail=f"Cannot resume from status {job.status}")
+
+    if not job.started_at:
+        job.status = "queued"
+        job.updated_at = datetime.utcnow()
+        session.add(job)
+        session.commit()
+        clear_job_command(job_id)
+        enqueue_job(job.id)
+        publish_progress(job_id, {"status": "queued", "message": "Re-queued after pause"})
+        return MessageOut(message="Re-queued")
+
     set_job_command(job_id, "resume")
-    if job.status == "paused":
-        job.status = "running"
+    job.status = "running"
     job.updated_at = datetime.utcnow()
     session.add(job)
     session.commit()
@@ -163,9 +286,20 @@ def resume_job(job_id: str, session: SessionDep, user: CurrentUser):
 
 @router.post("/{job_id}/stop", response_model=MessageOut)
 def stop_job(job_id: str, session: SessionDep, user: CurrentUser):
-    job = session.get(ScanJob, job_id)
-    if not job or (job.user_id != user.id and not user.is_admin):
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = _owned(session.get(ScanJob, job_id), user)
+    if job.status in ("completed", "cancelled", "failed"):
+        raise HTTPException(status_code=400, detail=f"Already finished ({job.status})")
+
+    if job.status in ("queued", "scheduled") or (job.status == "paused" and not job.started_at):
+        job.status = "cancelled"
+        job.finished_at = datetime.utcnow()
+        job.updated_at = datetime.utcnow()
+        session.add(job)
+        session.commit()
+        set_job_command(job_id, "stop")
+        publish_progress(job_id, {"status": "cancelled", "message": "Cancelled"})
+        return MessageOut(message="Cancelled")
+
     set_job_command(job_id, "stop")
     job.status = "stopping"
     job.updated_at = datetime.utcnow()
@@ -205,6 +339,8 @@ async def job_ws(websocket: WebSocket, job_id: str):
                 "status": job.status,
                 "progress": job.progress_json,
                 "log_tail": (job.log_tail or "")[-4000:],
+                "started_at": job.started_at.isoformat() + "Z" if job.started_at else None,
+                "finished_at": job.finished_at.isoformat() + "Z" if job.finished_at else None,
             }
         )
 

@@ -153,6 +153,10 @@ export default function NewScanPage() {
   const [tab, setTab] = useState("core");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [targetsText, setTargetsText] = useState("");
+  const [targetsFile, setTargetsFile] = useState<File | null>(null);
+  const [wordlistFile, setWordlistFile] = useState<File | null>(null);
+  const [extraWordlistFile, setExtraWordlistFile] = useState<File | null>(null);
 
   useEffect(() => {
     api
@@ -189,14 +193,18 @@ export default function NewScanPage() {
     setBusy(true);
     setError("");
     try {
-      const job = await api.createJob({
-        start_url: startUrl.trim(),
-        title: title.trim(),
-        mode,
-        speed,
-        authorized_confirmed: authorized,
-        settings,
-      });
+      const form = new FormData();
+      form.append("start_url", startUrl.trim());
+      form.append("title", title.trim());
+      form.append("mode", mode);
+      form.append("speed", speed);
+      form.append("authorized_confirmed", String(authorized));
+      form.append("settings_json", JSON.stringify(settings));
+      form.append("targets_text", targetsText);
+      if (targetsFile) form.append("targets_file", targetsFile);
+      if (wordlistFile) form.append("wordlist_file", wordlistFile);
+      if (extraWordlistFile) form.append("extra_wordlist_file", extraWordlistFile);
+      const job = await api.createJobWithFiles(form);
       nav(`/jobs/${job.id}`);
     } catch (err: any) {
       setError(String(err.message || err));
@@ -246,6 +254,33 @@ export default function NewScanPage() {
                   </option>
                 ))}
               </select>
+            </div>
+            <div className="field">
+              <label>Multi-target URL list (optional)</label>
+              <textarea
+                rows={3}
+                value={targetsText}
+                onChange={(e) => setTargetsText(e.target.value)}
+                placeholder={"One URL per line\nhttps://a.example\nhttps://b.example"}
+              />
+              <input
+                type="file"
+                accept=".txt,text/plain"
+                onChange={(e) => setTargetsFile(e.target.files?.[0] || null)}
+                style={{ marginTop: ".45rem" }}
+              />
+            </div>
+            <div className="field">
+              <label>Directory wordlist (optional upload)</label>
+              <input type="file" accept=".txt,text/plain" onChange={(e) => setWordlistFile(e.target.files?.[0] || null)} />
+            </div>
+            <div className="field">
+              <label>Extra / CMS wordlist (optional)</label>
+              <input
+                type="file"
+                accept=".txt,text/plain"
+                onChange={(e) => setExtraWordlistFile(e.target.files?.[0] || null)}
+              />
             </div>
           </div>
           <div>
