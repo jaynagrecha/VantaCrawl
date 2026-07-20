@@ -259,8 +259,16 @@ async def run_job(job_id: str) -> None:
         _append_log(job_id, text)
         low = text.lower()
         phase = None
-        if "starting advanced folder" in low or "directory scan" in low or "brute force" in low:
+        if (
+            "starting advanced folder" in low
+            or "directory scan" in low
+            or "brute force" in low
+            or "preparing directory enum" in low
+            or "building enum wordlist" in low
+            or "pro enum:" in low
+        ):
             phase = "enum"
+            live_progress_state["progress_pct"] = 0
         elif "crawling:" in low or "page crawl" in low:
             phase = "crawl"
         elif "security" in low or "vuln" in low or "finding" in low:

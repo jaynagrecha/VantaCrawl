@@ -841,8 +841,6 @@ async def _run_full_enum_suite(
 ):
     from enum_engine import parse_int_list
 
-    output_callback("\n=== Pro directory enumeration ===")
-
     def resolve_extensions():
         if callable(extensions):
             return extensions()
@@ -876,25 +874,31 @@ async def _run_full_enum_suite(
         except Exception as error:
             output_callback(f"Hit follow-up scan failed: {probe.url} ({error})")
 
-    await run_pro_directory_enum(
-        config,
-        client,
-        output_callback,
-        running,
-        stats=stats,
-        discovered=discovered,
-        queue=queue,
-        link_depths=link_depths,
-        use_priority=use_priority,
-        manager=manager,
-        extensions=resolve_extensions(),
-        download_semaphore=download_semaphore,
-        update_progress=update_progress,
-        seed_urls=seed_urls,
-        technologies=dict(stats.technologies),
-        merge_wordlists_fn=merge_wordlists,
-        on_hit_callback=on_enum_hit,
-    )
+    # Full Audit / Site Map enable wordlist+mutations by default. Skip the heavy
+    # probe loop only when the user turned both off in expert settings.
+    if config.use_wordlist or config.mutation_enum or config.smart_wordlist_order:
+        output_callback("\n=== Pro directory enumeration ===")
+        await run_pro_directory_enum(
+            config,
+            client,
+            output_callback,
+            running,
+            stats=stats,
+            discovered=discovered,
+            queue=queue,
+            link_depths=link_depths,
+            use_priority=use_priority,
+            manager=manager,
+            extensions=resolve_extensions(),
+            download_semaphore=download_semaphore,
+            update_progress=update_progress,
+            seed_urls=seed_urls,
+            technologies=dict(stats.technologies),
+            merge_wordlists_fn=merge_wordlists,
+            on_hit_callback=on_enum_hit,
+        )
+    else:
+        output_callback("Directory enum skipped (wordlist, mutations, and smart order are off).")
 
     if config.vhost_enum and running():
         baseline_length, baseline_status = await get_async_baseline(client, config.start_url)

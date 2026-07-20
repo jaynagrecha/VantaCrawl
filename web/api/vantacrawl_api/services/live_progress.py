@@ -114,18 +114,22 @@ def build_live_progress(
     upm = float(snap.get("urls_per_minute") or 0)
 
     progress_pct = 0
-    if resolved_phase == "enum" and enum_total > 0:
-        progress_pct = min(100, int(enum_done * 100 / enum_total))
+    if resolved_phase == "enum":
+        # Do not keep crawl's 100% while wordlist/baseline is still preparing
+        if enum_total > 0:
+            progress_pct = min(100, int(enum_done * 100 / enum_total))
+        else:
+            progress_pct = 0
     elif resolved_phase in ("crawl", "download") and estimate > 0:
         progress_pct = min(99, int(pages * 100 / max(estimate, 1)))
     elif total > 0:
         progress_pct = min(100, int(done * 100 / total))
-    elif prev.get("progress_pct"):
+    elif prev.get("progress_pct") and resolved_phase not in ("enum", "security", "recon"):
         progress_pct = int(prev["progress_pct"])
 
     eta_seconds: Optional[int] = None
     if resolved_phase == "enum" and enum_total > enum_done > 0 and elapsed > 2:
-        rate = enum_done / elapsed
+        rate = enum_done / max(elapsed, 0.001)
         if rate > 0:
             eta_seconds = max(0, int((enum_total - enum_done) / rate))
     elif resolved_phase == "crawl" and estimate > pages and upm > 0:
@@ -150,7 +154,13 @@ def build_live_progress(
     attempts = max(pages + errors, 1)
     error_rate = errors / attempts
     error_rate_pct = round(error_rate * 100, 1)
-    stalled = pages >= 25 and upm < 1.5 and errors >= 8
+    # Pages/min naturally drops during enum — that is not a stalled crawl
+    stalled = (
+        resolved_phase in ("crawl", "download")
+        and pages >= 25
+        and upm < 1.5
+        and errors >= 8
+    )
 
     health = "OK"
     health_detail = "Scan progressing normally"

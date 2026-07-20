@@ -359,11 +359,16 @@ async def run_pro_directory_enum(
     if config.false_positive_learning:
         fp_store.load()
 
+    output_callback("Preparing directory enum (baseline / wildcard / wordlist)…")
+    if update_progress:
+        update_progress(1, 0, "Preparing directory enum…")
+
     baseline = await get_async_baseline(client, config.start_url)
     wildcard = await detect_wildcard(client, config.start_url) if config.wildcard_detection else WildcardProfile()
     if wildcard.active:
         output_callback(f"Wildcard detected — filtering {len(wildcard.signatures)} response fingerprint(s)")
 
+    output_callback("Building enum wordlist…")
     words = build_smart_wordlist(
         config,
         seed_urls=seed_urls,
@@ -372,6 +377,11 @@ async def run_pro_directory_enum(
     )
     total_words = len(words)
     stats.enum_words_total = total_words
+    stats.enum_words_tested = 0
+    if update_progress and total_words:
+        from user_output import format_enum_progress
+
+        update_progress(total_words, 0, format_enum_progress(0, total_words, 0))
     enum_progress = {"started_at": None, "rate": 0}
     found_set = set()
 
