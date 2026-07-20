@@ -244,7 +244,7 @@ export default function JobPage() {
           const healthClass =
             health === "Challenged" || health === "Degraded"
               ? "warn"
-              : health === "Slowing" || health === "Waiting"
+              : health === "Slowing" || health === "Noisy" || health === "Waiting"
                 ? "caution"
                 : "ok";
           const tiles: { label: string; value: string; hint?: string; tone?: string }[] = [
@@ -277,7 +277,14 @@ export default function JobPage() {
               value: tileValue(progress.challenge_events ?? progress.blocks),
               hint: "Challenges / WAF catches",
             },
-            { label: "Errors", value: tileValue(progress.errors) },
+            {
+              label: "Errors",
+              value:
+                progress.error_rate_pct != null && Number(progress.errors) > 0
+                  ? `${tileValue(progress.errors)} (${progress.error_rate_pct}%)`
+                  : tileValue(progress.errors),
+              hint: "Failed page fetches — rate matters more than raw count",
+            },
             {
               label: "Pages/min",
               value: tileValue(progress.urls_per_minute),

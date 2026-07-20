@@ -146,20 +146,45 @@ def build_live_progress(
     log_challenges = int(prev.get("challenge_events") or 0)
     challenge_events = max(blocks, log_challenges)
 
+    # Rate-based health: raw error counts panic users on secured sites mid-crawl.
+    attempts = max(pages + errors, 1)
+    error_rate = errors / attempts
+    error_rate_pct = round(error_rate * 100, 1)
+    stalled = pages >= 25 and upm < 1.5 and errors >= 8
+
     health = "OK"
-    health_detail = "No blocks detected"
+    health_detail = "Scan progressing normally"
     if challenge_events >= 8 or (protections and challenge_events >= 3):
         health = "Challenged"
         health_detail = "Target is blocking or challenging the scan"
     elif challenge_events > 0:
         health = "Slowing"
         health_detail = "Some challenges / rate limits seen"
-    elif errors >= 15:
+    elif stalled or (error_rate >= 0.25 and errors >= 10) or (pages < 8 and errors >= 15):
         health = "Degraded"
-        health_detail = "Elevated request errors"
+        health_detail = (
+            f"Crawl struggling ({error_rate_pct}% fetch failures"
+            + (", nearly stalled" if stalled else "")
+            + ")"
+        )
+    elif error_rate >= 0.12 and errors >= 8:
+        health = "Noisy"
+        health_detail = (
+            f"Some failed fetches ({errors} errors, {error_rate_pct}%) — "
+            "common on locked-down sites; scan can still be useful"
+        )
+    elif errors > 0 and protections:
+        health = "OK"
+        health_detail = (
+            f"Protections seen; {errors} failed fetch(es) "
+            f"({error_rate_pct}%) — normal noise unless rate climbs"
+        )
     elif protections:
         health = "OK"
         health_detail = "Protections seen, traffic still flowing"
+    elif errors > 0:
+        health = "OK"
+        health_detail = f"{errors} failed fetch(es) ({error_rate_pct}%) — within normal range"
 
     return {
         "phase": resolved_phase,
@@ -181,6 +206,7 @@ def build_live_progress(
         "bytes_total": int(total or prev.get("bytes_total") or 0),
         "bytes_done": int(done or prev.get("bytes_done") or 0),
         "errors": errors,
+        "error_rate_pct": error_rate_pct,
         "blocks": blocks,
         "challenge_events": challenge_events,
         "protections": protections[:8],
