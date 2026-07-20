@@ -130,6 +130,19 @@ export default function JobPage() {
     return () => clearInterval(t);
   }, [job?.status]);
 
+  // If Stop hangs on in-flight HTTP, escalate to force-cancel automatically
+  useEffect(() => {
+    if (!id || !job || job.status !== "stopping") return;
+    const t = setTimeout(() => {
+      api
+        .forceCancelJob(id)
+        .then(() => api.getJob(id))
+        .then((j) => setJob(j))
+        .catch(() => undefined);
+    }, 8000);
+    return () => clearTimeout(t);
+  }, [id, job?.status]);
+
   useEffect(() => {
     if (!id || !job) return;
     if (!["completed", "failed", "cancelled"].includes(job.status) && !job.report_html_path) return;

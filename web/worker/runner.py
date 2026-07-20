@@ -435,7 +435,12 @@ async def run_job(job_id: str) -> None:
                 )
             )
             stop_requested_at: float | None = None
+            stop_grace_s = 3.5
             while not crawl_task.done():
+                # API force-cancel may mark cancelled while we are still winding down
+                latest_cmd = _get_job(job_id)
+                if latest_cmd and latest_cmd.status == "cancelled":
+                    stop_flag["stop"] = True
                 if stop_flag["stop"]:
                     if stop_requested_at is None:
                         stop_requested_at = time.time()
@@ -444,24 +449,52 @@ async def run_job(job_id: str) -> None:
                         except Exception:
                             pass
                         crawl_task.cancel()
-                    elif time.time() - stop_requested_at > 12:
-                        # Hard cut — do not wait forever on blocked HTTP/Cloudflare
+                        output_callback("Stop requested — cancelling in-flight work…")
+                    elif time.time() - stop_requested_at > stop_grace_s:
                         crawl_task.cancel()
+                        output_callback(
+                            "Stop grace ended — abandoning hung HTTP (WAF/timeouts). Finishing job."
+                        )
                         break
-                done, _pending = await asyncio.wait({crawl_task}, timeout=0.5)
+                done, _pending = await asyncio.wait({crawl_task}, timeout=0.25)
                 if done:
                     break
-            if not crawl_task.done():
-                crawl_task.cancel()
-            try:
-                await crawl_task
-            except asyncio.CancelledError:
-                output_callback("Scan stop confirmed.")
-            except Exception:
-                if stop_flag["stop"]:
+
+            if crawl_task.done():
+                try:
+                    await crawl_task
+                except asyncio.CancelledError:
                     output_callback("Scan stop confirmed.")
+                except Exception:
+                    if stop_flag["stop"]:
+                        output_callback("Scan stop confirmed.")
+                    else:
+                        raise
+            else:
+                # Critical: never await a cancelled task forever — httpx may ignore
+                # CancelledError until the socket times out (looks like Stop hang).
+                crawl_task.cancel()
+                try:
+                    await asyncio.wait({crawl_task}, timeout=1.0)
+                except Exception:
+                    pass
+                if not crawl_task.done():
+
+                    async def _drain_abandoned(task: asyncio.Task) -> None:
+                        try:
+                            await task
+                        except Exception:
+                            pass
+
+                    asyncio.create_task(_drain_abandoned(crawl_task))
+                    output_callback("Scan stop confirmed (abandoned hung requests).")
                 else:
-                    raise
+                    try:
+                        await crawl_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                    output_callback("Scan stop confirmed.")
+                break  # do not start next target after stop
 
         html_matches = sorted(report_dir.glob("*_SEARCH_REPORT.html")) if report_dir.is_dir() else []
         txt_matches = sorted(report_dir.glob("*_SEARCH_REPORT.txt")) if report_dir.is_dir() else []
