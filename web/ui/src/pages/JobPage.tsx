@@ -1,13 +1,38 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, getToken, Job } from "../api";
 import ScanActivity from "../components/ScanActivity";
+
+function formatDuration(totalSeconds: number): string {
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return "—";
+  const secs = Math.floor(totalSeconds);
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function jobDurationSeconds(job: Job, nowMs: number): number | null {
+  const startRaw = job.started_at || job.created_at;
+  if (!startRaw) return null;
+  const start = Date.parse(startRaw);
+  if (!Number.isFinite(start)) return null;
+  const endRaw = job.finished_at;
+  const end = endRaw ? Date.parse(endRaw) : nowMs;
+  if (!Number.isFinite(end)) return null;
+  return Math.max(0, (end - start) / 1000);
+}
 
 export default function JobPage() {
   const { id = "" } = useParams();
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState("");
   const [logExtra, setLogExtra] = useState("");
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const logRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottom = useRef(true);
 
   useEffect(() => {
     if (!id) return;
@@ -31,6 +56,8 @@ export default function JobPage() {
             ...prev,
             status: data.status || prev.status,
             progress_json: data.progress || prev.progress_json,
+            started_at: data.started_at ?? prev.started_at,
+            finished_at: data.finished_at ?? prev.finished_at,
             log_tail: data.log ? `${prev.log_tail || ""}${data.log}\n` : data.log_tail || prev.log_tail,
           };
         });
@@ -49,11 +76,24 @@ export default function JobPage() {
     };
   }, [id]);
 
+  useEffect(() => {
+    const active = job && ["queued", "running", "paused", "stopping"].includes(job.status);
+    if (!active) return;
+    const t = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [job?.status]);
+
   const progress = job?.progress_json || {};
   const logText = useMemo(() => {
     const base = job?.log_tail || "";
     return (base + logExtra).slice(-24000);
   }, [job, logExtra]);
+
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el || !stickToBottom.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [logText]);
 
   if (!job) {
     return <div className="card muted">{error || "Loading job…"}</div>;
@@ -64,6 +104,8 @@ export default function JobPage() {
   const htmlUrl = `/api/reports/${job.id}/html?token=${tok}`;
   const txtUrl = `/api/reports/${job.id}/txt?token=${tok}`;
   const embedUrl = `/api/reports/${job.id}/embed?token=${tok}`;
+  const durationSecs = jobDurationSeconds(job, nowMs);
+  const durationLabel = durationSecs == null ? "—" : formatDuration(durationSecs);
 
   return (
     <div>
@@ -108,15 +150,36 @@ export default function JobPage() {
             <div className="stat-label">Findings</div>
           </div>
           <div className="stat">
-            <div className="stat-num">{job.mode}</div>
+            <div className="stat-num">{durationLabel}</div>
+            <div className="stat-label">Duration</div>
+          </div>
+          <div className="stat">
+            <div className="stat-num" style={{ fontSize: "1rem" }}>{job.mode}</div>
             <div className="stat-label">Mode</div>
           </div>
         </div>
       </section>
 
       <section className="card">
-        <h2>Live log</h2>
-        <div className="log">{logText || "Waiting for worker output…"}</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "1rem" }}>
+          <h2 style={{ margin: 0 }}>Live Logs</h2>
+          <span className="muted" style={{ fontSize: ".78rem" }}>
+            Auto-scrolls to latest
+          </span>
+        </div>
+        <div
+          ref={logRef}
+          className="log"
+          style={{ marginTop: ".75rem" }}
+          onScroll={() => {
+            const el = logRef.current;
+            if (!el) return;
+            const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+            stickToBottom.current = distance < 48;
+          }}
+        >
+          {logText || "Waiting for worker output…"}
+        </div>
       </section>
 
       <section className="card">
