@@ -36,7 +36,20 @@ def _findings_preview(stats) -> List[Dict[str, str]]:
 
 def infer_phase(progress_text: str, *, enum_only: bool = False, previous: str = "") -> str:
     text = (progress_text or "").lower()
-    if "trying folder/file" in text or "folder/file names" in text or "brute force" in text:
+    if any(
+        k in text
+        for k in (
+            "trying folder/file",
+            "folder/file names",
+            "folder and file name",
+            "advanced folder",
+            "directory enum",
+            "preparing directory enum",
+            "building enum wordlist",
+            "pro enum:",
+            "brute force",
+        )
+    ):
         return "enum"
     if text.startswith("page ") or "· queue" in text or text.startswith("crawling:"):
         return "crawl"
