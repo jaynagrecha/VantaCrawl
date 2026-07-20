@@ -174,6 +174,13 @@ def build_live_progress(
     # Log-derived challenges (Cloudflare backoff lines) merge in from previous
     log_challenges = int(prev.get("challenge_events") or 0)
     challenge_events = max(blocks, log_challenges)
+    block_journal = list(defense.get("block_journal") or prev.get("block_journal") or [])[-30:]
+    block_status_counts = dict(
+        defense.get("block_status_counts") or prev.get("block_status_counts") or {}
+    )
+    protection_block_counts = dict(
+        defense.get("protection_block_counts") or prev.get("protection_block_counts") or {}
+    )
 
     # Rate-based health: raw error counts panic users on secured sites mid-crawl.
     attempts = max(pages + errors, 1)
@@ -246,6 +253,9 @@ def build_live_progress(
         "challenge_events": challenge_events,
         "protections": protections[:8],
         "protections_label": ", ".join(protections[:4]) if protections else "none",
+        "block_journal": block_journal,
+        "block_status_counts": block_status_counts,
+        "protection_block_counts": protection_block_counts,
         "health": health,
         "health_detail": health_detail,
     }

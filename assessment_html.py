@@ -97,6 +97,35 @@ def render_assessment_html(doc: Dict[str, Any], *, technical_report_name: str = 
     prot_html = (
         "".join(f"<li>{escape(p)}</li>" for p in protections) or "<li class='muted'>None clearly fingerprinted</li>"
     )
+    status_counts = doc.get("block_status_counts") or defense.get("block_status_counts") or {}
+    status_html = (
+        "".join(
+            f"<li>HTTP {escape(str(code))}: {escape(str(count))}</li>"
+            for code, count in sorted(status_counts.items(), key=lambda x: -int(x[1]))
+        )
+        or "<li class='muted'>No block status codes recorded</li>"
+    )
+    forensic_items = doc.get("block_events_forensic") or defense.get("block_events_forensic") or []
+    forensic_rows = []
+    for item in list(forensic_items)[:25]:
+        headers = item.get("headers") or {}
+        header_bits = ", ".join(f"{k}={v}" for k, v in list(headers.items())[:5])
+        forensic_rows.append(
+            "<tr>"
+            f"<td>{escape(str(item.get('status')))}</td>"
+            f"<td>{escape(str(item.get('signal')))}</td>"
+            f"<td>{escape(', '.join(item.get('protections') or []))}</td>"
+            f"<td class='url'>{escape(str(item.get('url')))}</td>"
+            f"<td>{escape(str(item.get('reason')))}</td>"
+            f"<td><code>{escape(header_bits)}</code></td>"
+            "</tr>"
+        )
+    forensic_table = (
+        "<table><thead><tr><th>Status</th><th>Signal</th><th>Protections</th>"
+        "<th>URL</th><th>Why</th><th>Headers</th></tr></thead><tbody>"
+        + ("".join(forensic_rows) or "<tr><td colspan='6' class='muted'>No forensic block events.</td></tr>")
+        + "</tbody></table>"
+    )
     tech_note = ""
     if technical_report_name:
         tech_note = (
@@ -303,6 +332,11 @@ footer {{ margin-top: 2rem; color: var(--muted); font-size: .8rem; }}
     <ul>{prot_html}</ul>
     <p class="muted">Catch rate: {escape(str(defense.get('catch_rate_percent', 'n/a')))}% ·
       Gap rate: {escape(str(defense.get('gap_rate_percent', 'n/a')))}%</p>
+    <h4>Block HTTP status codes</h4>
+    <ul>{status_html}</ul>
+    <h4>Forensic block / challenge log</h4>
+    <p class="muted">URL, status, protection family, reason, and key response headers. Full body snippets are in the defense report JSON/HTML.</p>
+    {forensic_table}
     <h4>Interesting / enum paths</h4>
     {enum_html}
   </section>

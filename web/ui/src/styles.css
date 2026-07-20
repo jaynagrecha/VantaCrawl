@@ -255,3 +255,78 @@ h2 { margin: 0 0 .75rem; font-size: 1.15rem; }
   0%, 100% { height: 30%; opacity: .55; }
   50% { height: 100%; opacity: 1; }
 }
+
+.block-journal {
+  margin-top: 1.1rem;
+  padding-top: .9rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+}
+.block-journal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: .75rem;
+  flex-wrap: wrap;
+}
+.block-journal-head h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+}
+.block-journal-help {
+  margin: 0.35rem 0 0.7rem;
+  font-size: 0.82rem;
+}
+.block-journal-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 280px;
+  overflow: auto;
+  display: grid;
+  gap: 0.55rem;
+}
+.block-journal-item {
+  background: rgba(15, 23, 35, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 10px;
+  padding: 0.65rem 0.75rem;
+}
+.block-journal-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  margin-bottom: 0.3rem;
+}
+.block-journal .badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  background: rgba(61, 214, 198, 0.12);
+  color: var(--accent);
+}
+.block-journal .badge.status {
+  background: rgba(248, 113, 113, 0.14);
+  color: #fca5a5;
+}
+.block-journal .badge.signal {
+  background: rgba(251, 191, 36, 0.14);
+  color: #fcd34d;
+}
+.block-journal .badge.prot {
+  background: rgba(125, 211, 252, 0.12);
+  color: #7dd3fc;
+}
+.block-journal-url {
+  font-size: 0.84rem;
+  word-break: break-all;
+  color: #e7ecf1;
+}
+.block-journal-reason {
+  margin-top: 0.3rem;
+  font-size: 0.8rem;
+  color: #9aa7b8;
+}

@@ -311,6 +311,13 @@ export default function JobPage() {
             },
             { label: "Mode", value: job.mode, tone: "text" },
           ];
+          const journal = Array.isArray(progress.block_journal) ? progress.block_journal : [];
+          const statusCounts = (progress.block_status_counts || {}) as Record<string, number>;
+          const statusSummary = Object.entries(statusCounts)
+            .sort((a, b) => Number(b[1]) - Number(a[1]))
+            .slice(0, 6)
+            .map(([code, count]) => `${code}×${count}`)
+            .join(" · ");
           return (
             <div className="progress-panel" style={{ marginTop: "1.1rem" }}>
               <div className="progress-track" aria-hidden="true">
@@ -331,6 +338,41 @@ export default function JobPage() {
                   </div>
                 ))}
               </div>
+              {(journal.length > 0 || statusSummary) && (
+                <div className="block-journal">
+                  <div className="block-journal-head">
+                    <h3>Block / challenge journal</h3>
+                    {statusSummary ? <span className="muted">Statuses: {statusSummary}</span> : null}
+                  </div>
+                  <p className="muted block-journal-help">
+                    Live view of what was blocked and why. Full headers + body snippets land in the defense report.
+                  </p>
+                  {journal.length === 0 ? (
+                    <p className="muted">Waiting for the first catch event…</p>
+                  ) : (
+                    <ul className="block-journal-list">
+                      {[...journal].reverse().map((ev: any, idx: number) => (
+                        <li key={`${ev.url}-${ev.time}-${idx}`} className="block-journal-item">
+                          <div className="block-journal-meta">
+                            <span className="badge status">HTTP {ev.status || "?"}</span>
+                            <span className="badge signal">{ev.signal || "block"}</span>
+                            {(ev.protections || []).slice(0, 3).map((p: string) => (
+                              <span key={p} className="badge prot">
+                                {p}
+                              </span>
+                            ))}
+                            <span className="muted">{ev.time || ""}</span>
+                          </div>
+                          <div className="block-journal-url" title={ev.url}>
+                            {ev.url}
+                          </div>
+                          {ev.reason ? <div className="block-journal-reason">{ev.reason}</div> : null}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </div>
           );
         })()}
