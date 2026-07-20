@@ -7,7 +7,7 @@ import json
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 @dataclass
@@ -19,6 +19,11 @@ class CrawlStats:
     enum_hits: int = 0
     enum_words_tested: int = 0
     enum_words_total: int = 0
+    enum_started_at: Optional[float] = None
+    enum_current_word: str = ""
+    enum_current_path: str = "/"
+    enum_current_depth: int = 0
+    _enum_rate_samples: List[Tuple[float, int]] = field(default_factory=list)
     enum_hit_urls: List[str] = field(default_factory=list)
     bytes_downloaded: int = 0
     errors: int = 0
@@ -187,6 +192,69 @@ class CrawlStats:
         end = self.finished_at if self.finished_at is not None else time.time()
         return max(end - self.started_at, 0.0)
 
+    def note_enum_progress(
+        self,
+        words_done: int,
+        *,
+        word: str = "",
+        path: str = "/",
+        depth: int = 0,
+    ) -> None:
+        """Update enum counters, current probe, and rate samples for ETA."""
+        now = time.time()
+        if self.enum_started_at is None:
+            self.enum_started_at = now
+        self.enum_words_tested = max(0, int(words_done))
+        if word:
+            self.enum_current_word = str(word)
+            self.enum_current_path = path or "/"
+            self.enum_current_depth = int(depth)
+        self._enum_rate_samples.append((now, self.enum_words_tested))
+        cutoff = now - 30.0
+        self._enum_rate_samples = [(t, n) for t, n in self._enum_rate_samples if t >= cutoff][-40:]
+
+    def enum_elapsed_seconds(self) -> float:
+        if self.enum_started_at is None:
+            return 0.0
+        return max(time.time() - self.enum_started_at, 0.0)
+
+    def enum_eta_seconds(self) -> Optional[int]:
+        """Blend phase-clock + recent-window rate; hide until warm-up."""
+        total = int(self.enum_words_total or 0)
+        done = int(self.enum_words_tested or 0)
+        if total <= 0 or done <= 0 or done >= total or self.enum_started_at is None:
+            return None
+        enum_elapsed = self.enum_elapsed_seconds()
+        # Warm-up: avoid absurd early ETAs (e.g. crawl time leaking into rate)
+        if done < 200 and enum_elapsed < 10.0:
+            return None
+        phase_rate = done / max(enum_elapsed, 0.001)
+        recent_rate = 0.0
+        samples = self._enum_rate_samples
+        if len(samples) >= 2:
+            t0, n0 = samples[0]
+            t1, n1 = samples[-1]
+            if t1 > t0 and n1 > n0:
+                recent_rate = (n1 - n0) / (t1 - t0)
+        if recent_rate > 0:
+            rate = 0.55 * recent_rate + 0.45 * phase_rate
+        else:
+            rate = phase_rate
+        if rate <= 0:
+            return None
+        return max(0, int((total - done) / rate))
+
+    def enum_probing_label(self) -> str:
+        word = (self.enum_current_word or "").strip()
+        if not word:
+            return ""
+        path = self.enum_current_path or "/"
+        if path == "/":
+            probe = f"/{word.lstrip('/')}"
+        else:
+            probe = f"{path.rstrip('/')}/{word.lstrip('/')}"
+        return f"Trying: {probe} · level {int(self.enum_current_depth)}"
+
     def snapshot(self) -> Dict[str, Any]:
         elapsed = max(self.elapsed_seconds(), 0.001)
         evasion = self.evasion_session
@@ -206,6 +274,13 @@ class CrawlStats:
             "enum_hits": self.enum_hits,
             "enum_words_tested": self.enum_words_tested,
             "enum_words_total": self.enum_words_total,
+            "enum_started_at": self.enum_started_at,
+            "enum_elapsed_seconds": round(self.enum_elapsed_seconds(), 1),
+            "enum_eta_seconds": self.enum_eta_seconds(),
+            "enum_current_word": self.enum_current_word,
+            "enum_current_path": self.enum_current_path,
+            "enum_current_depth": self.enum_current_depth,
+            "enum_probing": self.enum_probing_label(),
             "enum_hit_urls": list(self.enum_hit_urls),
             "bytes_downloaded": self.bytes_downloaded,
             "errors": self.errors,

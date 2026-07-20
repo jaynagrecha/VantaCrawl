@@ -142,7 +142,13 @@ def build_live_progress(
     if resolved_phase == "enum":
         # Do not keep crawl's 100% while wordlist/baseline is still preparing
         if enum_total > 0:
-            progress_pct = min(100, int(enum_done * 100 / enum_total))
+            if enum_done <= 0:
+                progress_pct = 0
+            elif enum_done >= enum_total:
+                progress_pct = 100
+            else:
+                # Show at least 1% once work has started (35/14887 was flooring to 0%)
+                progress_pct = max(1, min(99, int(enum_done * 100 / enum_total)))
         else:
             progress_pct = 0
     elif resolved_phase in ("crawl", "download") and estimate > 0:
@@ -152,11 +158,22 @@ def build_live_progress(
     elif prev.get("progress_pct") and resolved_phase not in ("enum", "security", "recon"):
         progress_pct = int(prev["progress_pct"])
 
+    # Enum ETA must use enum-phase clock (not whole-job elapsed — that caused ~112h ghosts)
     eta_seconds: Optional[int] = None
-    if resolved_phase == "enum" and enum_total > enum_done > 0 and elapsed > 2:
-        rate = enum_done / max(elapsed, 0.001)
-        if rate > 0:
-            eta_seconds = max(0, int((enum_total - enum_done) / rate))
+    enum_probing = str(snap.get("enum_probing") or prev.get("enum_probing") or "")
+    if resolved_phase == "enum" and enum_total > enum_done > 0:
+        if hasattr(stats, "enum_eta_seconds"):
+            try:
+                eta_seconds = stats.enum_eta_seconds()
+            except Exception:
+                eta_seconds = snap.get("enum_eta_seconds")
+        else:
+            eta_seconds = snap.get("enum_eta_seconds")
+        if eta_seconds is not None:
+            try:
+                eta_seconds = int(eta_seconds)
+            except (TypeError, ValueError):
+                eta_seconds = None
     elif resolved_phase == "crawl" and estimate > pages and upm > 0:
         eta_seconds = max(0, int((estimate - pages) / (upm / 60.0)))
 
@@ -262,6 +279,10 @@ def build_live_progress(
         "enum_hits": enum_hits,
         "enum_words_tested": enum_done,
         "enum_words_total": enum_total,
+        "enum_probing": enum_probing,
+        "enum_current_word": str(snap.get("enum_current_word") or prev.get("enum_current_word") or ""),
+        "enum_current_path": str(snap.get("enum_current_path") or prev.get("enum_current_path") or "/"),
+        "enum_current_depth": int(snap.get("enum_current_depth") or prev.get("enum_current_depth") or 0),
         "findings": findings,
         "findings_preview": preview,
         "enum_hit_urls": enum_urls,

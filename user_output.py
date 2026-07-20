@@ -301,16 +301,18 @@ def simplify_log_line(message: str) -> str:
 
     m = re.match(
         r"^Brute force depth (\d+) \((\d+)% · batch (\d+)%\): "
-        r"([\d,]+)/([\d,]+) words · batch ([\d,]+)/([\d,]+) under (.+?)( · ETA ~.+)?$",
+        r"([\d,]+)/([\d,]+) words · batch ([\d,]+)/([\d,]+) under (.+?)"
+        r"(?: · trying (\S+))?( · ETA ~.+)?$",
         text,
     )
     if m:
-        depth, word_pct, _batch_pct, done, total, _bn, _tb, folder, eta = m.groups()
+        depth, word_pct, _batch_pct, done, total, _bn, _tb, folder, trying, eta = m.groups()
         folder = folder or "/"
         eta_text = eta.replace(" · ETA ~", " · about ") if eta else ""
+        trying_text = f" · now {trying}" if trying else ""
         return (
             f"Trying names inside {folder} (level {depth}): {word_pct}% complete "
-            f"({done} of {total} names){eta_text or ''}"
+            f"({done} of {total} names){trying_text}{eta_text or ''}"
         )
 
     if text.startswith("Page ") and "queue" in text:

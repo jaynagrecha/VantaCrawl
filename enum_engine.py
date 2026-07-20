@@ -648,6 +648,9 @@ async def run_pro_directory_enum(
             if config.enum_word_limit and index >= config.enum_word_limit:
                 output_callback(f"Enum word limit reached ({config.enum_word_limit:,}).")
                 return
+            batch = words[index : index + batch_size]
+            if config.enum_word_limit:
+                batch = batch[: max(0, config.enum_word_limit - index)]
             log_enum_batch_progress(
                 output_callback,
                 path_segments,
@@ -658,10 +661,8 @@ async def run_pro_directory_enum(
                 stats=stats,
                 update_progress=update_progress,
                 progress_state=enum_progress,
+                batch_words=batch,
             )
-            batch = words[index : index + batch_size]
-            if config.enum_word_limit:
-                batch = batch[: max(0, config.enum_word_limit - index)]
             tasks = [asyncio.create_task(check_word(path_segments, word, depth)) for word in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for result in results:

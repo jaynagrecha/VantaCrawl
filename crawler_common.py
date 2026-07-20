@@ -1251,12 +1251,35 @@ def log_enum_batch_progress(
     stats=None,
     update_progress=None,
     progress_state=None,
+    batch_words=None,
 ):
     batch_num = index // batch_size + 1
     total_batches = max(1, (total_words + batch_size - 1) // batch_size)
     words_done = min(index + batch_size, total_words)
     word_pct = min(100, int(words_done * 100 / total_words)) if total_words else 100
     batch_pct = min(100, int(batch_num * 100 / total_batches))
+    base = format_enum_path(path_segments)
+    current_word = ""
+    if batch_words:
+        current_word = str(batch_words[0] or "")
+    elif hasattr(stats, "enum_current_word"):
+        current_word = str(getattr(stats, "enum_current_word", "") or "")
+
+    # Always refresh cockpit counters / current probe — even when we skip log spam
+    if stats is not None:
+        if hasattr(stats, "note_enum_progress"):
+            stats.note_enum_progress(
+                words_done,
+                word=current_word,
+                path=base,
+                depth=depth,
+            )
+        else:
+            stats.enum_words_tested = words_done
+        if progress_state is not None and progress_state.get("started_at") is None:
+            progress_state["started_at"] = time.time()
+            if getattr(stats, "enum_started_at", None) is None:
+                stats.enum_started_at = progress_state["started_at"]
 
     if total_batches > 5000:
         log_every = 1
@@ -1265,20 +1288,30 @@ def log_enum_batch_progress(
     else:
         log_every = 10
     if batch_num != 1 and batch_num % log_every != 0:
+        if update_progress and total_words and stats is not None:
+            update_progress(
+                total_words,
+                words_done,
+                format_enum_progress(words_done, total_words, stats.enum_hits if stats else 0),
+            )
         return
 
-    base = format_enum_path(path_segments)
     eta_text = ""
     if progress_state is not None:
         now = time.time()
         if progress_state.get("started_at") is None:
             progress_state["started_at"] = now
-        elapsed = max(now - progress_state["started_at"], 0.001)
-        rate = words_done / elapsed
-        progress_state["rate"] = rate
-        if rate > 0 and words_done < total_words:
-            remaining = total_words - words_done
-            eta_sec = int(remaining / rate)
+        # Prefer enum-phase ETA from stats (blended); fall back to simple phase rate
+        eta_sec = None
+        if stats is not None and hasattr(stats, "enum_eta_seconds"):
+            eta_sec = stats.enum_eta_seconds()
+        if eta_sec is None:
+            elapsed = max(now - progress_state["started_at"], 0.001)
+            rate = words_done / elapsed
+            progress_state["rate"] = rate
+            if rate > 0 and words_done < total_words and (words_done >= 200 or elapsed >= 10):
+                eta_sec = int((total_words - words_done) / rate)
+        if eta_sec is not None and eta_sec >= 0 and words_done < total_words:
             if eta_sec >= 3600:
                 eta_text = f" · ETA ~{eta_sec // 3600}h {(eta_sec % 3600) // 60}m"
             elif eta_sec >= 60:
@@ -1286,12 +1319,13 @@ def log_enum_batch_progress(
             else:
                 eta_text = f" · ETA ~{eta_sec}s"
 
+    probe_bit = f" · trying {current_word}" if current_word else ""
     output_callback(
         f"Brute force depth {depth} ({word_pct}% · batch {batch_pct}%): "
-        f"{words_done:,}/{total_words:,} words · batch {batch_num:,}/{total_batches:,} under {base}{eta_text}"
+        f"{words_done:,}/{total_words:,} words · batch {batch_num:,}/{total_batches:,} "
+        f"under {base}{probe_bit}{eta_text}"
     )
     if stats is not None:
-        stats.enum_words_tested = words_done
         output_callback(stats.format_friendly_line())
     if update_progress and total_words:
         update_progress(

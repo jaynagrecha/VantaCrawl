@@ -136,6 +136,12 @@ h2 { margin: 0 0 .75rem; font-size: 1.15rem; }
   animation: progress-shine 2.2s linear infinite;
 }
 .progress-line { margin: 0; font-size: .86rem; min-height: 1.2em; }
+.progress-probing {
+  margin: .3rem 0 0;
+  font-size: .84rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #8ec7ff;
+}
 .progress-heartbeat {
   margin: .35rem 0 0;
   font-size: .82rem;

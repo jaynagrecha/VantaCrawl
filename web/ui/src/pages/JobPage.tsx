@@ -325,6 +325,7 @@ export default function JobPage() {
           const heartbeatLine =
             heartbeat ||
             (backoffRem > 0.4 ? `Waiting on WAF backoff… ${Math.ceil(backoffRem)}s` : "");
+          const probingLine = String(progress.enum_probing || "");
           const tiles: { label: string; value: string; hint?: string; tone?: string }[] = [
             { label: "Phase", value: phaseLabel(progress.phase), tone: "phase" },
             { label: "Progress", value: `${pct}%` },
@@ -342,8 +343,22 @@ export default function JobPage() {
                 wordsTotal > 0
                   ? `${wordsDone.toLocaleString()}/${wordsTotal.toLocaleString()}`
                   : tileValue(wordsDone),
+              hint: probingLine || "Words tried from the directory wordlist",
             },
-            { label: "ETA", value: formatEta(progress.eta_seconds) },
+            {
+              label: "ETA",
+              value: formatEta(progress.eta_seconds),
+              hint:
+                String(progress.phase || "") === "enum"
+                  ? "Based on enum-phase speed (not whole-job time). Hidden until warm-up."
+                  : undefined,
+            },
+            {
+              label: "Probing",
+              value: String(progress.enum_current_word || "—"),
+              hint: probingLine || "Current folder/file name under test",
+              tone: "text",
+            },
             {
               label: "Health",
               value: health,
@@ -389,6 +404,11 @@ export default function JobPage() {
               <p className="progress-line muted">
                 {progressLine || (active ? "Waiting for first progress update…" : "—")}
               </p>
+              {probingLine ? (
+                <p className="progress-probing" title="Current directory/file name being probed">
+                  {probingLine}
+                </p>
+              ) : null}
               {heartbeatLine ? (
                 <p className="progress-heartbeat" title="Scanner is paused briefly after a WAF/rate-limit signal">
                   {heartbeatLine}
