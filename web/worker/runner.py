@@ -620,5 +620,7 @@ async def run_job(job_id: str) -> None:
             task.cancel()
             try:
                 await task
+            except asyncio.CancelledError:
+                pass
             except Exception:
                 pass
