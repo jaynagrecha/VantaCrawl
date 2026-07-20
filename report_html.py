@@ -581,6 +581,20 @@ footer.meta {{ color: var(--muted); font-size: .85rem; margin-top: 1.5rem; }}
       <h3>OpenAPI</h3>
       {url_table_html(model.get('openapi_docs'), limit=10)}
       {url_table_html(model.get('openapi_endpoints'), limit=25)}
+      <h3>API recon map</h3>
+      {kv_table_html(
+          list(model.get('api_endpoints') or [])[:40],
+          (("method", "Method"), ("path", "Path"), ("status", "Status"), ("source", "Source"), ("url", "URL")),
+          empty="No API endpoints mapped in this run",
+      )}
+      <h3>API docs (recon)</h3>
+      {url_table_html(model.get('api_docs'), limit=15)}
+      <h3>GraphQL fields</h3>
+      {kv_table_html(
+          list(model.get('api_graphql_operations') or [])[:40],
+          (("type", "Type"), ("field", "Field")),
+          empty="No GraphQL schema fields discovered",
+      )}
       <h3>RSS / Atom ({len(model.get('rss') or [])})</h3>
       {url_table_html(model.get('rss'), limit=15)}
       <h3>Forms ({len(model.get('form_rows') or [])})</h3>

@@ -142,6 +142,8 @@ async def create_job_with_files(
     targets_file: Optional[UploadFile] = File(None),
     wordlist_file: Optional[UploadFile] = File(None),
     extra_wordlist_file: Optional[UploadFile] = File(None),
+    postman_file: Optional[UploadFile] = File(None),
+    har_file: Optional[UploadFile] = File(None),
     wordlist_id: str = Form(""),
 ):
     if not authorized_confirmed:
@@ -214,6 +216,16 @@ async def create_job_with_files(
         extras = list(cfg.get("extra_wordlists") or [])
         extras.append(str(dest))
         cfg["extra_wordlists"] = extras
+    if postman_file is not None and postman_file.filename:
+        dest = uploads / ("postman_" + Path(postman_file.filename).name)
+        dest.write_bytes(await postman_file.read())
+        cfg["api_postman_file"] = str(dest)
+        cfg["api_recon"] = True
+    if har_file is not None and har_file.filename:
+        dest = uploads / ("har_" + Path(har_file.filename).name)
+        dest.write_bytes(await har_file.read())
+        cfg["api_har_file"] = str(dest)
+        cfg["api_recon"] = True
     job.config_json = cfg
     job.updated_at = datetime.utcnow()
     session.add(job)

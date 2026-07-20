@@ -26,6 +26,7 @@ function phaseLabel(phase: unknown): string {
   const p = String(phase || "").toLowerCase();
   if (p === "crawl") return "Crawl";
   if (p === "enum") return "Directory enum";
+  if (p === "api_recon") return "API recon";
   if (p === "download") return "Download";
   if (p === "security") return "Security";
   if (p === "recon") return "Recon";

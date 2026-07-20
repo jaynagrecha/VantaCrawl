@@ -160,6 +160,8 @@ export default function NewScanPage() {
   const [targetsFile, setTargetsFile] = useState<File | null>(null);
   const [wordlistFile, setWordlistFile] = useState<File | null>(null);
   const [extraWordlistFile, setExtraWordlistFile] = useState<File | null>(null);
+  const [postmanFile, setPostmanFile] = useState<File | null>(null);
+  const [harFile, setHarFile] = useState<File | null>(null);
   const [wordlistId, setWordlistId] = useState("");
 
   useEffect(() => {
@@ -213,6 +215,8 @@ export default function NewScanPage() {
       if (targetsFile) form.append("targets_file", targetsFile);
       if (wordlistFile) form.append("wordlist_file", wordlistFile);
       if (extraWordlistFile) form.append("extra_wordlist_file", extraWordlistFile);
+      if (postmanFile) form.append("postman_file", postmanFile);
+      if (harFile) form.append("har_file", harFile);
       const job = await api.createJobWithFiles(form);
       nav(`/jobs/${job.id}`);
     } catch (err: any) {
@@ -322,6 +326,25 @@ export default function NewScanPage() {
                 type="file"
                 accept=".txt,text/plain"
                 onChange={(e) => setExtraWordlistFile(e.target.files?.[0] || null)}
+              />
+            </div>
+            <div className="field">
+              <label>Postman collection (optional)</label>
+              <input
+                type="file"
+                accept=".json,application/json"
+                onChange={(e) => setPostmanFile(e.target.files?.[0] || null)}
+              />
+              <p className="setting-help-inline" style={{ marginTop: ".35rem" }}>
+                Imported into API recon when provided.
+              </p>
+            </div>
+            <div className="field">
+              <label>HAR capture (optional)</label>
+              <input
+                type="file"
+                accept=".har,.json,application/json"
+                onChange={(e) => setHarFile(e.target.files?.[0] || null)}
               />
             </div>
           </div>

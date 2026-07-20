@@ -86,6 +86,9 @@ def _build_crawl_config(job: ScanJob) -> CrawlConfig:
 
     wordlist = overlay.pop("wordlist_file", None)
     extras = overlay.pop("extra_wordlists", None)
+    postman = overlay.pop("api_postman_file", None)
+    har = overlay.pop("api_har_file", None)
+    api_wl = overlay.pop("api_recon_wordlist", None)
 
     cfg = CrawlConfig(
         start_url=job.start_url,
@@ -98,6 +101,12 @@ def _build_crawl_config(job: ScanJob) -> CrawlConfig:
     )
     if isinstance(extras, list) and extras:
         cfg.extra_wordlists = [str(p) for p in extras if p]
+    if postman:
+        cfg.api_postman_file = str(postman)
+    if har:
+        cfg.api_har_file = str(har)
+    if api_wl:
+        cfg.api_recon_wordlist = str(api_wl)
 
     for key, value in overlay.items():
         if hasattr(cfg, key) and key not in {
@@ -108,6 +117,9 @@ def _build_crawl_config(job: ScanJob) -> CrawlConfig:
             "enum_checkpoint_file",
             "false_positive_file",
             "wordlist_file",
+            "api_postman_file",
+            "api_har_file",
+            "api_recon_wordlist",
         }:
             try:
                 setattr(cfg, key, value)

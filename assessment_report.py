@@ -153,6 +153,7 @@ def build_assessment_document(
         "Reconnaissance and optional historical URL seeding (where enabled).",
         "Authenticated or unauthenticated crawl of in-scope links within configured depth/concurrency.",
         "Directory and path enumeration using configured wordlists and/or mutations.",
+        "API recon: passive route mining, OpenAPI/Swagger docs, optional light active probes and GraphQL introspection.",
         "Security heuristics (headers, sensitive paths, common vulnerability probes where enabled).",
         "Optional defense/WAF fingerprinting and catch-rate observation during the run.",
         "Grouped findings with plain-language and technical explanations for remediation.",
@@ -181,6 +182,7 @@ def build_assessment_document(
         "metrics": {
             "pages_crawled": int(snap.get("pages_crawled") or 0),
             "enum_hits": int(snap.get("enum_hits") or getattr(stats, "enum_hits", 0) or 0),
+            "api_endpoints": len(getattr(stats, "api_endpoints", []) or []),
             "findings": len(getattr(stats, "findings", []) or []),
             "errors": int(snap.get("errors") or 0),
             "elapsed_seconds": float(snap.get("elapsed_seconds") or 0),

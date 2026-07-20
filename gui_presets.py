@@ -102,6 +102,10 @@ MODE_PRESETS: Dict[str, Dict[str, Any]] = {
         "enum_auto_vuln_scan": True,
         "wayback_seeds": True,
         "subdomain_enum": False,
+        "api_recon": True,
+        "api_recon_active": True,
+        "api_recon_graphql": True,
+        "api_recon_word_limit": 3000,
         "evasion_enabled": True,
         "evasion_level": "basic",
         "evasion_decoy_requests": False,
@@ -174,6 +178,9 @@ def apply_mode_preset(app, mode: str):
         "enum_auto_vuln_cb": "enum_auto_vuln_scan",
         "wayback_cb": "wayback_seeds",
         "subdomain_cb": "subdomain_enum",
+        "api_recon_cb": "api_recon",
+        "api_active_cb": "api_recon_active",
+        "api_graphql_cb": "api_recon_graphql",
         "search_conclusion_cb": "search_conclusion_report",
         "evasion_enabled_cb": "evasion_enabled",
         "evasion_referer_cb": "evasion_referer_chain",
@@ -210,6 +217,8 @@ def apply_mode_preset(app, mode: str):
 
     if "enum_word_limit" in preset and hasattr(app, "enum_word_limit_spin"):
         app.enum_word_limit_spin.setValue(int(preset["enum_word_limit"]))
+    if "api_recon_word_limit" in preset and hasattr(app, "api_word_limit_spin"):
+        app.api_word_limit_spin.setValue(int(preset["api_recon_word_limit"]))
     if "mutation_max_candidates" in preset and hasattr(app, "mutation_max_spin"):
         app.mutation_max_spin.setValue(int(preset["mutation_max_candidates"]))
     if "evasion_jitter_min_ms" in preset and hasattr(app, "evasion_jitter_min_spin"):

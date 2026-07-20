@@ -39,6 +39,18 @@ def infer_phase(progress_text: str, *, enum_only: bool = False, previous: str = 
     if any(
         k in text
         for k in (
+            "api recon",
+            "api passive",
+            "api docs",
+            "api active",
+            "api import",
+            "graphql introspection",
+        )
+    ):
+        return "api_recon"
+    if any(
+        k in text
+        for k in (
             "trying folder/file",
             "folder/file names",
             "folder and file name",
@@ -70,7 +82,7 @@ def infer_phase(progress_text: str, *, enum_only: bool = False, previous: str = 
         )
     ):
         return "recon"
-    if previous in ("crawl", "enum", "download", "security", "recon", "starting"):
+    if previous in ("crawl", "enum", "api_recon", "download", "security", "recon", "starting"):
         return previous
     return "enum" if enum_only else "crawl"
 

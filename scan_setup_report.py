@@ -71,6 +71,8 @@ def build_scan_setup(meta: Dict[str, Any] | None) -> Dict[str, Any]:
         discovery_bits.append("routes inside JavaScript")
     if _on(meta.get("openapi_parse")):
         discovery_bits.append("API documentation")
+    if _on(meta.get("api_recon")):
+        discovery_bits.append("API recon (routes / docs / optional probes)")
     if _on(meta.get("form_discovery")):
         discovery_bits.append("HTML forms")
     discovery_clause = (
@@ -234,6 +236,9 @@ def config_to_report_meta(config) -> Dict[str, Any]:
         "common_crawl_seeds": getattr(config, "common_crawl_seeds", False),
         "subdomain_enum": getattr(config, "subdomain_enum", False),
         "openapi_parse": getattr(config, "openapi_parse", False),
+        "api_recon": getattr(config, "api_recon", False),
+        "api_recon_active": getattr(config, "api_recon_active", False),
+        "api_recon_graphql": getattr(config, "api_recon_graphql", False),
         "js_bundle_analysis": getattr(config, "js_bundle_analysis", False),
         "form_discovery": getattr(config, "form_discovery", False),
         "form_submit_probe": getattr(config, "form_submit_probe", False),

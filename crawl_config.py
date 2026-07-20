@@ -50,6 +50,17 @@ class CrawlConfig:
     subdomain_enum: bool = True
     subdomain_wordlist: str = DEFAULT_SUBDOMAIN_WORDLIST
     openapi_parse: bool = True
+    # API recon module — passive+docs when on; active/GraphQL/import via sub-flags
+    api_recon: bool = True
+    api_recon_active: bool = True
+    api_recon_graphql: bool = True
+    api_recon_word_limit: int = 3000
+    api_recon_wordlist: str = ""
+    api_recon_method: str = "HEAD"
+    api_auth_header_name: str = "Authorization"
+    api_auth_header_value: str = ""
+    api_postman_file: str = ""
+    api_har_file: str = ""
     js_bundle_analysis: bool = True
     form_discovery: bool = True
     form_submit_probe: bool = False

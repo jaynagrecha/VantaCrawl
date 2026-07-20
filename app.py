@@ -473,6 +473,52 @@ class CrawlerApp(QMainWindow):
             disc_layout.addWidget(w)
         settings_layout.addWidget(discovery_box)
 
+        api_box = QGroupBox("API recon")
+        api_layout = QVBoxLayout(api_box)
+        self.api_recon_cb = QCheckBox("Enable API recon (passive + docs)")
+        self.api_recon_cb.setChecked(True)
+        self.api_recon_cb.setToolTip(
+            "Mine API routes from crawl/JS, probe well-known OpenAPI/Swagger/GraphQL docs."
+        )
+        self.api_active_cb = QCheckBox("Light active API path enum (GET/HEAD, capped)")
+        self.api_active_cb.setChecked(True)
+        self.api_graphql_cb = QCheckBox("GraphQL introspection")
+        self.api_graphql_cb.setChecked(True)
+        self.api_word_limit_spin = QSpinBox()
+        self.api_word_limit_spin.setRange(100, 50_000)
+        self.api_word_limit_spin.setValue(3000)
+        api_limit_row = QHBoxLayout()
+        api_limit_row.addWidget(QLabel("API word limit:"))
+        api_limit_row.addWidget(self.api_word_limit_spin)
+        api_limit_row.addStretch(1)
+        self.api_auth_name_input = QLineEdit("Authorization")
+        self.api_auth_name_input.setPlaceholderText("Header name (e.g. Authorization)")
+        self.api_auth_value_input = QLineEdit()
+        self.api_auth_value_input.setPlaceholderText("Header value (e.g. Bearer …) — optional")
+        self.api_auth_value_input.setEchoMode(QLineEdit.Password)
+        self.api_postman_path = ""
+        self.api_har_path = ""
+        self.api_postman_label = QLabel("Postman: (none)")
+        self.api_har_label = QLabel("HAR: (none)")
+        api_import_row = QHBoxLayout()
+        api_postman_btn = QPushButton("Postman…")
+        api_postman_btn.clicked.connect(self._browse_postman)
+        api_har_btn = QPushButton("HAR…")
+        api_har_btn.clicked.connect(self._browse_har)
+        api_import_row.addWidget(api_postman_btn)
+        api_import_row.addWidget(api_har_btn)
+        api_import_row.addStretch(1)
+        for w in (self.api_recon_cb, self.api_active_cb, self.api_graphql_cb):
+            api_layout.addWidget(w)
+        api_layout.addLayout(api_limit_row)
+        api_layout.addWidget(QLabel("Optional API auth header:"))
+        api_layout.addWidget(self.api_auth_name_input)
+        api_layout.addWidget(self.api_auth_value_input)
+        api_layout.addLayout(api_import_row)
+        api_layout.addWidget(self.api_postman_label)
+        api_layout.addWidget(self.api_har_label)
+        settings_layout.addWidget(api_box)
+
         security_box = QGroupBox("Security (authorized targets only)")
         sec_layout = QVBoxLayout(security_box)
         self.security_cb = QCheckBox("Enable security scanning")
@@ -865,6 +911,22 @@ class CrawlerApp(QMainWindow):
             self.targets_file = file_name
             self.targets_label.setText(file_name)
 
+    def _browse_postman(self):
+        file_name, _ = QFileDialog.getOpenFileName(
+            self, "Select Postman collection", BASE_DIR, "JSON (*.json);;All (*.*)"
+        )
+        if file_name:
+            self.api_postman_path = file_name
+            self.api_postman_label.setText(f"Postman: {file_name}")
+
+    def _browse_har(self):
+        file_name, _ = QFileDialog.getOpenFileName(
+            self, "Select HAR capture", BASE_DIR, "HAR (*.har);;JSON (*.json);;All (*.*)"
+        )
+        if file_name:
+            self.api_har_path = file_name
+            self.api_har_label.setText(f"HAR: {file_name}")
+
     def build_config(self, start_url):
         return CrawlConfig(
             start_url=start_url,
@@ -887,6 +949,14 @@ class CrawlerApp(QMainWindow):
             common_crawl_seeds=self.cc_cb.isChecked(),
             subdomain_enum=self.subdomain_cb.isChecked(),
             openapi_parse=self.openapi_cb.isChecked(),
+            api_recon=self.api_recon_cb.isChecked(),
+            api_recon_active=self.api_active_cb.isChecked(),
+            api_recon_graphql=self.api_graphql_cb.isChecked(),
+            api_recon_word_limit=self.api_word_limit_spin.value(),
+            api_auth_header_name=self.api_auth_name_input.text().strip() or "Authorization",
+            api_auth_header_value=self.api_auth_value_input.text().strip(),
+            api_postman_file=self.api_postman_path or "",
+            api_har_file=self.api_har_path or "",
             js_bundle_analysis=self.js_cb.isChecked(),
             form_discovery=self.form_cb.isChecked(),
             form_submit_probe=self.form_probe_cb.isChecked(),

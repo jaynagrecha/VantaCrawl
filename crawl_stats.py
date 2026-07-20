@@ -49,6 +49,10 @@ class CrawlStats:
     js_route_urls: List[str] = field(default_factory=list)
     openapi_doc_urls: List[str] = field(default_factory=list)
     openapi_endpoints: List[str] = field(default_factory=list)
+    api_endpoint_urls: List[str] = field(default_factory=list)
+    api_endpoints: List[Dict[str, Any]] = field(default_factory=list)
+    api_docs: List[str] = field(default_factory=list)
+    api_graphql_operations: List[Dict[str, str]] = field(default_factory=list)
     rss_feed_urls: List[str] = field(default_factory=list)
     s3_buckets: List[str] = field(default_factory=list)
     gcs_buckets: List[str] = field(default_factory=list)
@@ -86,6 +90,7 @@ class CrawlStats:
             "js": "js_route_urls",
             "openapi_doc": "openapi_doc_urls",
             "openapi_endpoint": "openapi_endpoints",
+            "api_endpoint": "api_endpoint_urls",
             "rss": "rss_feed_urls",
             "s3": "s3_buckets",
             "gcs": "gcs_buckets",

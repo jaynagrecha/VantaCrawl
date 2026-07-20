@@ -32,6 +32,9 @@ EDITABLE_DEFAULTS_SKIP = {
     "subdomain_wordlist",
     "extra_wordlists",
     "vhost_wordlist",
+    "api_postman_file",
+    "api_har_file",
+    "api_recon_wordlist",
     # Paths / lists that need upload UX (not free-text paths on Render)
 }
 
@@ -50,6 +53,12 @@ _HUMAN = {
     "common_crawl_seeds": ("Common Crawl seeds", "Pull URLs from Common Crawl indexes."),
     "subdomain_enum": ("Subdomain enum", "Brute-force common subdomains."),
     "openapi_parse": ("OpenAPI / Swagger", "Parse API docs for paths and operations."),
+    "api_recon": ("API recon", "Passive API surface discovery + well-known docs."),
+    "api_recon_active": ("API active enum", "Light GET/HEAD probes under /api, /v1, etc."),
+    "api_recon_graphql": ("GraphQL introspection", "Query __schema when a GraphQL endpoint is found."),
+    "api_recon_word_limit": ("API word limit", "Max active API path probes (conservative default 3000)."),
+    "api_auth_header_name": ("API auth header name", "e.g. Authorization"),
+    "api_auth_header_value": ("API auth header value", "e.g. Bearer token (authorized targets only)."),
     "js_bundle_analysis": ("JS bundle analysis", "Extract routes and secrets from JavaScript."),
     "form_discovery": ("Form discovery", "Find HTML forms on crawled pages."),
     "form_submit_probe": ("Form GET probe", "Probe GET forms safely (authorized only)."),
@@ -252,6 +261,7 @@ def setting_fields() -> Dict[str, Dict[str, Any]]:
         ),
         "auth_password": _field("auth_password", control="password"),
         "login_password": _field("login_password", control="password"),
+        "api_auth_header_value": _field("api_auth_header_value", control="password"),
         "nuclei_severity": _field(
             "nuclei_severity",
             control="select",
@@ -330,6 +340,12 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "common_crawl_seeds",
             "subdomain_enum",
             "openapi_parse",
+            "api_recon",
+            "api_recon_active",
+            "api_recon_graphql",
+            "api_recon_word_limit",
+            "api_auth_header_name",
+            "api_auth_header_value",
             "js_bundle_analysis",
             "form_discovery",
             "form_submit_probe",

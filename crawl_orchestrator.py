@@ -758,6 +758,19 @@ async def run_full_crawl_async(
                 list(discovered) + extra_seeds,
             )
 
+        if running() and getattr(config, "api_recon", False):
+            from api_recon import run_api_recon
+
+            await run_api_recon(
+                config,
+                client,
+                stats=stats,
+                seed_urls=list(discovered) + list(extra_seeds or []),
+                output_callback=output_callback,
+                running=running,
+                update_progress=update_progress,
+            )
+
     _persist_checkpoint(config, visited, discovered, queue, link_depths, use_priority)
 
     if config.distributed_redis_url:
