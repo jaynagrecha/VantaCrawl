@@ -339,15 +339,26 @@ class EvasionSession:
 
 
 def detect_challenge(status_code: int, body: str) -> str:
+    """Detect bot-wall / rate-limit signals that justify adaptive backoff.
+
+    Only challenge/block HTTP statuses are considered. Success responses (200 etc.)
+    must never trigger backoff — CDN headers like cf-ray on a normal page are not
+    a challenge (that false positive used to park the whole crawl).
+    """
     body_l = (body or "").lower()[:8000]
     if status_code == 429:
         return "rate_limit"
-    if status_code in CHALLENGE_STATUS or body_l:
-        for marker in CHALLENGE_MARKERS:
-            if marker in body_l:
-                return marker
+    if status_code not in CHALLENGE_STATUS:
+        return ""
+    for marker in CHALLENGE_MARKERS:
+        if marker in body_l:
+            return marker
     if status_code == 403 and ("cloudflare" in body_l or "cf-ray" in body_l):
         return "cloudflare_block"
+    if status_code == 403:
+        return "blocked"
+    if status_code == 503:
+        return "unavailable"
     return ""
 
 
@@ -434,26 +445,22 @@ def make_httpx_hooks(session: Optional[EvasionSession] = None, output_callback=N
     async def on_response(response):
         url = str(response.request.url)
         header_map = dict(response.headers)
-        bits = []
-        server = (header_map.get("server") or "").lower()
-        if "cloudflare" in server:
-            bits.append("cloudflare")
-        if header_map.get("cf-ray") or header_map.get("cf-mitigated"):
-            bits.append("cf-challenge")
-        if header_map.get("x-datadome") or "datadome" in server:
-            bits.append("datadome")
-        if "akamai" in server:
-            bits.append("akamai")
-        if "sucuri" in server or header_map.get("x-sucuri-id") or header_map.get("x-sucuri-block"):
-            bits.append("sucuri")
-        preview = " ".join(bits)
+        # Real body peek for challenge detection — never invent "cf-challenge" from
+        # CDN headers alone (that caused false backoff on every Cloudflare 200).
+        body_preview = ""
+        try:
+            raw = response.content or b""
+            body_preview = raw[:2400].decode("utf-8", errors="ignore")
+        except Exception:
+            body_preview = ""
 
         if defense_tracker is not None:
-            defense_tracker.record_response(url, response.status_code, header_map, preview)
+            # Headers fingerprint protections; body used for challenge/block scoring
+            defense_tracker.record_response(url, response.status_code, header_map, body_preview)
 
         if session is not None and session.config.enabled:
             before = session._challenge_hits
-            session.after_request(url, response.status_code, preview)
+            session.after_request(url, response.status_code, body_preview)
             if output_callback and session._challenge_hits > before and session.last_challenge:
                 wait = max(1, int(session.backoff_remaining() + 0.99))
                 output_callback(

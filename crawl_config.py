@@ -33,6 +33,8 @@ class CrawlConfig:
     bypass_forbidden: bool = True
     enum_concurrency: int = 35
     download_concurrency: int = 6
+    # Hard cap so one hung page cannot freeze concurrent BFS workers
+    crawl_page_timeout: float = 90.0
     link_depth_limit: int = 0
 
     proxy_url: str = ""

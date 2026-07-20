@@ -595,7 +595,12 @@ async def run_active_vuln_probes(
             xss_marker,
             "high",
             lambda body, _payload, marker: marker in body,
-            lambda _name: True,
+            lambda name: bool(
+                re.match(
+                    r"(?i)^(q|query|search|s|keyword|term|name|title|message|comment|text|content|input)$",
+                    name,
+                )
+            ),
         ),
         (
             "directory_traversal",

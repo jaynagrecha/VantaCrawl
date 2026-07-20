@@ -709,8 +709,12 @@ async def run_full_crawl_async(
                     )
 
             except Exception as error:
+                from user_output import sanitize_error_message
+
                 stats.errors += 1
-                output_callback(f"Error accessing {current_url}: {error}")
+                output_callback(
+                    f"Error accessing {current_url}: {sanitize_error_message(error)}"
+                )
 
             if time.time() - last_stats_emit > 3:
                 output_callback(stats.format_friendly_line())
@@ -724,12 +728,21 @@ async def run_full_crawl_async(
 
         if not config.enum_only:
             if config.crawl_concurrency > 1:
+                def _on_page_timeout(url: str):
+                    stats.errors += 1
+                    output_callback(
+                        f"Error accessing {url}: page timed out after "
+                        f"{int(getattr(config, 'crawl_page_timeout', 90) or 90)}s"
+                    )
+
                 await run_concurrent_bfs(
                     queue=queue,
                     use_priority=use_priority,
                     running=running,
                     crawl_concurrency=config.crawl_concurrency,
                     process_url=_process_crawl_url,
+                    page_timeout=float(getattr(config, "crawl_page_timeout", 90) or 90),
+                    on_page_timeout=_on_page_timeout,
                 )
             else:
                 while queue and running():
@@ -1155,15 +1168,26 @@ async def _check_broken_links(client, stats, links, base_domain, restrict_domain
 
     if sample_size == 0:
         sample_size = len(links)
-    for link in list(links)[:sample_size]:
-        if not should_follow_url(link, base_domain, restrict_domain):
-            continue
-        try:
-            response = await client.head(link, timeout=8, follow_redirects=True)
-            if response.status_code >= 400:
-                stats.broken_links.append({"url": link, "status": str(response.status_code)})
-        except httpx.HTTPError:
-            stats.broken_links.append({"url": link, "status": "error"})
+    candidates = [
+        link
+        for link in list(links)[:sample_size]
+        if should_follow_url(link, base_domain, restrict_domain)
+    ]
+    if not candidates:
+        return
+
+    sem = asyncio.Semaphore(8)
+
+    async def _one(link: str):
+        async with sem:
+            try:
+                response = await client.head(link, timeout=8, follow_redirects=True)
+                if response.status_code >= 400:
+                    stats.broken_links.append({"url": link, "status": str(response.status_code)})
+            except httpx.HTTPError:
+                stats.broken_links.append({"url": link, "status": "error"})
+
+    await asyncio.gather(*[_one(link) for link in candidates], return_exceptions=True)
 
 
 def _persist_checkpoint(config, visited, discovered, queue, link_depths, use_priority):

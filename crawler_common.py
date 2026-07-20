@@ -1424,11 +1424,9 @@ async def save_enum_hit_async(
         except (httpx.HTTPError, OSError, ValueError) as error:
             output_callback(f"Could not save {url}: {error}")
 
-    if download_semaphore is None:
-        await _save()
-    else:
-        async with download_semaphore:
-            await _save()
+    # Do not wrap the whole save in download_semaphore: _save → mirror assets
+    # acquires the same semaphore per file (non-reentrant → self-deadlock).
+    await _save()
 
 
 def enumerate_directories_sync(

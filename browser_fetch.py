@@ -46,7 +46,13 @@ def get_selenium_driver(proxy_url: str = ""):
     options.add_argument(f"user-agent={get_random_user_agent()}")
     if proxy_url:
         options.add_argument(f"--proxy-server={proxy_url}")
-    _selenium_driver = webdriver.Chrome(service=ChromeService(), options=options)
+    try:
+        service = ChromeService(log_output=os.devnull)
+    except TypeError:
+        service = ChromeService()
+    _selenium_driver = webdriver.Chrome(service=service, options=options)
+    _selenium_driver.set_page_load_timeout(30)
+    _selenium_driver.set_script_timeout(20)
     return _selenium_driver
 
 
@@ -56,17 +62,24 @@ def fetch_with_selenium(url, settle_seconds=2, proxy_url="", screenshot_path=Non
     from selenium.webdriver.support.ui import WebDriverWait
 
     driver = get_selenium_driver(proxy_url)
-    driver.get(url)
+    try:
+        driver.get(url)
+    except Exception:
+        # PageLoadTimeout / WebDriverException — still try to scrape whatever loaded
+        pass
     try:
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
     except Exception:
         pass
     if settle_seconds:
-        time.sleep(settle_seconds)
+        time.sleep(min(float(settle_seconds), 3.0))
     if screenshot_path:
         os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
         driver.save_screenshot(screenshot_path)
-    dom_urls = driver.execute_script(DOM_LINKS_SCRIPT) or []
+    try:
+        dom_urls = driver.execute_script(DOM_LINKS_SCRIPT) or []
+    except Exception:
+        dom_urls = []
     return driver.page_source, driver.get_cookies(), dom_urls
 
 
@@ -91,14 +104,22 @@ def make_browser_fetcher(config, reporter=None):
         screenshot_path = None
         if config.screenshot_capture and reporter and is_html_url(url):
             screenshot_path = reporter.screenshot_path(url)
-        page_html, cookies, dom_urls = await loop.run_in_executor(
-            _executor,
-            fetch_with_selenium,
-            url,
-            2,
-            config.proxy_url,
-            screenshot_path,
-        )
+        try:
+            page_html, cookies, dom_urls = await asyncio.wait_for(
+                loop.run_in_executor(
+                    _executor,
+                    fetch_with_selenium,
+                    url,
+                    2,
+                    config.proxy_url,
+                    screenshot_path,
+                ),
+                timeout=45.0,
+            )
+        except asyncio.TimeoutError as exc:
+            # Recreate driver so a hung navigation cannot poison later pages
+            quit_selenium_driver()
+            raise TimeoutError(f"Browser fetch timed out for {url}") from exc
         for cookie in cookies:
             client.cookies.set(cookie["name"], cookie["value"], domain=cookie.get("domain"))
         return page_html, dom_urls

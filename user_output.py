@@ -47,6 +47,31 @@ CATEGORY_LABELS = {
     "file_metadata": "Embedded file metadata",
 }
 
+_STACK_FRAME_RE = re.compile(r"(?im)^\s*#\d+\s+0x[0-9a-fA-F]+\b.*$")
+_STACKTRACE_SPLIT_RE = re.compile(r"(?i)\n\s*Stacktrace:\s*\n")
+
+
+def sanitize_error_message(error: Any, *, max_len: int = 240) -> str:
+    """Collapse driver/native stack dumps to a single human line.
+
+    ChromeDriver embeds `#N 0xADDR <unknown>` frames in ``str(exc)``. Those must
+    never flood Live Logs — keep the message, drop the native stack.
+    """
+    text = str(error or "").replace("\r\n", "\n").strip()
+    if not text:
+        return "unknown error"
+    text = _STACKTRACE_SPLIT_RE.split(text, 1)[0]
+    kept: List[str] = []
+    for line in text.split("\n"):
+        if _STACK_FRAME_RE.match(line):
+            continue
+        kept.append(line.strip())
+    text = " ".join(part for part in kept if part)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_len:
+        return text[: max_len - 1] + "…"
+    return text
+
 
 def _http_label(code: int) -> str:
     if code in HTTP_STATUS_LABELS:
@@ -162,9 +187,20 @@ def format_enum_progress(words_done: int, total_words: int, hits: int) -> str:
 
 
 def simplify_log_line(message: str) -> str:
-    text = str(message).strip()
+    raw = str(message)
+    text = raw.strip()
     if not text:
         return text
+
+    # ChromeDriver / native stacks arriving as one multiline blob
+    if "Stacktrace:" in text or _STACK_FRAME_RE.search(text):
+        first = text.split("\n", 1)[0].strip()
+        if first.lower().startswith("error accessing "):
+            m = re.match(r"(?i)^Error accessing (.+):\s*(.*)$", first)
+            if m:
+                url, err = m.groups()
+                return f"Could not open {url} — {sanitize_error_message(err or first)}"
+        return sanitize_error_message(text)
 
     if text.startswith("Progress:"):
         return text
@@ -188,6 +224,12 @@ def simplify_log_line(message: str) -> str:
         severity, category, url, detail = m.groups()
         item = {"severity": severity, "category": category.strip(), "url": url, "detail": detail}
         return format_friendly_finding(item)
+
+    # Multiline "Error accessing" (driver stacks) — match first line only
+    m = re.match(r"(?is)^Error accessing (.+?):\s*(.+)$", text)
+    if m and ("\n" in text or "Stacktrace:" in text):
+        url, err = m.groups()
+        return f"Could not open {url} — {sanitize_error_message(err)}"
 
     replacements = [
         (r"^=== Target (\d+)/(\d+): (.+) ===$", r"Starting target \1 of \2: \3"),
