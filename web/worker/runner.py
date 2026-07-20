@@ -218,13 +218,36 @@ async def run_job(job_id: str) -> None:
         status = "paused" if pause.paused else ("stopping" if stop_flag["stop"] else "running")
         publish_progress(job_id, {"status": status, "log": text})
 
-    def update_progress(payload):
-        if isinstance(payload, dict):
+    def update_progress(total_or_payload=0, downloaded_size=0, size_text=""):
+        """Match desktop callback: (total, done, text). Also accept a single progress dict."""
+        status = "paused" if pause.paused else ("stopping" if stop_flag["stop"] else "running")
+        if isinstance(total_or_payload, dict):
+            payload = total_or_payload
             _update_job(job_id, progress_json=payload)
-            publish_progress(
-                job_id,
-                {"status": "paused" if pause.paused else "running", "progress": payload},
-            )
+            publish_progress(job_id, {"status": status, "progress": payload})
+            return
+        job = _get_job(job_id)
+        payload = dict((job.progress_json if job else {}) or {})
+        try:
+            total_size = int(total_or_payload or 0)
+            done = int(downloaded_size or 0)
+        except (TypeError, ValueError):
+            total_size, done = 0, 0
+        payload["bytes_total"] = total_size
+        payload["bytes_done"] = done
+        if size_text:
+            payload["progress_text"] = str(size_text)[:240]
+        if total_size > 0:
+            payload["progress_pct"] = min(100, int((done / total_size) * 100))
+        _update_job(job_id, progress_json=payload)
+        publish_progress(
+            job_id,
+            {
+                "status": status,
+                "progress": payload,
+                "message": str(size_text)[:240] if size_text else "",
+            },
+        )
 
     def apply_pending_live_settings():
         cfg = live_config_holder.get("cfg")
