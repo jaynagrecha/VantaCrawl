@@ -290,7 +290,7 @@ export default function JobPage() {
             {
               label: "Blocks",
               value: tileValue(progress.challenge_events ?? progress.blocks),
-              hint: "Challenges / WAF catches",
+              hint: "WAF/bot challenges (403/429/etc.) — not the same as Errors",
             },
             {
               label: "Errors",
@@ -351,24 +351,34 @@ export default function JobPage() {
                     <p className="muted">Waiting for the first catch event…</p>
                   ) : (
                     <ul className="block-journal-list">
-                      {[...journal].reverse().map((ev: any, idx: number) => (
-                        <li key={`${ev.url}-${ev.time}-${idx}`} className="block-journal-item">
+                      {[...journal].reverse().map((ev: any, idx: number) => {
+                        const signal = String(ev.signal || "block");
+                        const prots = (ev.protections || []).filter(
+                          (p: string) => p && p.toLowerCase() !== signal.toLowerCase()
+                        );
+                        return (
+                        <li key={`${ev.url}-${ev.time}-${ev.time_unix || idx}-${idx}`} className="block-journal-item">
                           <div className="block-journal-meta">
                             <span className="badge status">HTTP {ev.status || "?"}</span>
-                            <span className="badge signal">{ev.signal || "block"}</span>
-                            {(ev.protections || []).slice(0, 3).map((p: string) => (
-                              <span key={p} className="badge prot">
+                            <span className="badge signal" title="Challenge / block signal">
+                              {signal}
+                            </span>
+                            {prots.slice(0, 3).map((p: string) => (
+                              <span key={p} className="badge prot" title="Protection fingerprint">
                                 {p}
                               </span>
                             ))}
-                            <span className="muted">{ev.time || ""}</span>
+                            <span className="muted" title="Event time (UTC)">
+                              {ev.time || ""}
+                            </span>
                           </div>
                           <div className="block-journal-url" title={ev.url}>
                             {ev.url}
                           </div>
                           {ev.reason ? <div className="block-journal-reason">{ev.reason}</div> : null}
                         </li>
-                      ))}
+                        );
+                      })}
                     </ul>
                   )}
                 </div>

@@ -198,10 +198,16 @@ def build_live_progress(
     health_detail = "Scan progressing normally"
     if challenge_events >= 8 or (protections and challenge_events >= 3):
         health = "Challenged"
-        health_detail = "Target is blocking or challenging the scan"
+        health_detail = (
+            f"{challenge_events} WAF/bot block(s) or challenges"
+            + (f" ({', '.join(protections[:3])})" if protections else "")
+            + " — separate from fetch Errors"
+        )
     elif challenge_events > 0:
         health = "Slowing"
-        health_detail = "Some challenges / rate limits seen"
+        health_detail = (
+            f"{challenge_events} challenge/block event(s) — not counted as Errors"
+        )
     elif stalled or (error_rate >= 0.25 and errors >= 10) or (pages < 8 and errors >= 15):
         health = "Degraded"
         health_detail = (

@@ -103,13 +103,18 @@ class DefenseEvent:
 
     def journal_dict(self) -> Dict[str, Any]:
         """Slim payload for live cockpit."""
+        # Avoid duplicating the same label as both signal and protection chip
+        signal = (self.signal or "").strip()
+        protections = [p for p in self.protections if p and p.lower() != signal.lower()][:6]
         return {
             "url": self.url,
             "status": self.status,
-            "signal": self.signal,
-            "protections": list(self.protections)[:6],
+            "signal": signal,
+            "protections": protections,
             "reason": self.reason,
-            "time": time.strftime("%H:%M:%S", time.gmtime(self.time)),
+            # Explicit UTC clock — browsers must not treat this as local time
+            "time": time.strftime("%H:%M:%S UTC", time.gmtime(self.time)),
+            "time_unix": self.time,
         }
 
     def forensic_dict(self) -> Dict[str, Any]:
