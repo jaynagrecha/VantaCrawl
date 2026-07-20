@@ -1,0 +1,12 @@
+services:
+  crawler:
+    build: .
+    volumes:
+      - ./Reports:/app/Reports
+      - "./Downloaded Files:/app/Downloaded Files"
+    command: ["--cli", "--url", "https://example.com", "--download", "--profile", "quick"]
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"

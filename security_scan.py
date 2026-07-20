@@ -1,0 +1,801 @@
+"""Security testing helpers — authorized targets only."""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import parse_qs, unquote, urlparse
+
+SECRET_PATTERNS = [
+    (r"AKIA[0-9A-Z]{16}", "AWS Access Key", "critical"),
+    (r"(?i)aws[_-]?secret[_-]?access[_-]?key['\"]?\s*[:=]\s*['\"][A-Za-z0-9/+=]{40}", "AWS Secret Key", "critical"),
+    (r"ghp_[A-Za-z0-9]{36}", "GitHub PAT", "critical"),
+    (r"sk_live_[0-9a-zA-Z]{24,}", "Stripe Live Key", "critical"),
+    (r"AIza[0-9A-Za-z\-_]{35}", "Google API Key", "high"),
+    (r"(?i)api[_-]?key['\"]?\s*[:=]\s*['\"][A-Za-z0-9_\-]{20,}", "Generic API Key", "high"),
+    (r"(?i)password['\"]?\s*[:=]\s*['\"][^'\"\\s]{8,}", "Hardcoded Password", "high"),
+    (r"-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----", "Private Key", "critical"),
+    (r"(?i)(?:client_)?secret['\"]?\s*[:=]\s*['\"][^'\"\\s]{12,}", "Hardcoded Secret", "medium"),
+]
+
+# Placeholder / documentation values that must not raise secret findings
+SECRET_PLACEHOLDER_RE = re.compile(
+    r"(?i)(your[_-]?api[_-]?key|example[_-]?key|sample[_-]?key|\bdummy\b|"
+    r"placeholder|changeme|\bxxx{2,}\b|test[_-]?key|not[_-]?a[_-]?real|"
+    r"replace[_-]?me|password123|sk_test_|pk_test_|akiaiosfodnn7example)"
+)
+
+# Exact sensitive segments / known filenames — avoid matching prose paths like backup-restore-policy
+SENSITIVE_PATH_RE = re.compile(
+    r"(?i)/(?:"
+    r"\.env(?:\.[a-z0-9_-]+)?|"
+    r"web\.config|"
+    r"\.git(?:/[^?\s]*)?|"
+    r"phpinfo(?:\.php)?|"
+    r"\.aws(?:/[^?\s]*)?|"
+    r"id_rsa|"
+    r"\.htpasswd|"
+    r"config\.php|"
+    r"wp-config(?:\.php)?|"
+    r"(?:backup|dump|site-backup|db-backup|www-backup)\.(?:zip|tar|gz|tgz|sql|bak|7z|rar)|"
+    r"(?:backup|dump)"
+    r")(?:/|$|\?)",
+)
+
+SECURITY_HEADERS = {
+    "strict-transport-security": ("missing HSTS", "medium"),
+    "content-security-policy": ("missing CSP", "low"),
+    "x-frame-options": ("missing X-Frame-Options (clickjacking)", "medium"),
+    "x-content-type-options": ("missing X-Content-Type-Options", "low"),
+    "referrer-policy": ("missing Referrer-Policy", "info"),
+    "permissions-policy": ("missing Permissions-Policy", "info"),
+}
+
+PARAM_NAME_RE = re.compile(r"[?&]([a-zA-Z_][a-zA-Z0-9_\-\[\]]*)=")
+
+
+def mask_secret_value(raw: str, *, keep_start: int = 4, keep_end: int = 4) -> str:
+    """Show enough of an accessible secret for identification without dumping the full token."""
+    value = (raw or "").strip()
+    if not value:
+        return ""
+    # Prefer the assigned value when pattern matched "key = value"
+    assign = re.search(r"[:=]\s*['\"]?([^\s'\"]{6,})", value)
+    if assign:
+        value = assign.group(1)
+    if len(value) <= keep_start + keep_end + 2:
+        return value[:2] + "***" + (value[-1:] if len(value) > 3 else "")
+    return f"{value[:keep_start]}…{value[-keep_end:]}"
+
+
+def _secret_looks_real(raw: str) -> bool:
+    """Filter obvious placeholders / low-entropy demo values."""
+    if not raw or SECRET_PLACEHOLDER_RE.search(raw):
+        return False
+    assign = re.search(r"[:=]\s*['\"]?([^\s'\"]{6,})", raw)
+    value = assign.group(1) if assign else raw
+    if SECRET_PLACEHOLDER_RE.search(value):
+        return False
+    # Require some character diversity for generic key/password patterns
+    charset = len(set(value))
+    if len(value) >= 12 and charset < 5:
+        return False
+    return True
+
+
+def scan_secrets(body_text: str, url: str) -> List[Tuple[str, str, str, Optional[str]]]:
+    """Return (label, severity, detail, evidence). Evidence is a masked snippet only when the value was readable."""
+    findings: List[Tuple[str, str, str, Optional[str]]] = []
+    if not body_text:
+        return findings
+    seen = set()
+    for pattern, label, severity in SECRET_PATTERNS:
+        for match in re.finditer(pattern, body_text):
+            raw = match.group(0)
+            if not _secret_looks_real(raw):
+                continue
+            key = (label, raw[:80])
+            if key in seen:
+                continue
+            seen.add(key)
+            evidence = mask_secret_value(raw)
+            detail = f"Possible {label} in response body"
+            findings.append((label, severity, detail, evidence or None))
+    return findings
+
+
+def scan_sensitive_path(url: str) -> Optional[str]:
+    path = urlparse(url).path or ""
+    if SENSITIVE_PATH_RE.search(path):
+        return f"Sensitive path pattern matched: {path}"
+    return None
+
+
+def audit_security_headers(headers: dict, url: str) -> List[Tuple[str, str, str]]:
+    findings = []
+    lowered = {k.lower(): v for k, v in headers.items()}
+    for header, (detail, severity) in SECURITY_HEADERS.items():
+        if header not in lowered:
+            findings.append(("header_audit", severity, detail))
+    server = lowered.get("server", "")
+    if server and any(old in server.lower() for old in ("apache/2.2", "iis/6", "nginx/1.0")):
+        findings.append(("header_audit", "medium", f"Potentially outdated server banner: {server}"))
+    powered = lowered.get("x-powered-by", "")
+    if powered:
+        findings.append(("header_audit", "info", f"X-Powered-By exposed: {powered}"))
+    return findings
+
+
+def discover_parameters(url: str, body_text: str = "", forms: Optional[List[dict]] = None) -> List[Dict[str, Any]]:
+    params = []
+    parsed = urlparse(url)
+    for name, values in parse_qs(parsed.query).items():
+        params.append({"url": url, "name": name, "source": "query", "sample": values[:3]})
+    for match in PARAM_NAME_RE.findall(url):
+        if match not in {p["name"] for p in params}:
+            params.append({"url": url, "name": match, "source": "url_pattern", "sample": []})
+    if body_text:
+        for match in re.findall(r'name=["\']([^"\']+)["\']', body_text):
+            params.append({"url": url, "name": match, "source": "html_input", "sample": []})
+    if forms:
+        for form in forms:
+            for field in form.get("fields", []):
+                params.append({"url": form.get("action", url), "name": field, "source": "form", "sample": []})
+    return params
+
+
+async def check_cors(client, url: str, origin: str = "https://evil.example") -> Optional[str]:
+    """Report only high-confidence CORS misconfigurations (credentials + open origin)."""
+    try:
+        response = await client.get(
+            url,
+            headers={"Origin": origin},
+            timeout=10,
+        )
+        acao = (response.headers.get("access-control-allow-origin") or "").strip()
+        acac = (response.headers.get("access-control-allow-credentials") or "").lower()
+        creds = acac == "true"
+        if acao == "*" and creds:
+            return "CORS allows any origin (*) with credentials — high risk"
+        if acao == origin and creds:
+            return f"CORS reflects arbitrary Origin ({origin}) with credentials — high risk"
+        # Reflection without credentials is common for public assets; keep as low-noise info only
+        if acao == origin and not creds:
+            return None
+        if acao == "*" and not creds:
+            return None
+    except Exception:
+        return None
+    return None
+
+
+def extract_forms(html: str, page_url: str, content_type: str = "") -> List[Dict[str, Any]]:
+    forms = []
+    if not html:
+        return forms
+
+    from crawler_common import is_html_content
+
+    path = urlparse(page_url).path
+    if not is_html_content(content_type, path, html):
+        return forms
+
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    for form in soup.find_all("form"):
+        action = form.get("action") or page_url
+        method = (form.get("method") or "GET").upper()
+        fields = []
+        for inp in form.find_all(["input", "textarea", "select"]):
+            name = inp.get("name")
+            if name:
+                fields.append(name)
+        forms.append({"action": action, "method": method, "fields": fields, "page": page_url})
+    return forms
+
+
+def fingerprint_technology(headers: dict, body_text: str) -> List[str]:
+    tech = []
+    lowered = {k.lower(): v for k, v in headers.items()}
+    if "x-drupal-cache" in lowered or "Drupal" in (body_text or ""):
+        tech.append("Drupal")
+    if "x-generator" in lowered and "WordPress" in lowered["x-generator"]:
+        tech.append("WordPress")
+    if "wp-content" in (body_text or ""):
+        tech.append("WordPress")
+    server = lowered.get("server", "")
+    if "nginx" in server.lower():
+        tech.append("nginx")
+    if "apache" in server.lower():
+        tech.append("Apache")
+    if "cloudflare" in lowered.get("server", "").lower() or "cf-ray" in lowered:
+        tech.append("Cloudflare")
+    if "asp.net" in lowered.get("x-powered-by", "").lower():
+        tech.append("ASP.NET")
+    if "php" in lowered.get("x-powered-by", "").lower():
+        tech.append("PHP")
+    return tech
+
+
+# --- Vulnerability indicators (authorized targets only) ---
+
+SQL_ERROR_RE = re.compile(
+    r"(?i)(sql syntax|mysql_fetch|mysqli_|ORA-\d{5}|SQLite/JDBCDriver|"
+    r"PostgreSQL.*ERROR|unclosed quotation mark|quoted string not properly terminated|"
+    r"Microsoft OLE DB Provider for SQL Server|SQLServer JDBC Driver)"
+)
+
+RCE_BODY_RE = re.compile(
+    r"(?i)(eval\s*\(|system\s*\(|exec\s*\(|passthru\s*\(|shell_exec\s*\(|"
+    r"popen\s*\(|proc_open\s*\(|Runtime\.getRuntime\s*\(\)\.exec|os\.system\s*\()"
+)
+
+TRAVERSAL_RE = re.compile(r"(?i)(\.\./|\.\.%2f|%2e%2e%2f|\.\.\\|%252e%252e/)")
+
+SSRF_PARAM_RE = re.compile(
+    r"(?i)^(url|uri|link|src|source|dest|destination|redirect|redirect_uri|"
+    r"callback|feed|path|site|domain|host|target|fetch|proxy|next|continue|return)$"
+)
+
+SQL_PARAM_RE = re.compile(r"(?i)^(id|uid|user_id|cat|category|item|page|pid|order|sort|query|q|search|filter)$")
+
+API_LEAK_RE = re.compile(
+    r"(?i)(__schema|introspectionQuery|swagger-ui|openapi\.json|swagger\.json|"
+    r"graphql playground|debug=true|actuator/health|\.well-known/openid-configuration)"
+)
+
+OPEN_REDIRECT_PARAM_RE = re.compile(
+    r"(?i)^(redirect|redirect_uri|redirect_url|return|return_url|returnurl|next|url|"
+    r"dest|destination|continue|goto|target|rurl|out|link)$"
+)
+
+GRAPHQL_PATH_RE = re.compile(r"(?i)/(?:graphql|graphiql|playground)(?:$|/|\?)")
+
+AUTH_WEAK_RE = re.compile(
+    r"(?i)(password=|passwd=|pwd=|api_key=|token=.*http://|sessionid=.*http://)"
+)
+
+
+def _query_params(url: str) -> dict:
+    return parse_qs(urlparse(url).query)
+
+
+def _looks_like_code_listing(body_text: str) -> bool:
+    """Avoid treating documentation / source listings as live RCE/XSS evidence."""
+    if not body_text:
+        return False
+    markers = ("```", "<pre", "<code", "syntax highlighting", "example.com", "tutorial")
+    lowered = body_text[:4000].lower()
+    return sum(1 for m in markers if m in lowered) >= 2
+
+
+def scan_sql_injection(url: str, body_text: str, forms: Optional[List[dict]] = None) -> List[Tuple[str, str, str]]:
+    """Require SQL-error evidence for high confidence; name-only params stay informational."""
+    findings = []
+    has_sql_error = bool(body_text and SQL_ERROR_RE.search(body_text))
+    if has_sql_error and not _looks_like_code_listing(body_text or ""):
+        findings.append(("sql_injection", "high", "SQL error pattern in response body (possible SQLi)"))
+    # Name-only hints are too noisy as medium — keep as info when no error evidence
+    if not has_sql_error:
+        params = _query_params(url)
+        risky = [name for name in params if SQL_PARAM_RE.match(name)]
+        if risky and any(
+            re.search(r"[\"'`]", v) for values in params.values() for v in values
+        ):
+            findings.append(
+                (
+                    "sql_injection",
+                    "medium",
+                    f"SQL-special characters in parameter(s) {', '.join(risky[:5])} (verify server handling)",
+                )
+            )
+    return findings
+
+
+def scan_xss(url: str, body_text: str, forms: Optional[List[dict]] = None) -> List[Tuple[str, str, str]]:
+    findings = []
+    if not body_text:
+        return findings
+    params = _query_params(url)
+    for name, values in params.items():
+        for value in values:
+            # Require XSS-relevant characters in the reflected value (cuts breadcrumb FPs)
+            if len(value) < 3 or len(value) > 120:
+                continue
+            if not re.search(r"[<>\"'`]", value):
+                continue
+            if value in body_text and re.search(rf"(?i)(<[^>]*>[^<]*{re.escape(value)}|['\"]{re.escape(value)})", body_text):
+                findings.append(
+                    ("xss", "medium", f"Parameter '{name}' value with HTML/JS metacharacters reflected (possible XSS)"),
+                )
+                break
+    if re.search(r"(?i)<script[^>]*>[^<]{0,200}(document\.cookie\s*=|eval\s*\()", body_text):
+        if not _looks_like_code_listing(body_text):
+            findings.append(("xss", "high", "Inline script with sensitive DOM access in response"))
+    # Drop blanket GET-form XSS info noise (was a major FP source)
+    return findings
+
+
+def scan_rce(url: str, body_text: str, forms: Optional[List[dict]] = None) -> List[Tuple[str, str, str]]:
+    findings = []
+    if body_text and RCE_BODY_RE.search(body_text) and not _looks_like_code_listing(body_text):
+        # Prefer when paired with a command-style parameter or error context
+        params = _query_params(url)
+        cmd_params = [n for n in params if re.match(r"(?i)^(cmd|command|exec|execute|run|shell|ping|process)$", n)]
+        if cmd_params or re.search(r"(?i)(sh:|bash:|permission denied|command not found)", body_text):
+            findings.append(("rce", "high", "Dangerous code execution pattern in response body"))
+    params = _query_params(url)
+    for name, values in params.items():
+        if re.match(r"(?i)^(cmd|command|exec|execute|run|shell)$", name):
+            # Only elevate when value looks like a shell fragment
+            if any(re.search(r"[;&|`$]|^\s*(id|whoami|ls|cat|ping)\b", v or "") for v in values):
+                findings.append(("rce", "high", f"Command-style parameter '{name}' carries shell-like value"))
+    return findings
+
+
+def scan_file_upload(forms: Optional[List[dict]], url: str) -> List[Tuple[str, str, str]]:
+    findings = []
+    if not forms:
+        return findings
+    for form in forms:
+        action = form.get("action") or url
+        fields = form.get("fields", [])
+        if not fields:
+            continue
+        has_file = any(re.match(r"(?i)^(file|upload|attachment|document|image)$", f) for f in fields)
+        if has_file:
+            method = form.get("method", "GET")
+            findings.append(
+                (
+                    "file_upload",
+                    "medium" if method == "POST" else "high",
+                    f"File upload form at {action} (verify extension/MIME validation)",
+                ),
+            )
+    return findings
+
+
+def scan_ssrf(url: str, body_text: str = "") -> List[Tuple[str, str, str]]:
+    """Only report when a URL-like value is present (name-only next=/dashboard is not SSRF)."""
+    findings = []
+    params = _query_params(url)
+    for name, values in params.items():
+        if not SSRF_PARAM_RE.match(name):
+            continue
+        for value in values:
+            decoded = unquote(value or "")
+            if re.match(r"(?i)^https?://", decoded) or decoded.startswith("//"):
+                # Internal / metadata targets are higher confidence
+                if re.search(
+                    r"(?i)(127\.0\.0\.1|localhost|0\.0\.0\.0|169\.254\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|"
+                    r"metadata\.google|169\.254\.169\.254)",
+                    decoded,
+                ):
+                    findings.append(
+                        ("ssrf", "high", f"Parameter '{name}' points at internal/metadata URL (possible SSRF)"),
+                    )
+                else:
+                    findings.append(
+                        ("ssrf", "medium", f"Parameter '{name}' accepts absolute URL value (possible SSRF vector)"),
+                    )
+    return findings
+
+
+def scan_directory_traversal(url: str) -> List[Tuple[str, str, str]]:
+    findings = []
+    parsed = urlparse(url)
+    # Require traversal sequences in path or param values — not mere param names like page=
+    if TRAVERSAL_RE.search(unquote(parsed.path or "")):
+        findings.append(("directory_traversal", "high", "Path traversal sequence in URL path"))
+    for name, values in _query_params(url).items():
+        for value in values:
+            if TRAVERSAL_RE.search(unquote(value or "")):
+                sev = "critical" if re.match(
+                    r"(?i)^(file|path|folder|dir|document|template|include|doc)$", name
+                ) else "high"
+                findings.append(
+                    ("directory_traversal", sev, f"Traversal payload in parameter '{name}'"),
+                )
+    return findings
+
+
+def scan_authentication_flaws(url: str, headers: dict, body_text: str = "") -> List[Tuple[str, str, str]]:
+    findings = []
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    path = parsed.path.lower()
+    if scheme == "http" and re.search(r"(?i)(login|signin|auth|password|admin)", path):
+        findings.append(("authentication", "high", "Login/auth page served over unencrypted HTTP"))
+    if AUTH_WEAK_RE.search(url):
+        findings.append(("authentication", "critical", "Credentials or tokens appear in URL query string"))
+    lowered = {k.lower(): v for k, v in (headers or {}).items()}
+    set_cookie = lowered.get("set-cookie", "")
+    if set_cookie and "session" in set_cookie.lower():
+        if "httponly" not in set_cookie.lower():
+            findings.append(("authentication", "medium", "Session cookie missing HttpOnly flag"))
+        if scheme == "https" and "secure" not in set_cookie.lower():
+            findings.append(("authentication", "medium", "Session cookie missing Secure flag on HTTPS"))
+    if body_text and re.search(r"(?i)(type=['\"]password['\"]|name=['\"]password['\"])", body_text):
+        if scheme == "http":
+            findings.append(("authentication", "high", "Password form on HTTP connection"))
+    www_auth = lowered.get("www-authenticate", "")
+    if www_auth and scheme == "http":
+        findings.append(("authentication", "medium", f"Basic/digest auth over HTTP ({www_auth[:40]})"))
+    # JWT inventory (masked) — informational unless over HTTP
+    try:
+        from recon_extract import find_jwt_candidates
+
+        for source, masked in find_jwt_candidates(body_text or "", headers or {}):
+            sev = "high" if scheme == "http" else "info"
+            findings.append(
+                ("authentication", sev, f"JWT-shaped token observed in {source} ({masked})")
+            )
+    except Exception:
+        pass
+    return findings
+
+
+def scan_open_redirect(url: str) -> List[Tuple[str, str, str]]:
+    """Passive: absolute off-site URL in a redirect-style parameter."""
+    findings = []
+    host = (urlparse(url).netloc or "").lower()
+    for name, values in _query_params(url).items():
+        if not OPEN_REDIRECT_PARAM_RE.match(name):
+            continue
+        for value in values:
+            decoded = unquote(value or "")
+            if not re.match(r"(?i)^https?://", decoded) and not decoded.startswith("//"):
+                continue
+            target_host = urlparse(decoded if "://" in decoded else f"https:{decoded}").netloc.lower()
+            if target_host and target_host != host:
+                findings.append(
+                    (
+                        "open_redirect",
+                        "medium",
+                        f"Parameter '{name}' points off-site to {target_host} (possible open redirect)",
+                    )
+                )
+    return findings
+
+
+def scan_mixed_content(url: str, body_text: str) -> List[Tuple[str, str, str]]:
+    findings = []
+    try:
+        from recon_extract import extract_mixed_content
+
+        resources = extract_mixed_content(url, body_text or "")
+    except Exception:
+        resources = []
+    if resources:
+        sample = ", ".join(resources[:3])
+        findings.append(
+            (
+                "mixed_content",
+                "medium",
+                f"HTTPS page loads {len(resources)} HTTP resource(s); e.g. {sample}",
+            )
+        )
+    return findings
+
+
+def scan_api_leaks(url: str, body_text: str, headers: dict, content_type: str = "") -> List[Tuple[str, str, str]]:
+    findings = []
+    path = urlparse(url).path.lower()
+    # Path-segment markers (avoid substring FPs like /debugging-guide)
+    sensitive_segments = (
+        r"(?:^|/)(?:debug|actuator|phpinfo(?:\.php)?|server-status)(?:/|$)",
+        r"(?:^|/)\.well-known/openid-configuration(?:/|$)",
+    )
+    if any(re.search(pat, path) for pat in sensitive_segments):
+        findings.append(("api_leak", "medium", f"Sensitive API/debug path: {path}"))
+    elif re.search(r"(?:^|/)(?:swagger|api-docs|openapi)(?:/|$)", path) and body_text:
+        if re.search(r"(?i)(\"swagger\"|openapi|paths\s*:)", body_text[:2000]):
+            findings.append(("api_leak", "low", f"API documentation exposed at {path}"))
+    # Body artifacts: require GraphQL path OR non-doc JSON evidence
+    if body_text and not _looks_like_code_listing(body_text):
+        if GRAPHQL_PATH_RE.search(path) and re.search(
+            r"(?i)(__schema|introspectionQuery|GraphiQL|graphql playground)", body_text
+        ):
+            findings.append(("api_leak", "high", "GraphQL introspection/playground indicators on GraphQL path"))
+        elif re.search(r"(?i)actuator/health", path) or (
+            "json" in (content_type or "").lower()
+            and re.search(r"(?i)\"status\"\s*:\s*\"UP\"", body_text[:2000])
+            and "/actuator" in path
+        ):
+            findings.append(("api_leak", "high", "Actuator/health-style JSON exposed"))
+        elif re.search(r"(?i)[?&]debug=true(?:&|$)", url):
+            findings.append(("api_leak", "medium", "debug=true present in URL"))
+    ct = (content_type or "").lower()
+    path_l = path
+    # OAuth/token endpoints legitimately return access_token — do not mark critical
+    oauthish = bool(re.search(r"(?i)(oauth|/token|/auth/|/login|/session)", path_l))
+    if "json" in ct and body_text and not oauthish:
+        try:
+            data = json.loads(body_text)
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    if not re.match(r"(?i)^(api_key|secret|password|private_key)$", str(key)):
+                        continue
+                    if isinstance(value, str) and len(value) >= 8 and _secret_looks_real(f"{key}={value}"):
+                        findings.append(("api_leak", "high", f"JSON field '{key}' may expose a secret value"))
+        except json.JSONDecodeError:
+            pass
+    return findings
+
+
+def scan_secrets_exposure(body_text: str, url: str) -> List[Tuple[str, str, str]]:
+    findings = []
+    for label, severity, detail, evidence in scan_secrets(body_text, url):
+        suffix = f" [value={evidence}]" if evidence else ""
+        findings.append(("secrets_exposure", severity, f"{label}: {detail}{suffix}"))
+    return findings
+
+
+def run_passive_vuln_scan(
+    url: str,
+    body_text: str,
+    forms: Optional[List[dict]],
+    headers: dict,
+    content_type: str = "",
+) -> List[Tuple[str, str, str]]:
+    findings = []
+    findings.extend(scan_sql_injection(url, body_text, forms))
+    findings.extend(scan_xss(url, body_text, forms))
+    findings.extend(scan_rce(url, body_text, forms))
+    findings.extend(scan_file_upload(forms, url))
+    findings.extend(scan_ssrf(url, body_text))
+    findings.extend(scan_directory_traversal(url))
+    findings.extend(scan_open_redirect(url))
+    findings.extend(scan_authentication_flaws(url, headers, body_text))
+    findings.extend(scan_api_leaks(url, body_text, headers, content_type))
+    findings.extend(scan_mixed_content(url, body_text))
+    # Secrets are handled once via config.secret_scan → scan_secrets (avoid double-fire)
+    return findings
+
+
+async def run_active_vuln_probes(
+    client,
+    url: str,
+    forms: Optional[List[dict]] = None,
+    *,
+    max_params: int = 8,
+    max_forms: int = 3,
+) -> List[Tuple[str, str, str]]:
+    """Send minimal safe payloads on GET params and forms (authorized testing only).
+
+    Compares probe responses against a baseline request to cut WAF/generic-error FPs.
+    """
+    from urllib.parse import parse_qsl, urlparse
+
+    findings: List[Tuple[str, str, str]] = []
+    seen: set = set()
+    xss_marker = "<crawler-xss-probe>"
+    rce_marker = "crawler-rce-probe-9f3a"
+
+    def add(category: str, severity: str, detail: str):
+        key = (category, detail)
+        if key not in seen:
+            seen.add(key)
+            findings.append((category, severity, detail))
+
+    sql_names = re.compile(r"(?i)^(id|uid|user_id|cat|category|item|pid|order|sort|query|q|search|filter|name)$")
+
+    probe_defs = (
+        (
+            "sql_injection",
+            "'",
+            "high",
+            lambda body, _payload, _marker: bool(SQL_ERROR_RE.search(body)),
+            lambda name: bool(sql_names.match(name)),
+        ),
+        (
+            "xss",
+            xss_marker,
+            "high",
+            lambda body, _payload, marker: marker in body,
+            lambda _name: True,
+        ),
+        (
+            "directory_traversal",
+            "../../../../etc/passwd",
+            "critical",
+            lambda body, _payload, _marker: bool(re.search(r"(?i)(root:x:0:0:|/bin/(?:ba)?sh\b)", body)),
+            lambda name: bool(re.match(r"(?i)^(file|path|folder|dir|document|template|include|doc)$", name)),
+        ),
+        (
+            "rce",
+            f";echo {rce_marker}",
+            "critical",
+            lambda body, _payload, marker: marker in body and "echo" not in body.lower()[:40],
+            lambda name: bool(re.match(r"(?i)^(cmd|command|exec|execute|run|shell)$", name)),
+        ),
+        (
+            "ssrf",
+            "http://127.0.0.1:9/",
+            "high",
+            lambda body, baseline, _marker: bool(
+                re.search(
+                    r"(?i)(connection refused|couldn't connect|failed to connect|errno\s*111|ECONNREFUSED)",
+                    body,
+                )
+            )
+            and "connection refused" not in (baseline or "").lower(),
+            lambda name: bool(SSRF_PARAM_RE.match(name)),
+        ),
+    )
+
+    redirect_probe = "https://crawler-open-redirect-probe.invalid/confirm"
+
+    async def _send_get(target: str, params: dict):
+        return await client.get(target, params=params, timeout=8, follow_redirects=True)
+
+    async def _send_post(target: str, data: dict):
+        return await client.post(target, data=data, timeout=8, follow_redirects=True)
+
+    async def _run_probes_on_field(
+        method: str, target: str, field_name: str, values: dict, source: str, baseline_body: str
+    ):
+        for category, payload, severity, detector, name_ok in probe_defs:
+            if not name_ok(field_name):
+                continue
+            trial = dict(values)
+            trial[field_name] = str(trial.get(field_name) or "1") + payload
+            try:
+                if method == "POST":
+                    response = await _send_post(target, trial)
+                else:
+                    response = await _send_get(target, trial)
+                body = response.text or ""
+                # Require response to differ from baseline (length or content) for non-XSS
+                if category != "xss" and baseline_body:
+                    if body.strip() == baseline_body.strip():
+                        continue
+                    if abs(len(body) - len(baseline_body)) < 8 and category in ("sql_injection", "ssrf"):
+                        # Tiny delta often means generic soft-error — still allow SQL_ERROR_RE hit
+                        if category == "sql_injection" and not SQL_ERROR_RE.search(body):
+                            continue
+                marker = rce_marker if category == "rce" else (xss_marker if category == "xss" else payload)
+                if category == "ssrf":
+                    hit = detector(body, baseline_body, marker)
+                else:
+                    hit = detector(body, payload, marker)
+                if hit:
+                    # XSS must not already be in baseline
+                    if category == "xss" and marker in (baseline_body or ""):
+                        continue
+                    add(
+                        category,
+                        severity,
+                        f"Active {category} probe confirmed on {source} '{field_name}' at {target}",
+                    )
+            except Exception:
+                continue
+
+    parsed = urlparse(url)
+    pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    if pairs:
+        values = {name: value for name, value in pairs}
+        try:
+            baseline_resp = await _send_get(url, values)
+            baseline_body = baseline_resp.text or ""
+        except Exception:
+            baseline_body = ""
+        # Prioritize interesting param names first
+        ordered = sorted(
+            pairs,
+            key=lambda item: (
+                0
+                if sql_names.match(item[0]) or SSRF_PARAM_RE.match(item[0])
+                or OPEN_REDIRECT_PARAM_RE.match(item[0])
+                or re.match(r"(?i)^(file|path|cmd|q|search)$", item[0])
+                else 1
+            ),
+        )
+        for name, _value in ordered[:max_params]:
+            await _run_probes_on_field("GET", url, name, values, "query param", baseline_body)
+            # Active open-redirect: confirm Location / refresh points at probe host
+            if OPEN_REDIRECT_PARAM_RE.match(name):
+                trial = dict(values)
+                trial[name] = redirect_probe
+                try:
+                    response = await client.get(
+                        url.split("?", 1)[0],
+                        params=trial,
+                        timeout=8,
+                        follow_redirects=False,
+                    )
+                    location = (response.headers.get("location") or "").lower()
+                    if "crawler-open-redirect-probe.invalid" in location:
+                        add(
+                            "open_redirect",
+                            "high",
+                            f"Active open redirect confirmed via Location on param '{name}' at {url.split('?', 1)[0]}",
+                        )
+                except Exception:
+                    pass
+
+    if forms:
+        for form in forms[:max_forms]:
+            action = form.get("action") or url
+            method = (form.get("method") or "GET").upper()
+            fields = [field for field in form.get("fields", []) if field][:max_params]
+            if not fields:
+                continue
+            values = {field: "test" for field in form.get("fields", []) if field}
+            try:
+                if method == "POST":
+                    baseline_resp = await _send_post(action, values)
+                else:
+                    baseline_resp = await _send_get(action, values)
+                baseline_body = baseline_resp.text or ""
+            except Exception:
+                baseline_body = ""
+            for field in fields:
+                await _run_probes_on_field(method, action, field, values, "form field", baseline_body)
+
+    # GraphQL introspection confirmation (POST)
+    findings.extend(await confirm_graphql_introspection(client, url))
+    return findings
+
+
+async def confirm_graphql_introspection(client, url: str) -> List[Tuple[str, str, str]]:
+    """POST a minimal introspection probe when the URL looks like GraphQL."""
+    path = urlparse(url).path or ""
+    if not GRAPHQL_PATH_RE.search(path):
+        return []
+    query = {"query": "{ __schema { queryType { name } } }"}
+    try:
+        response = await client.post(url, json=query, timeout=10, follow_redirects=True)
+        body = response.text or ""
+        if response.status_code < 500 and re.search(
+            r'(?i)"__schema"\s*:|"queryType"\s*:\s*\{\s*"name"', body
+        ):
+            return [
+                (
+                    "api_leak",
+                    "high",
+                    f"GraphQL introspection confirmed via POST at {url}",
+                )
+            ]
+    except Exception:
+        return []
+    return []
+
+
+async def probe_http_methods(client, url: str) -> List[Tuple[str, str, str]]:
+    """Once-per-host OPTIONS/TRACE surface check."""
+    findings: List[Tuple[str, str, str]] = []
+    try:
+        opt = await client.request("OPTIONS", url, timeout=8, follow_redirects=True)
+        allow = opt.headers.get("allow") or opt.headers.get("Access-Control-Allow-Methods") or ""
+        if allow:
+            findings.append(
+                ("http_methods", "info", f"OPTIONS Allow/ACAM: {allow[:160]}")
+            )
+        dangerous = [m for m in ("TRACE", "TRACK", "DEBUG") if m in allow.upper()]
+        if dangerous:
+            findings.append(
+                ("http_methods", "medium", f"Potentially risky methods advertised: {', '.join(dangerous)}")
+            )
+    except Exception:
+        pass
+    try:
+        trace = await client.request("TRACE", url, timeout=8, follow_redirects=False)
+        if trace.status_code < 400 and (trace.text or "") and urlparse(url).path in (trace.text or ""):
+            findings.append(
+                ("http_methods", "high", f"TRACE appears enabled (HTTP {trace.status_code})")
+            )
+        elif trace.status_code == 200:
+            findings.append(
+                ("http_methods", "medium", f"TRACE returned HTTP {trace.status_code}")
+            )
+    except Exception:
+        pass
+    return findings
+
+
+async def probe_active_injection(client, url: str, max_params: int = 3) -> List[Tuple[str, str, str]]:
+    """Backward-compatible wrapper."""
+    return await run_active_vuln_probes(client, url, forms=None, max_params=max_params, max_forms=0)

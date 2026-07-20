@@ -1,0 +1,100 @@
+# VantaCrawl — self-hosted SaaS on Render
+# Set secret env vars in the Dashboard (do not commit real SMTP/admin secrets).
+
+databases:
+  - name: vantacrawl-db
+    plan: free
+    databaseName: vantacrawl
+    user: vantacrawl
+
+services:
+  - type: keyvalue
+    name: vantacrawl-redis
+    plan: free
+    maxmemoryPolicy: noeviction
+    ipAllowList: []
+
+  - type: web
+    name: vantacrawl-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt -r web/api/requirements.txt && cd web/ui && npm install && npm run build
+    startCommand: uvicorn vantacrawl_api.main:app --host 0.0.0.0 --port $PORT --app-dir web/api
+    envVars:
+      - key: PYTHONPATH
+        value: /opt/render/project/src:/opt/render/project/src/web/api
+      - key: DATABASE_URL
+        fromDatabase:
+          name: vantacrawl-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: vantacrawl-redis
+          type: keyvalue
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: DATA_DIR
+        value: /opt/render/project/src/web/data
+      - key: REPORTS_DIR
+        value: /opt/render/project/src/web/data/reports
+      - key: JOBS_DIR
+        value: /opt/render/project/src/web/data/jobs
+      - key: UI_DIST_DIR
+        value: /opt/render/project/src/web/ui/dist
+
+  - type: worker
+    name: vantacrawl-worker
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt -r web/api/requirements.txt
+    startCommand: python web/worker/worker.py
+    envVars:
+      - key: PYTHONPATH
+        value: /opt/render/project/src:/opt/render/project/src/web/api
+      - key: DATABASE_URL
+        fromDatabase:
+          name: vantacrawl-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: vantacrawl-redis
+          type: keyvalue
+          property: connectionString
+      - key: SECRET_KEY
+        fromService:
+          name: vantacrawl-api
+          type: web
+          envVarKey: SECRET_KEY
+      - key: ADMIN_EMAIL
+        fromService:
+          name: vantacrawl-api
+          type: web
+          envVarKey: ADMIN_EMAIL
+      - key: ADMIN_PASSWORD
+        fromService:
+          name: vantacrawl-api
+          type: web
+          envVarKey: ADMIN_PASSWORD
+      - key: DATA_DIR
+        value: /opt/render/project/src/web/data
+      - key: REPORTS_DIR
+        value: /opt/render/project/src/web/data/reports
+      - key: JOBS_DIR
+        value: /opt/render/project/src/web/data/jobs

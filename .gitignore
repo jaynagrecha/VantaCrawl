@@ -1,0 +1,55 @@
+# Secrets / local env
+.env
+.env.*
+!.env.example
+web/.env
+web/api/.env
+**/secrets*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+
+# Build / packaging
+build/
+dist/
+*.spec.bak
+opti_exten.spec
+
+# Node
+web/ui/node_modules/
+web/ui/dist/
+
+# Runtime data (local scans / web jobs)
+web/data/
+Reports/
+Downloaded Files/
+Downloaded Files - Infopercept/
+*.zip
+crawl_checkpoint.json
+enum_checkpoint.json
+found_urls.txt
+found_urls - Copy.txt
+found_paths_log.txt
+false_positives.json
+out.txt
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Large local artifacts
+bkp.py
+Downloaded Files - bkp.zip
+Downloaded Files.zip

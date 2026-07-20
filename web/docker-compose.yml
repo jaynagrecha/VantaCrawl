@@ -1,0 +1,53 @@
+﻿services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: ..
+      dockerfile: web/api/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: sqlite:////app/web/data/vantacrawl.db
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: local-dev-secret-change-me
+      ADMIN_EMAIL: admin@localhost
+      ADMIN_PASSWORD: ChangeMeAdmin123!
+      SMTP_HOST: smtp.gmail.com
+      SMTP_PORT: "587"
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      PUBLIC_BASE_URL: http://localhost:8000
+      DATA_DIR: /app/web/data
+      REPORTS_DIR: /app/web/data/reports
+      JOBS_DIR: /app/web/data/jobs
+      UI_DIST_DIR: /app/web/ui/dist
+    volumes:
+      - ./data:/app/web/data
+      - ./ui/dist:/app/web/ui/dist:ro
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: ..
+      dockerfile: web/worker/Dockerfile
+    environment:
+      DATABASE_URL: sqlite:////app/web/data/vantacrawl.db
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: local-dev-secret-change-me
+      ADMIN_EMAIL: admin@localhost
+      ADMIN_PASSWORD: ChangeMeAdmin123!
+      DATA_DIR: /app/web/data
+      REPORTS_DIR: /app/web/data/reports
+      JOBS_DIR: /app/web/data/jobs
+    volumes:
+      - ./data:/app/web/data
+      - ../Wordlist:/app/Wordlist:ro
+    depends_on:
+      - redis
+      - api

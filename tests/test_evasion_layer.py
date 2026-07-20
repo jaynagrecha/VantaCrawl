@@ -1,0 +1,70 @@
+import asyncio
+
+from crawl_config import CrawlConfig
+from evasion_layer import (
+    detect_challenge,
+    evasion_from_crawl_config,
+    EvasionConfig,
+    EvasionSession,
+)
+
+
+def test_browser_headers_include_sec_fetch_in_stealth():
+    session = EvasionSession(
+        EvasionConfig(enabled=True, level="stealth", browser_profile="chrome", referer_chain=True)
+    )
+    session._last_url = "https://lab.local/home"
+    headers = session.build_headers("https://lab.local/admin")
+    assert "User-Agent" in headers
+    assert "Chrome" in headers["User-Agent"]
+    assert headers.get("Sec-Fetch-Mode") == "navigate"
+    assert headers.get("Referer") == "https://lab.local/home"
+    assert "Sec-CH-UA" in headers
+
+
+def test_sticky_host_keeps_same_ua():
+    session = EvasionSession(
+        EvasionConfig(enabled=True, level="aggressive", ua_strategy="sticky_host", browser_profile="firefox")
+    )
+    a = session.build_headers("https://a.test/x")["User-Agent"]
+    b = session.build_headers("https://a.test/y")["User-Agent"]
+    assert a == b
+
+
+def test_detect_rate_limit_and_cloudflare():
+    assert detect_challenge(429, "") == "rate_limit"
+    assert detect_challenge(403, "cf-ray cloudflare") == "cloudflare_block"
+    assert detect_challenge(503, "checking your browser before access") == "checking your browser"
+
+
+def test_backoff_after_challenge():
+    session = EvasionSession(EvasionConfig(enabled=True, level="aggressive", adaptive_backoff=True))
+    session.after_request("https://lab.local/x", 429, "")
+    assert session._backoff_until > 0
+    assert session.last_challenge == "rate_limit"
+
+
+def test_config_profile_stealth_sets_stealth_evasion():
+    cfg = CrawlConfig(start_url="https://lab.local", profile="stealth")
+    assert cfg.evasion_level == "stealth"
+    assert cfg.evasion_decoy_requests is False
+    session = evasion_from_crawl_config(cfg)
+    assert session.effective_level() == "stealth"
+
+
+def test_decoy_paths_only_aggressive():
+    session = EvasionSession(EvasionConfig(enabled=True, level="aggressive", decoy_requests=True))
+    assert session.decoy_paths()
+    session2 = EvasionSession(EvasionConfig(enabled=True, level="basic", decoy_requests=True))
+    assert session2.decoy_paths() == []
+
+
+def test_jitter_off_is_zero():
+    session = EvasionSession(EvasionConfig(enabled=False, level="off"))
+    assert session.jitter_range_ms() == (0, 0)
+
+
+def test_before_request_returns_headers():
+    session = EvasionSession(EvasionConfig(enabled=True, level="basic", jitter_min_ms=0, jitter_max_ms=0))
+    headers = asyncio.run(session.before_request("https://lab.local/"))
+    assert "User-Agent" in headers
