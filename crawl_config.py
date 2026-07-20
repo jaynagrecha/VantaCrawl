@@ -117,6 +117,7 @@ class CrawlConfig:
 
     html_report: bool = True
     assessment_report: bool = True
+    report_title: str = ""  # optional scan/job title used in report filenames
     json_report: bool = True
     sqlite_export: bool = True
     csv_export: bool = True

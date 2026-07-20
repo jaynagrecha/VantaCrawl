@@ -208,7 +208,11 @@ async def run_full_crawl_async(
     def running():
         return pause_controller() and disk_space_ok(config.disk_space_guard_mb)
 
-    reporter = ReportWriter(config.report_dir(), config.start_url)
+    reporter = ReportWriter(
+        config.report_dir(),
+        config.start_url,
+        title=str(getattr(config, "report_title", "") or ""),
+    )
     base_domain = urlparse(config.start_url).netloc
     download_semaphore = asyncio.Semaphore(config.download_concurrency)
 
@@ -760,6 +764,8 @@ async def run_full_crawl_async(
 
     report_meta = config_to_report_meta(config)
     report_meta.setdefault("mode", getattr(config, "profile", "full"))
+    if getattr(config, "report_title", ""):
+        report_meta["title"] = str(config.report_title)
     report_paths = reporter.write_all(
         stats,
         {

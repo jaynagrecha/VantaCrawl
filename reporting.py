@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
 import sqlite3
 import time
 from html import escape
@@ -16,13 +17,32 @@ from report_html import render_search_report_html, url_table_html
 from search_report import build_search_conclusion
 
 
+def report_entity_slug(value: str, *, max_len: int = 48) -> str:
+    """Filesystem-safe slug for scan title / entity labels (keeps letters, digits, . _ -)."""
+    text = (value or "").strip()
+    text = re.sub(r"[^\w.\-]+", "-", text, flags=re.UNICODE)
+    text = re.sub(r"-{2,}", "-", text).strip("-._")
+    return (text[:max_len].strip("-._") or "scan")
+
+
+def build_report_base_name(start_url: str, title: str = "", *, timestamp: Optional[str] = None) -> str:
+    """Name reports as `{title}__{host}_{timestamp}` when a title is set, else `{host}_{timestamp}`."""
+    host = (urlparse(start_url).netloc or "").replace(":", "_").strip(".") or "target"
+    stamp = timestamp or time.strftime("%Y%m%d_%H%M%S")
+    title_slug = report_entity_slug(title) if (title or "").strip() else ""
+    if title_slug and title_slug.lower() != host.lower():
+        return f"{title_slug}__{host}_{stamp}"
+    return f"{host}_{stamp}"
+
+
 class ReportWriter:
-    def __init__(self, report_dir: str, start_url: str):
+    def __init__(self, report_dir: str, start_url: str, title: str = ""):
         self.report_dir = report_dir
         self.start_url = start_url
-        self.host = urlparse(start_url).netloc.replace(":", "_")
+        self.title = (title or "").strip()
+        self.host = urlparse(start_url).netloc.replace(":", "_") or "target"
         self.timestamp = time.strftime("%Y%m%d_%H%M%S")
-        self.base_name = f"crawl_{self.host}_{self.timestamp}"
+        self.base_name = build_report_base_name(start_url, self.title, timestamp=self.timestamp)
         os.makedirs(report_dir, exist_ok=True)
         self.warc_path = os.path.join(report_dir, f"{self.base_name}.warc")
         self._warc_handle = None

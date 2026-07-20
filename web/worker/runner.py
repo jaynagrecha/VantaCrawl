@@ -120,6 +120,7 @@ def _build_crawl_config(job: ScanJob) -> CrawlConfig:
         cfg.extensions = parts or None
 
     cfg.report_dir = lambda: str(report_dir)  # type: ignore[method-assign]
+    cfg.report_title = (job.title or "").strip()
     return cfg
 
 
