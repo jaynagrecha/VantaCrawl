@@ -16,6 +16,7 @@ from evasion_layer import BROWSER_PROFILES, LEVELS  # noqa: E402
 from gui_presets import (  # noqa: E402
     MODE_LABELS,
     MODE_PRESETS,
+    MODES,
     SPEED_PROFILES,
     concurrency_for_speed,
 )
@@ -522,10 +523,11 @@ def available_wordlists() -> List[Dict[str, str]]:
 
 
 def meta_payload() -> Dict[str, Any]:
+    mode_keys = [m for m in MODES if m in MODE_PRESETS] or list(MODE_PRESETS.keys())
     return {
         "modes": {
             key: {"label": MODE_LABELS.get(key, key), "preset": MODE_PRESETS.get(key, {})}
-            for key in MODE_PRESETS
+            for key in mode_keys
         },
         "speeds": SPEED_PROFILES,
         "default_settings": default_settings(),

@@ -235,7 +235,8 @@ export default function NewScanPage() {
       <section className="card">
         <h1>New scan</h1>
         <p className="lead">
-          Choose a mode and parallelism, then fine-tune expert options. Dropdowns show every supported value.
+          Full Audit finishes small sites. Deep Audit is the opt-in heavy pass (large wordlist, prefixes,
+          recursive enum). Fine-tune expert options below if needed.
         </p>
         {error && <div className="error">{error}</div>}
         <div className="grid-2">
@@ -257,6 +258,9 @@ export default function NewScanPage() {
                   </option>
                 ))}
               </select>
+              <span className="setting-help-inline" style={{ display: "block", marginTop: ".45rem" }}>
+                Default Full Audit = practical. Choose Deep Audit only when you want the old overnight-style enum.
+              </span>
             </div>
             <div className="field">
               <label>Parallelism</label>

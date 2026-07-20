@@ -174,8 +174,15 @@ class CrawlerApp(QMainWindow):
         self.mode_fast_rb = QRadioButton(MODE_LABELS["fast_scan"])
         self.mode_site_rb = QRadioButton(MODE_LABELS["site_map"])
         self.mode_full_rb = QRadioButton(MODE_LABELS["full_audit"])
+        self.mode_deep_rb = QRadioButton(MODE_LABELS["deep_audit"])
         self.mode_full_rb.setChecked(True)
-        for idx, rb in enumerate((self.mode_fast_rb, self.mode_site_rb, self.mode_full_rb)):
+        self.mode_deep_rb.setToolTip(
+            "Opt-in heavy audit: large wordlist, auto-prefixes, recursive enum, historical seeds. "
+            "Can run for hours on small sites — use Full Audit for everyday scans."
+        )
+        for idx, rb in enumerate(
+            (self.mode_fast_rb, self.mode_site_rb, self.mode_full_rb, self.mode_deep_rb)
+        ):
             self.mode_group.addButton(rb, idx)
             run_layout.addWidget(rb)
         self.mode_group.buttonClicked.connect(self.on_mode_changed)
@@ -832,14 +839,9 @@ class CrawlerApp(QMainWindow):
         apply_mode_preset(self, "full_audit")
 
     def on_mode_changed(self, _button=None):
-        modes = ("fast_scan", "site_map", "full_audit")
-        mode = modes[self.mode_group.checkedId()]
-        if mode == "fast_scan":
-            self.mode_fast_rb.setChecked(True)
-        elif mode == "site_map":
-            self.mode_site_rb.setChecked(True)
-        else:
-            self.mode_full_rb.setChecked(True)
+        modes = ("fast_scan", "site_map", "full_audit", "deep_audit")
+        idx = self.mode_group.checkedId()
+        mode = modes[idx] if 0 <= idx < len(modes) else "full_audit"
         apply_mode_preset(self, mode)
 
     def on_speed_changed(self, _index=None):

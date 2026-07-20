@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
-MODES = ("fast_scan", "site_map", "full_audit")
+MODES = ("fast_scan", "site_map", "full_audit", "deep_audit")
 
 MODE_LABELS = {
     "fast_scan": "Fast Scan — quick hidden-path hunt (capped wordlist)",
     "site_map": "Site Map — crawl and mirror",
-    "full_audit": "Full Audit — crawl + security + capped enum (practical speed)",
+    "full_audit": "Full Audit — crawl + security + practical enum (finishes small sites)",
+    "deep_audit": "Deep Audit — opt-in heavy enum (prefixes, depth, large wordlist)",
 }
 
 # Parallelism sweet-spot profiles (asyncio in-flight limits, not OS threads)
@@ -90,17 +91,59 @@ MODE_PRESETS: Dict[str, Dict[str, Any]] = {
         "enum_concurrency": 20,
         "download_concurrency": 8,
     },
+    # Default audit: finishes small sites in minutes (enum is post-crawl, kept sharp not nuclear)
     "full_audit": {
         "profile": "full",
         "enum_only": False,
         "download_files": False,
         "use_wordlist": True,
         "mutation_enum": True,
+        "mutation_builtin": True,
+        "mutation_from_seeds": True,
         "security_scan": True,
         "vuln_scan": True,
         "search_conclusion_report": True,
         "enum_auto_vuln_scan": True,
+        "enum_flat_scan": True,
+        "auto_prefix_enum": False,
+        "wayback_seeds": False,
+        "common_crawl_seeds": False,
+        "subdomain_enum": False,
+        "api_recon": True,
+        "api_recon_active": True,
+        "api_recon_graphql": True,
+        "api_recon_word_limit": 800,
+        "evasion_enabled": True,
+        "evasion_level": "basic",
+        "evasion_decoy_requests": False,
+        "enum_word_limit": 3000,
+        "mutation_max_candidates": 1500,
+        "max_depth": 2,
+        "link_depth_limit": 5,
+        "broken_link_sample_size": 10,
+        "evasion_jitter_min_ms": 0,
+        "evasion_jitter_max_ms": 60,
+        "defense_verify": True,
+        "vuln_active_probe": True,
+        "speed": "fast",
+    },
+    # Opt-in previous Full Audit intensity — prefixes × depth × large wordlist
+    "deep_audit": {
+        "profile": "full",
+        "enum_only": False,
+        "download_files": False,
+        "use_wordlist": True,
+        "mutation_enum": True,
+        "mutation_builtin": True,
+        "mutation_from_seeds": True,
+        "security_scan": True,
+        "vuln_scan": True,
+        "search_conclusion_report": True,
+        "enum_auto_vuln_scan": True,
+        "enum_flat_scan": False,
+        "auto_prefix_enum": True,
         "wayback_seeds": True,
+        "common_crawl_seeds": True,
         "subdomain_enum": False,
         "api_recon": True,
         "api_recon_active": True,
@@ -111,6 +154,9 @@ MODE_PRESETS: Dict[str, Dict[str, Any]] = {
         "evasion_decoy_requests": False,
         "enum_word_limit": 15000,
         "mutation_max_candidates": 5000,
+        "max_depth": 3,
+        "link_depth_limit": 0,
+        "broken_link_sample_size": 30,
         "evasion_jitter_min_ms": 0,
         "evasion_jitter_max_ms": 60,
         "defense_verify": True,
@@ -174,10 +220,12 @@ def apply_mode_preset(app, mode: str):
         "gobuster_ext_cb": "gobuster_style_extensions",
         "ext_wordlist_cb": "legacy_wordlist_expansion",
         "smart_wl_cb": "smart_wordlist_order",
+        "auto_prefix_cb": "auto_prefix_enum",
         "security_cb": "security_scan",
         "vuln_cb": "vuln_scan",
         "enum_auto_vuln_cb": "enum_auto_vuln_scan",
         "wayback_cb": "wayback_seeds",
+        "cc_cb": "common_crawl_seeds",
         "subdomain_cb": "subdomain_enum",
         "api_recon_cb": "api_recon",
         "api_active_cb": "api_recon_active",
@@ -193,7 +241,6 @@ def apply_mode_preset(app, mode: str):
         "defense_verify_cb": "defense_verify",
         "mirror_assets_cb": "mirror_page_assets",
         "vuln_probe_cb": "vuln_active_probe",
-        "vuln_cb": "vuln_scan",
     }
     if "profile" in preset and hasattr(app, "profile_combo"):
         idx = app.profile_combo.findText(preset["profile"])
@@ -226,6 +273,12 @@ def apply_mode_preset(app, mode: str):
         app.evasion_jitter_min_spin.setValue(int(preset["evasion_jitter_min_ms"]))
     if "evasion_jitter_max_ms" in preset and hasattr(app, "evasion_jitter_max_spin"):
         app.evasion_jitter_max_spin.setValue(int(preset["evasion_jitter_max_ms"]))
+    if "max_depth" in preset and hasattr(app, "depth_spin"):
+        app.depth_spin.setValue(int(preset["max_depth"]))
+    if "link_depth_limit" in preset and hasattr(app, "link_depth_spin"):
+        app.link_depth_spin.setValue(int(preset["link_depth_limit"]))
+    if "broken_link_sample_size" in preset and hasattr(app, "broken_sample_spin"):
+        app.broken_sample_spin.setValue(int(preset["broken_link_sample_size"]))
 
     speed = preset.get("speed", "balanced")
     apply_speed_profile(app, speed)
