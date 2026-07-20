@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     job_queue_key: str = "vantacrawl:jobs"
     progress_channel_prefix: str = "vantacrawl:progress:"
 
+    # Free Render has no Background Workers — run the queue consumer in-process.
+    embed_worker: bool = True
+
     @property
     def smtp_sender(self) -> str:
         return self.smtp_from or self.smtp_user

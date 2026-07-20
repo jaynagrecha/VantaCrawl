@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -11,11 +12,22 @@ from fastapi.staticfiles import StaticFiles
 from .bootstrap import startup
 from .config import get_settings
 from .routes import auth, jobs, meta, reports
+from .services.embedded_worker import start_embedded_worker, stop_embedded_worker
 
 logging.basicConfig(level=logging.INFO)
 settings = get_settings()
 
-app = FastAPI(title=settings.app_name, version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    startup()
+    if settings.embed_worker:
+        start_embedded_worker()
+    yield
+    stop_embedded_worker()
+
+
+app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
 
 origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 app.add_middleware(
@@ -33,14 +45,13 @@ app.include_router(reports.router, prefix=PREFIX)
 app.include_router(meta.router, prefix=PREFIX)
 
 
-@app.on_event("startup")
-def _startup():
-    startup()
-
-
 @app.get("/api/health")
 def health():
-    return {"ok": True, "app": settings.app_name}
+    return {
+        "ok": True,
+        "app": settings.app_name,
+        "embed_worker": settings.embed_worker,
+    }
 
 
 ui_dist = Path(settings.ui_dist_dir)

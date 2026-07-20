@@ -67,8 +67,9 @@ docker compose up --build
 
 - Postgres
 - Redis (Key Value)
-- Web service (`VantaCrawl-api`) — builds UI + runs uvicorn on `$PORT`
-- Worker (`VantaCrawl-worker`)
+- Web service (`vantacrawl-api`) — UI + API + **embedded job worker** (`EMBED_WORKER=true`)
+
+Render free plans cannot create Background Workers, so the queue consumer runs inside the web process. On a paid plan you can set `EMBED_WORKER=false` and run `python web/worker/worker.py` separately.
 
 Set in Dashboard (sync: false):
 
