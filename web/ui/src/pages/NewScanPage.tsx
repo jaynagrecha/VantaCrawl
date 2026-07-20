@@ -2,12 +2,141 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 
+type FieldMeta = {
+  key: string;
+  label: string;
+  help: string;
+  control: string;
+  options: { value: string; label: string }[];
+  presets: { value: string; label: string }[];
+};
+
 type Meta = {
   modes: Record<string, { label: string; preset: Record<string, unknown> }>;
   speeds: Record<string, { label: string }>;
   default_settings: Record<string, unknown>;
   setting_groups: { id: string; title: string; keys: string[] }[];
+  setting_fields?: Record<string, FieldMeta>;
 };
+
+function humanize(key: string) {
+  return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function SettingControl({
+  fieldKey,
+  value,
+  meta,
+  onChange,
+}: {
+  fieldKey: string;
+  value: unknown;
+  meta?: FieldMeta;
+  onChange: (key: string, value: unknown) => void;
+}) {
+  const label = meta?.label || humanize(fieldKey);
+  const help = meta?.help || "";
+  const control = meta?.control || "auto";
+  const options = meta?.options || [];
+  const presets = meta?.presets || [];
+
+  const isBool = typeof value === "boolean" || control === "checkbox";
+  const isNumber = typeof value === "number" || control === "number";
+  const isSelect = control === "select" && options.length > 0;
+  const isPresetText = control === "text_with_presets";
+
+  if (isBool) {
+    return (
+      <div className="setting-item" key={fieldKey}>
+        <label>
+          <input
+            type="checkbox"
+            checked={Boolean(value)}
+            onChange={(e) => onChange(fieldKey, e.target.checked)}
+          />
+          <span>
+            <span className="setting-label">{label}</span>
+            {help ? <span className="setting-help">{help}</span> : null}
+          </span>
+        </label>
+      </div>
+    );
+  }
+
+  if (isSelect) {
+    const current = value == null ? "" : String(value);
+    const known = options.some((o) => o.value === current);
+    return (
+      <div className="field setting-field" key={fieldKey}>
+        <label>{label}</label>
+        {help ? <p className="setting-help-inline">{help}</p> : null}
+        <select value={known ? current : current} onChange={(e) => onChange(fieldKey, e.target.value)}>
+          {!known && current ? <option value={current}>{current} (custom)</option> : null}
+          {options.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+      </div>
+    );
+  }
+
+  if (isPresetText) {
+    const text = value == null ? "" : String(value);
+    const matched = presets.find((p) => p.value === text);
+    return (
+      <div className="field setting-field setting-field-wide" key={fieldKey}>
+        <label>{label}</label>
+        {help ? <p className="setting-help-inline">{help}</p> : null}
+        <select
+          value={matched ? text : "__custom__"}
+          onChange={(e) => {
+            if (e.target.value === "__custom__") return;
+            onChange(fieldKey, e.target.value);
+          }}
+        >
+          {presets.map((opt) => (
+            <option key={`${opt.label}:${opt.value}`} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+          <option value="__custom__">Custom (edit below)</option>
+        </select>
+        <input
+          value={text}
+          onChange={(e) => onChange(fieldKey, e.target.value)}
+          placeholder="Comma-separated values"
+        />
+      </div>
+    );
+  }
+
+  if (isNumber) {
+    return (
+      <div className="field setting-field" key={fieldKey}>
+        <label>{label}</label>
+        {help ? <p className="setting-help-inline">{help}</p> : null}
+        <input
+          type="number"
+          value={Number(value ?? 0)}
+          onChange={(e) => onChange(fieldKey, Number(e.target.value))}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="field setting-field" key={fieldKey}>
+      <label>{label}</label>
+      {help ? <p className="setting-help-inline">{help}</p> : null}
+      <input
+        value={value == null ? "" : String(value)}
+        onChange={(e) => onChange(fieldKey, e.target.value)}
+      />
+    </div>
+  );
+}
 
 export default function NewScanPage() {
   const nav = useNavigate();
@@ -42,6 +171,7 @@ export default function NewScanPage() {
   }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const groups = meta?.setting_groups || [];
+  const fields = meta?.setting_fields || {};
   const activeKeys = useMemo(
     () => groups.find((g) => g.id === tab)?.keys || [],
     [groups, tab]
@@ -80,7 +210,9 @@ export default function NewScanPage() {
     <form onSubmit={submit}>
       <section className="card">
         <h1>New scan</h1>
-        <p className="lead">Full desktop parity — mode presets, speed profiles, and expert toggles.</p>
+        <p className="lead">
+          Choose a mode and parallelism, then fine-tune expert options. Dropdowns show every supported value.
+        </p>
         {error && <div className="error">{error}</div>}
         <div className="grid-2">
           <div>
@@ -135,6 +267,9 @@ export default function NewScanPage() {
 
       <section className="card">
         <h2>Expert settings</h2>
+        <p className="lead" style={{ marginBottom: "0.85rem" }}>
+          Plain-language labels with guided choices for enums. Presets cover common extension and status filters.
+        </p>
         <div className="tabs">
           {groups.map((g) => (
             <button
@@ -148,44 +283,15 @@ export default function NewScanPage() {
           ))}
         </div>
         <div className="settings-grid">
-          {activeKeys.map((key) => {
-            const value = settings[key];
-            if (typeof value === "boolean") {
-              return (
-                <div className="setting-item" key={key}>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(value)}
-                      onChange={(e) => setSetting(key, e.target.checked)}
-                    />
-                    <span className="mono">{key}</span>
-                  </label>
-                </div>
-              );
-            }
-            if (typeof value === "number") {
-              return (
-                <div className="field" key={key} style={{ marginBottom: 0 }}>
-                  <label className="mono">{key}</label>
-                  <input
-                    type="number"
-                    value={Number(value)}
-                    onChange={(e) => setSetting(key, Number(e.target.value))}
-                  />
-                </div>
-              );
-            }
-            return (
-              <div className="field" key={key} style={{ marginBottom: 0 }}>
-                <label className="mono">{key}</label>
-                <input
-                  value={value == null ? "" : String(value)}
-                  onChange={(e) => setSetting(key, e.target.value)}
-                />
-              </div>
-            );
-          })}
+          {activeKeys.map((key) => (
+            <SettingControl
+              key={key}
+              fieldKey={key}
+              value={settings[key]}
+              meta={fields[key]}
+              onChange={setSetting}
+            />
+          ))}
         </div>
       </section>
     </form>

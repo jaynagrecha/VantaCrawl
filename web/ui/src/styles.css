@@ -126,11 +126,17 @@ h2 { margin: 0 0 .75rem; font-size: 1.15rem; }
   font-family: "IBM Plex Mono", monospace; font-size: .78rem; color: #b7c3da; white-space: pre-wrap;
 }
 
-.settings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .65rem; }
+.settings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .75rem; }
 .setting-item {
-  border: 1px solid var(--line); background: var(--bg-soft); border-radius: 12px; padding: .7rem .8rem;
+  border: 1px solid var(--line); background: var(--bg-soft); border-radius: 12px; padding: .75rem .85rem;
 }
-.setting-item label { display: flex; gap: .55rem; align-items: center; font-size: .9rem; }
+.setting-item label { display: flex; gap: .55rem; align-items: flex-start; font-size: .9rem; }
+.setting-label { display: block; font-weight: 700; }
+.setting-help { display: block; margin-top: .2rem; color: var(--muted); font-size: .75rem; font-weight: 500; line-height: 1.35; }
+.setting-help-inline { margin: 0 0 .35rem; color: var(--muted); font-size: .75rem; line-height: 1.35; }
+.setting-field { margin-bottom: 0; }
+.setting-field-wide { grid-column: 1 / -1; }
+.setting-field select + input { margin-top: .45rem; }
 .tabs { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: 1rem; }
 .tab {
   border: 1px solid var(--line); background: transparent; color: var(--muted);

@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from crawl_config import CrawlConfig  # noqa: E402
+from evasion_layer import BROWSER_PROFILES, LEVELS  # noqa: E402
 from gui_presets import (  # noqa: E402
     MODE_LABELS,
     MODE_PRESETS,
@@ -36,13 +37,191 @@ EDITABLE_DEFAULTS_SKIP = {
     "auth_password",
 }
 
+_HUMAN = {
+    "restrict_domain": ("Stay on start domain", "Do not follow links to other hostnames."),
+    "max_depth": ("Max crawl depth", "How many link hops from the start URL."),
+    "link_depth_limit": ("Link depth limit", "Hard cap on link-following depth."),
+    "crawl_concurrency": ("Crawl concurrency", "Parallel page fetches."),
+    "enum_concurrency": ("Enum concurrency", "Parallel directory brute-force probes."),
+    "download_concurrency": ("Download concurrency", "Parallel file downloads."),
+    "ignore_robots": ("Ignore robots.txt", "Skip robots.txt rules (authorized targets only)."),
+    "bypass_forbidden": ("Bypass 401/403", "Continue when the server returns forbidden/unauthorized."),
+    "enum_only": ("Enum only", "Skip crawl; run directory enumeration suite only."),
+    "enum_flat_scan": ("Flat enum", "Enumerate the root path only (no recursive folders)."),
+    "wayback_seeds": ("Wayback Machine seeds", "Pull historical URLs from archive.org."),
+    "common_crawl_seeds": ("Common Crawl seeds", "Pull URLs from Common Crawl indexes."),
+    "subdomain_enum": ("Subdomain enum", "Brute-force common subdomains."),
+    "openapi_parse": ("OpenAPI / Swagger", "Parse API docs for paths and operations."),
+    "js_bundle_analysis": ("JS bundle analysis", "Extract routes and secrets from JavaScript."),
+    "form_discovery": ("Form discovery", "Find HTML forms on crawled pages."),
+    "form_submit_probe": ("Form GET probe", "Probe GET forms safely (authorized only)."),
+    "rss_feeds": ("RSS / Atom feeds", "Discover and seed feed URLs."),
+    "use_wordlist": ("Use wordlist", "Enable wordlist-based directory brute force."),
+    "mutation_enum": ("Path mutations", "Generate mutated path candidates."),
+    "mutation_builtin": ("Built-in mutations", "Use the built-in mutation dictionary."),
+    "mutation_from_seeds": ("Mutate from seeds", "Mutate paths discovered during crawl."),
+    "enum_word_limit": ("Wordlist limit", "Max words to try from the wordlist (0 = all)."),
+    "mutation_max_candidates": ("Max mutations", "Cap on generated mutation candidates."),
+    "wildcard_detection": ("Wildcard / soft-404 detection", "Baseline responses to reduce false positives."),
+    "gobuster_style_extensions": ("Extension fuzzing", "Append common extensions while enumerating."),
+    "smart_wordlist_order": ("Smart wordlist order", "Prioritize high-value paths first."),
+    "enum_extensions": ("Extensions", "Comma-separated extensions to append (e.g. php,bak,env)."),
+    "enum_status_blacklist": ("Status blacklist", "Comma-separated HTTP codes to ignore as hits."),
+    "enum_method": ("Enum HTTP method", "HEAD is faster; GET is needed when HEAD is blocked."),
+    "enum_auto_crawl_hits": ("Auto-crawl enum hits", "Enqueue discovered directories/files into the crawl."),
+    "enum_auto_vuln_scan": ("Auto-scan enum hits", "Run security checks on enum hits."),
+    "vhost_enum": ("Virtual host enum", "Probe Host-header vhosts."),
+    "s3_enum": ("S3 bucket enum", "Guess public AWS S3 buckets for the domain."),
+    "gcs_enum": ("GCS bucket enum", "Guess public Google Cloud Storage buckets."),
+    "smart_false_positive": ("Smart false-positive filter", "Similarity / baseline filtering for enum hits."),
+    "false_positive_learning": ("Learn false positives", "Remember rejected patterns across the run."),
+    "security_scan": ("Security scan", "Enable the security assessment suite."),
+    "vuln_scan": ("Vulnerability checks", "Look for common web issues."),
+    "vuln_active_probe": ("Active probes", "Send safe injection probes (authorized only)."),
+    "secret_scan": ("Secret scan", "Hunt for API keys and credentials in content."),
+    "header_audit": ("Security headers", "Audit missing security response headers."),
+    "cors_check": ("CORS check", "Test Cross-Origin Resource Sharing misconfig."),
+    "param_discovery": ("Parameter discovery", "Find query/body parameters for probing."),
+    "tech_fingerprint": ("Tech fingerprint", "Identify frameworks and server software."),
+    "sensitive_file_highlights": ("Sensitive files", "Highlight .env, .git, backups, etc."),
+    "broken_link_report": ("Broken links", "Report dead links found while crawling."),
+    "defense_verify": ("Defense verify", "Check WAF / security controls are present."),
+    "active_probe_max_params": ("Max probe params", "Cap on query parameters actively probed."),
+    "active_probe_max_forms": ("Max probe forms", "Cap on forms actively probed."),
+    "download_files": ("Download files", "Save responses to the mirror folder."),
+    "mirror_page_assets": ("Mirror assets", "Download CSS/JS/images for pages."),
+    "preserve_structure": ("Preserve paths", "Keep site folder structure on disk."),
+    "rewrite_local": ("Rewrite local links", "Rewrite HTML links for offline browsing."),
+    "duplicate_content_detection": ("Duplicate content", "Skip downloading duplicate bodies."),
+    "warc_export": ("WARC export", "Write a WARC archive of the session."),
+    "skip_tracking_downloads": ("Skip trackers", "Skip tiny tracking pixels and beacons."),
+    "evasion_enabled": ("Enable stealth", "Browser-like headers, pacing, and challenge awareness."),
+    "evasion_level": ("Evasion level", "How aggressive the stealth layer should be."),
+    "evasion_browser": ("Browser profile", "Which browser fingerprint to impersonate."),
+    "evasion_ua_strategy": ("UA strategy", "How often to rotate the User-Agent."),
+    "evasion_jitter_min_ms": ("Jitter min (ms)", "Minimum delay between requests."),
+    "evasion_jitter_max_ms": ("Jitter max (ms)", "Maximum delay between requests."),
+    "evasion_referer_chain": ("Referer chain", "Send realistic Referer headers."),
+    "evasion_adaptive_backoff": ("Adaptive backoff", "Slow down when rate-limited or challenged."),
+    "evasion_challenge_detect": ("Challenge detect", "Detect bot challenges and back off."),
+    "evasion_decoy_requests": ("Decoy requests", "Occasional benign decoy fetches (noisier)."),
+    "evasion_http2": ("Prefer HTTP/2", "Use HTTP/2 when the target supports it."),
+    "evasion_language_rotate": ("Language rotate", "Rotate Accept-Language values."),
+    "html_report": ("HTML report", "Write the interactive HTML search report."),
+    "json_report": ("JSON report", "Write machine-readable JSON output."),
+    "csv_export": ("CSV export", "Export findings/URLs as CSV."),
+    "sqlite_export": ("SQLite export", "Write a SQLite findings database."),
+    "search_conclusion_report": ("Search conclusion", "Plain-language conclusion section."),
+    "site_graph_export": ("Site graph", "Export a site map / graph view."),
+}
+
+_UA_STRATEGIES = (
+    ("sticky_session", "Sticky session - one UA for the whole run"),
+    ("sticky_host", "Sticky host - one UA per hostname (recommended)"),
+    ("rotate", "Rotate - change UA more often"),
+)
+
+_ENUM_METHODS = (
+    ("HEAD", "HEAD - faster probes"),
+    ("GET", "GET - when HEAD is blocked or unreliable"),
+)
+
+_EXTENSION_PRESETS = (
+    ("php,asp,aspx,bak,old,txt,zip,sql,config,env", "Common web + backups"),
+    ("php,asp,aspx,jsp,cgi", "Script extensions only"),
+    ("bak,old,txt,zip,sql,tar,gz,7z", "Backup / archive focus"),
+    ("env,config,yml,yaml,json,ini,conf", "Config / secrets focus"),
+    ("", "None (path names only)"),
+)
+
+_STATUS_BLACKLIST_PRESETS = (
+    ("404", "Ignore 404 only"),
+    ("404,400", "Ignore 404 and 400"),
+    ("404,400,429", "Ignore 404, 400, 429"),
+    ("404,403", "Ignore 404 and 403"),
+    ("", "None (treat all statuses)"),
+)
+
+
+def _field(
+    key: str,
+    *,
+    control: str = "auto",
+    options: List[Dict[str, str]] | None = None,
+    presets: List[Dict[str, str]] | None = None,
+) -> Dict[str, Any]:
+    label, help_text = _HUMAN.get(key, (key.replace("_", " ").title(), ""))
+    return {
+        "key": key,
+        "label": label,
+        "help": help_text,
+        "control": control,
+        "options": options or [],
+        "presets": presets or [],
+    }
+
+
+def setting_fields() -> Dict[str, Dict[str, Any]]:
+    browser_opts = [{"value": name, "label": name.title()} for name in BROWSER_PROFILES]
+    browser_opts.append({"value": "random", "label": "Random (pick per session)"})
+    level_labels = {
+        "off": "Off - no stealth layer",
+        "basic": "Basic - light headers / pacing",
+        "stealth": "Stealth - recommended default",
+        "aggressive": "Aggressive - max impersonation / jitter",
+    }
+    fields = {
+        "evasion_level": _field(
+            "evasion_level",
+            control="select",
+            options=[{"value": level, "label": level_labels.get(level, level)} for level in LEVELS],
+        ),
+        "evasion_browser": _field("evasion_browser", control="select", options=browser_opts),
+        "evasion_ua_strategy": _field(
+            "evasion_ua_strategy",
+            control="select",
+            options=[{"value": value, "label": label} for value, label in _UA_STRATEGIES],
+        ),
+        "enum_method": _field(
+            "enum_method",
+            control="select",
+            options=[{"value": value, "label": label} for value, label in _ENUM_METHODS],
+        ),
+        "enum_extensions": _field(
+            "enum_extensions",
+            control="text_with_presets",
+            presets=[{"value": value, "label": label} for value, label in _EXTENSION_PRESETS],
+        ),
+        "enum_status_blacklist": _field(
+            "enum_status_blacklist",
+            control="text_with_presets",
+            presets=[{"value": value, "label": label} for value, label in _STATUS_BLACKLIST_PRESETS],
+        ),
+    }
+    # Defaults for every editable key so the UI always has a human label
+    cfg = CrawlConfig(start_url="https://example.com")
+    for key in cfg.__dataclass_fields__:
+        if key in EDITABLE_DEFAULTS_SKIP or key in fields:
+            continue
+        value = getattr(cfg, key)
+        if isinstance(value, bool):
+            fields[key] = _field(key, control="checkbox")
+        elif isinstance(value, int) and not isinstance(value, bool):
+            fields[key] = _field(key, control="number")
+        elif isinstance(value, float):
+            fields[key] = _field(key, control="number")
+        elif isinstance(value, str):
+            fields[key] = _field(key, control="text")
+        else:
+            fields[key] = _field(key, control="text")
+    return fields
+
 
 def default_settings() -> Dict[str, Any]:
     cfg = CrawlConfig(start_url="https://example.com")
     data = {k: getattr(cfg, k) for k in cfg.__dataclass_fields__}
     for key in EDITABLE_DEFAULTS_SKIP:
         data.pop(key, None)
-    # Don't ship secrets/placeholders
     data.pop("custom_headers", None)
     return data
 
@@ -146,6 +325,7 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "evasion_jitter_min_ms",
             "evasion_jitter_max_ms",
             "evasion_referer_chain",
+            "evasion_language_rotate",
             "evasion_adaptive_backoff",
             "evasion_challenge_detect",
             "evasion_decoy_requests",
@@ -176,4 +356,16 @@ def meta_payload() -> Dict[str, Any]:
         "speeds": SPEED_PROFILES,
         "default_settings": default_settings(),
         "setting_groups": SETTING_GROUPS,
+        "setting_fields": setting_fields(),
     }
+
+
+__all__ = [
+    "EDITABLE_DEFAULTS_SKIP",
+    "MODE_PRESETS",
+    "SETTING_GROUPS",
+    "concurrency_for_speed",
+    "default_settings",
+    "meta_payload",
+    "setting_fields",
+]
