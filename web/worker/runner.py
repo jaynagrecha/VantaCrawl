@@ -85,10 +85,17 @@ def _build_crawl_config(job: ScanJob) -> CrawlConfig:
     overlay.pop("pending_live_settings", None)
 
     wordlist = overlay.pop("wordlist_file", None)
+    wordlist_id = overlay.pop("wordlist_id", None)
     extras = overlay.pop("extra_wordlists", None)
     postman = overlay.pop("api_postman_file", None)
     har = overlay.pop("api_har_file", None)
     api_wl = overlay.pop("api_recon_wordlist", None)
+
+    from vantacrawl_api.scan_settings import ensure_wordlist_path
+
+    resolved_wordlist = ensure_wordlist_path(
+        {"wordlist_file": wordlist, "wordlist_id": wordlist_id}
+    )
 
     cfg = CrawlConfig(
         start_url=job.start_url,
@@ -97,7 +104,7 @@ def _build_crawl_config(job: ScanJob) -> CrawlConfig:
         checkpoint_file=str(job_dir / "crawl_checkpoint.json"),
         enum_checkpoint_file=str(job_dir / "enum_checkpoint.json"),
         false_positive_file=str(job_dir / "false_positives.json"),
-        wordlist_file=str(wordlist) if wordlist else cfg_default_wordlist(),
+        wordlist_file=resolved_wordlist,
     )
     if isinstance(extras, list) and extras:
         cfg.extra_wordlists = [str(p) for p in extras if p]
@@ -117,6 +124,7 @@ def _build_crawl_config(job: ScanJob) -> CrawlConfig:
             "enum_checkpoint_file",
             "false_positive_file",
             "wordlist_file",
+            "wordlist_id",
             "api_postman_file",
             "api_har_file",
             "api_recon_wordlist",
@@ -444,6 +452,11 @@ async def run_job(job_id: str) -> None:
             job.config_json = cfg_overlay
             config = _build_crawl_config(job)
             config.start_url = url
+            if bool(getattr(config, "use_wordlist", True)) and not Path(config.wordlist_file).is_file():
+                raise FileNotFoundError(
+                    f"Directory wordlist not found: {config.wordlist_file}. "
+                    "Choose a catalog wordlist again or re-upload (ephemeral upload copies are not used for catalog lists)."
+                )
             live_config_holder["cfg"] = config
             enum_only_hint["value"] = bool(getattr(config, "enum_only", False))
             live_progress_state["phase"] = "enum" if enum_only_hint["value"] else "crawl"

@@ -198,9 +198,8 @@ async def create_job_with_files(
         src = Path(match["path"])
         if not src.is_file():
             raise HTTPException(status_code=400, detail=f"Wordlist file missing on server: {chosen_id}")
-        dest = uploads / src.name
-        shutil.copy2(src, dest)
-        cfg["wordlist_file"] = str(dest)
+        # Stable bundled path — do not copy into ephemeral job uploads/ (Render wipe → queued fail)
+        cfg["wordlist_file"] = str(src.resolve())
         cfg["use_wordlist"] = True
         cfg["wordlist_id"] = chosen_id
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 # Repo root on sys.path so gui_presets / crawl_config import
 ROOT = Path(__file__).resolve().parents[3]
@@ -522,6 +522,47 @@ def available_wordlists() -> List[Dict[str, str]]:
     return items
 
 
+def resolve_catalog_wordlist(wordlist_id: str) -> Optional[str]:
+    """Return absolute path to a bundled Wordlist/ file, or None."""
+    chosen = (wordlist_id or "").strip()
+    if not chosen or chosen in ("__upload__", "upload"):
+        return None
+    match = next((w for w in available_wordlists() if w["id"] == chosen), None)
+    if not match:
+        return None
+    path = Path(match["path"])
+    return str(path) if path.is_file() else None
+
+
+def ensure_wordlist_path(config: Optional[Dict[str, Any]] = None) -> str:
+    """Pick a usable directory wordlist path.
+
+    Catalog selections must use the stable Wordlist/ tree (not ephemeral job uploads/).
+    If a stale uploads/ copy vanished after cancel/restart, re-bind by wordlist_id or basename.
+    """
+    from crawl_config import DEFAULT_DIR_WORDLIST
+
+    cfg = dict(config or {})
+    path = str(cfg.get("wordlist_file") or "").strip()
+    wid = str(cfg.get("wordlist_id") or "").strip()
+
+    if path and Path(path).is_file():
+        return path
+
+    resolved = resolve_catalog_wordlist(wid)
+    if resolved:
+        return resolved
+
+    if path:
+        resolved = resolve_catalog_wordlist(Path(path).name)
+        if resolved:
+            return resolved
+
+    if Path(DEFAULT_DIR_WORDLIST).is_file():
+        return str(Path(DEFAULT_DIR_WORDLIST).resolve())
+    return path or str(DEFAULT_DIR_WORDLIST)
+
+
 def meta_payload() -> Dict[str, Any]:
     mode_keys = [m for m in MODES if m in MODE_PRESETS] or list(MODE_PRESETS.keys())
     return {
@@ -541,8 +582,11 @@ __all__ = [
     "EDITABLE_DEFAULTS_SKIP",
     "MODE_PRESETS",
     "SETTING_GROUPS",
+    "available_wordlists",
     "concurrency_for_speed",
     "default_settings",
+    "ensure_wordlist_path",
     "meta_payload",
+    "resolve_catalog_wordlist",
     "setting_fields",
 ]
