@@ -514,8 +514,11 @@ def log_to_file(output_file_path, url):
         file.write(url + "\n")
 
 
-def load_wordlist(wordlist_file):
+def load_wordlist(wordlist_file, max_words: int = 0):
+    """Load wordlist lines. If max_words > 0, stop after that many usable entries."""
     words = []
+    if not wordlist_file:
+        return words
     with open(wordlist_file, "r", encoding="utf-8", errors="replace") as handle:
         for line in handle:
             word = line.strip()
@@ -524,6 +527,8 @@ def load_wordlist(wordlist_file):
             if "#" in word or " " in word:
                 continue
             words.append(word)
+            if max_words and len(words) >= max_words:
+                break
     return words
 
 

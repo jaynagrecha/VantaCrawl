@@ -84,7 +84,7 @@ def test_build_smart_wordlist_adds_mutations_with_wordlist():
     words = build_smart_wordlist(
         config,
         seed_urls=["https://example.com"],
-        merge_fn=lambda *_: ["custompath"],
+        merge_fn=lambda *a, **k: ["custompath"],
     )
     assert "admin" in words
     assert "custompath" in words
@@ -100,10 +100,36 @@ def test_build_smart_wordlist_mutations_without_file_wordlist():
         mutation_from_seeds=False,
         mutation_max_candidates=50,
     )
-    words = build_smart_wordlist(config, seed_urls=["https://example.com"], merge_fn=lambda *_: ["ignored"])
+    words = build_smart_wordlist(
+        config, seed_urls=["https://example.com"], merge_fn=lambda *a, **k: ["ignored"]
+    )
     assert "admin" in words
     assert "ignored" not in words
     assert len(words) <= 50
+
+
+def test_build_smart_wordlist_respects_enum_word_limit_at_load():
+    """Limit must truncate during merge — not after reading an entire huge file."""
+    calls = {}
+
+    def merge(primary, extras, max_words=0):
+        calls["max_words"] = max_words
+        return [f"w{i}" for i in range(max_words or 100)]
+
+    config = CrawlConfig(
+        start_url="https://example.com",
+        use_wordlist=True,
+        mutation_enum=False,
+        smart_wordlist_order=False,
+        enum_word_limit=25,
+    )
+    words = build_smart_wordlist(
+        config,
+        seed_urls=["https://example.com/a/b"],
+        merge_fn=merge,
+    )
+    assert calls.get("max_words") == 25
+    assert len(words) <= 25
 
 
 def test_active_probe_detects_reflected_xss():

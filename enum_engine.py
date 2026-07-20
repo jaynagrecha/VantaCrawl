@@ -160,6 +160,9 @@ def build_smart_wordlist(
 
     ordered: List[str] = []
     seen = set()
+    # Cap early — Full Audit defaults to 15k; never read multi‑MB wordlists end-to-end first
+    hard_limit = int(getattr(config, "enum_word_limit", 0) or 0)
+    seeds = list(seed_urls or [])[:800]
 
     def add_words(words: List[str], source: str = ""):
         for word in words:
@@ -168,9 +171,13 @@ def build_smart_wordlist(
                 continue
             seen.add(word)
             ordered.append(word)
+            if hard_limit and len(ordered) >= hard_limit:
+                return True
+        return False
 
     if config.smart_wordlist_order:
-        add_words(extract_path_words(seed_urls))
+        if add_words(extract_path_words(seeds)):
+            return ordered[:hard_limit]
         if technologies:
             wl_dir = os.path.dirname(os.path.abspath(config.wordlist_file))
             if not os.path.isdir(wl_dir):
@@ -182,30 +189,51 @@ def build_smart_wordlist(
                 for name in (f"{hint}.txt", f"{hint}-top.txt", f"common-{hint}.txt"):
                     path = os.path.join(wl_dir, name)
                     if os.path.isfile(path):
-                        add_words(load_wordlist(path)[:2000])
+                        if add_words(load_wordlist(path, max_words=2000)):
+                            return ordered[:hard_limit]
                         break
 
     if config.mutation_enum:
-        add_words(
+        mut_cap = int(getattr(config, "mutation_max_candidates", 5000) or 5000)
+        if hard_limit:
+            mut_cap = min(mut_cap, max(0, hard_limit - len(ordered)))
+        if mut_cap > 0 and add_words(
             build_mutation_wordlist(
-                seed_urls,
+                seeds,
                 use_builtin=config.mutation_builtin,
                 mutate_seeds=config.mutation_from_seeds,
                 extensions=config.parsed_enum_extensions(),
-                max_candidates=config.mutation_max_candidates,
+                max_candidates=mut_cap,
             )
-        )
+        ):
+            return ordered[:hard_limit]
 
     if config.use_wordlist:
-        base_words = merge_fn(config.wordlist_file, config.extra_wordlists)
+        remaining = (hard_limit - len(ordered)) if hard_limit else 0
+        # Prefer capped merge so Free-tier CPUs do not parse an entire 14MB list
+        try:
+            base_words = merge_fn(
+                config.wordlist_file,
+                config.extra_wordlists,
+                max_words=remaining or hard_limit or 0,
+            )
+        except TypeError:
+            base_words = merge_fn(config.wordlist_file, config.extra_wordlists)
+            if remaining:
+                base_words = base_words[:remaining]
         if config.legacy_wordlist_expansion and config.extension_aware_wordlist:
             expanded = list(base_words)
             for word in base_words:
                 if "." not in word:
                     for ext in DEFAULT_ENUM_EXTENSIONS:
                         expanded.append(word + f".{ext}" if not ext.startswith(".") else word + ext)
+                if hard_limit and len(expanded) + len(ordered) >= hard_limit:
+                    break
             base_words = expanded
         add_words(base_words)
+
+    if hard_limit and len(ordered) > hard_limit:
+        return ordered[:hard_limit]
     return ordered
 
 
@@ -368,16 +396,26 @@ async def run_pro_directory_enum(
     if wildcard.active:
         output_callback(f"Wildcard detected — filtering {len(wildcard.signatures)} response fingerprint(s)")
 
-    output_callback("Building enum wordlist…")
-    words = build_smart_wordlist(
+    limit = int(getattr(config, "enum_word_limit", 0) or 0)
+    output_callback(
+        "Building enum wordlist…"
+        + (f" (capped at {limit:,} words)" if limit else "")
+    )
+    if update_progress:
+        update_progress(max(limit, 1), 0, "Building enum wordlist…")
+
+    # Off the event loop — large files + Free-tier CPU must not freeze live progress
+    words = await asyncio.to_thread(
+        build_smart_wordlist,
         config,
-        seed_urls=seed_urls,
+        seed_urls=list(seed_urls or [])[:800],
         technologies=technologies,
         merge_fn=merge_wordlists_fn,
     )
     total_words = len(words)
     stats.enum_words_total = total_words
     stats.enum_words_tested = 0
+    output_callback(f"Enum wordlist ready: {total_words:,} words.")
     if update_progress and total_words:
         from user_output import format_enum_progress
 

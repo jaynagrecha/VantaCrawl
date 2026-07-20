@@ -163,14 +163,19 @@ def expand_wordlist(words: list, extension_aware: bool) -> list:
     return expanded
 
 
-def merge_wordlists(primary: str, extras: list) -> list:
-    words = load_wordlist(primary)
+def merge_wordlists(primary: str, extras: list, max_words: int = 0) -> list:
+    words = load_wordlist(primary, max_words=max_words)
+    if max_words and len(words) >= max_words:
+        return words
     seen = set(words)
-    for path in extras:
-        for word in load_wordlist(path):
+    for path in extras or []:
+        remaining = (max_words - len(words)) if max_words else 0
+        for word in load_wordlist(path, max_words=remaining or 0):
             if word not in seen:
                 seen.add(word)
                 words.append(word)
+                if max_words and len(words) >= max_words:
+                    return words
     return words
 
 
