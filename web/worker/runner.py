@@ -211,42 +211,84 @@ async def run_job(job_id: str) -> None:
     pause = PauseController(lambda: not stop_flag["stop"])
     manager = DownloadManager()
     live_config_holder: Dict[str, CrawlConfig] = {}
+    live_progress_state: Dict[str, Any] = {
+        "phase": "starting",
+        "progress_pct": 0,
+        "pages_crawled": 0,
+        "enum_hits": 0,
+        "findings": 0,
+    }
+    last_progress_persist = {"t": 0.0}
+    enum_only_hint = {"value": False}
+
+    def _status_now() -> str:
+        return "paused" if pause.paused else ("stopping" if stop_flag["stop"] else "running")
+
+    def _publish_live(payload: Dict[str, Any], *, force_db: bool = False, message: str = "") -> None:
+        from vantacrawl_api.services.live_progress import build_live_progress
+
+        # Prefer in-memory merge; stats object is closed over below after creation
+        merged = build_live_progress(
+            stats_holder["stats"],
+            progress_text=str(payload.get("progress_text") or ""),
+            total=int(payload.get("bytes_total") or 0),
+            done=int(payload.get("bytes_done") or 0),
+            phase=payload.get("phase"),
+            enum_only=enum_only_hint["value"],
+            previous=live_progress_state,
+        )
+        live_progress_state.clear()
+        live_progress_state.update(merged)
+        now = time.time()
+        if force_db or (now - last_progress_persist["t"]) >= 0.75:
+            last_progress_persist["t"] = now
+            _update_job(job_id, progress_json=dict(live_progress_state))
+        publish_progress(
+            job_id,
+            {
+                "status": _status_now(),
+                "progress": dict(live_progress_state),
+                "message": message or str(live_progress_state.get("progress_text") or ""),
+            },
+        )
+
+    stats_holder: Dict[str, Any] = {"stats": CrawlStats()}
 
     def output_callback(message: str):
         text = str(message)
         _append_log(job_id, text)
-        status = "paused" if pause.paused else ("stopping" if stop_flag["stop"] else "running")
-        publish_progress(job_id, {"status": status, "log": text})
+        low = text.lower()
+        phase = None
+        if "starting advanced folder" in low or "directory scan" in low or "brute force" in low:
+            phase = "enum"
+        elif "crawling:" in low or "page crawl" in low:
+            phase = "crawl"
+        elif "security" in low or "vuln" in low or "finding" in low:
+            phase = "security"
+        if phase:
+            live_progress_state["phase"] = phase
+            live_progress_state["progress_text"] = text[:240]
+            _publish_live(live_progress_state)
+        publish_progress(job_id, {"status": _status_now(), "log": text})
 
     def update_progress(total_or_payload=0, downloaded_size=0, size_text=""):
         """Match desktop callback: (total, done, text). Also accept a single progress dict."""
-        status = "paused" if pause.paused else ("stopping" if stop_flag["stop"] else "running")
         if isinstance(total_or_payload, dict):
-            payload = total_or_payload
-            _update_job(job_id, progress_json=payload)
-            publish_progress(job_id, {"status": status, "progress": payload})
+            live_progress_state.update(total_or_payload)
+            _publish_live(live_progress_state, force_db=True)
             return
-        job = _get_job(job_id)
-        payload = dict((job.progress_json if job else {}) or {})
         try:
             total_size = int(total_or_payload or 0)
             done = int(downloaded_size or 0)
         except (TypeError, ValueError):
             total_size, done = 0, 0
-        payload["bytes_total"] = total_size
-        payload["bytes_done"] = done
-        if size_text:
-            payload["progress_text"] = str(size_text)[:240]
-        if total_size > 0:
-            payload["progress_pct"] = min(100, int((done / total_size) * 100))
-        _update_job(job_id, progress_json=payload)
-        publish_progress(
-            job_id,
+        _publish_live(
             {
-                "status": status,
-                "progress": payload,
-                "message": str(size_text)[:240] if size_text else "",
+                "bytes_total": total_size,
+                "bytes_done": done,
+                "progress_text": str(size_text or "")[:240],
             },
+            message=str(size_text or "")[:240],
         )
 
     def apply_pending_live_settings():
@@ -311,8 +353,18 @@ async def run_job(job_id: str) -> None:
     assert job is not None
     report_dir = Path(job.report_dir)
     targets = _target_urls(job)
-    stats = CrawlStats()
+    stats = stats_holder["stats"]
     watcher = asyncio.create_task(command_watcher())
+
+    async def stats_ticker():
+        while not stop_flag["stop"]:
+            await asyncio.sleep(1.5)
+            try:
+                _publish_live(dict(live_progress_state))
+            except Exception:
+                log.exception("stats_ticker failed for %s", job_id)
+
+    ticker = asyncio.create_task(stats_ticker())
     use_browser = False
     try:
         for index, url in enumerate(targets):
@@ -327,6 +379,9 @@ async def run_job(job_id: str) -> None:
             config = _build_crawl_config(job)
             config.start_url = url
             live_config_holder["cfg"] = config
+            enum_only_hint["value"] = bool(getattr(config, "enum_only", False))
+            live_progress_state["phase"] = "enum" if enum_only_hint["value"] else "crawl"
+            _publish_live(live_progress_state, force_db=True)
 
             output_callback(f"\n=== Target {index + 1}/{len(targets)}: {url} ===\n")
             if config.use_selenium_login:
@@ -399,13 +454,20 @@ async def run_job(job_id: str) -> None:
             findings_preview = []
 
         progress = {
+            **dict(live_progress_state),
             "phase": status,
+            "progress_pct": 100 if status == "completed" else int(live_progress_state.get("progress_pct") or 0),
+            "progress_text": "Scan finished" if status == "completed" else "Scan ended",
             "pages_crawled": stats.pages_crawled,
             "findings": len(stats.findings),
             "enum_hits": stats.enum_hits,
+            "enum_words_tested": getattr(stats, "enum_words_tested", 0),
+            "enum_words_total": getattr(stats, "enum_words_total", 0),
+            "queue_size": getattr(stats, "queue_size", 0),
             "enum_hit_urls": list(getattr(stats, "enum_hit_urls", []) or [])[:80],
             "findings_preview": findings_preview,
             "elapsed_seconds": stats.elapsed_seconds() if hasattr(stats, "elapsed_seconds") else None,
+            "eta_seconds": 0,
         }
         finished_job = _get_job(job_id)
         html_path = str(html_matches[-1]) if html_matches else ""
@@ -481,8 +543,9 @@ async def run_job(job_id: str) -> None:
                 quit_selenium_driver()
             except Exception:
                 pass
-        watcher.cancel()
-        try:
-            await watcher
-        except Exception:
-            pass
+        for task in (watcher, ticker):
+            task.cancel()
+            try:
+                await task
+            except Exception:
+                pass
