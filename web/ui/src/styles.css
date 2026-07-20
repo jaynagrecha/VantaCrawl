@@ -136,8 +136,17 @@ h2 { margin: 0 0 .75rem; font-size: 1.15rem; }
   animation: progress-shine 2.2s linear infinite;
 }
 .progress-line { margin: 0; font-size: .86rem; min-height: 1.2em; }
-.progress-extra { margin-top: .15rem; }
-.progress-extra .stat-num { font-size: 1.05rem; }
+.stats.cockpit {
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+}
+.stat-warn .stat-num { color: var(--danger); }
+.stat-caution .stat-num { color: var(--warn); }
+.stat-ok .stat-num { color: #7dffa8; }
+.stat-phase .stat-num { font-size: 1.05rem; }
+.stat-text .stat-num {
+  font-size: .82rem; font-weight: 700; line-height: 1.25;
+  word-break: break-word; padding: 0 .2rem;
+}
 
 @keyframes progress-shine {
   0% { background-position: 100% 0; }

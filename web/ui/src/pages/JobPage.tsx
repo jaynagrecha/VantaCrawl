@@ -234,65 +234,76 @@ export default function JobPage() {
           const pagesEst = Number(progress.pages_estimate) || 0;
           const pages = progress.pages_crawled;
           const active = ["queued", "running", "paused", "stopping"].includes(job.status);
+          const health = String(progress.health || (active ? "…" : "—"));
+          const healthClass =
+            health === "Challenged" || health === "Degraded"
+              ? "warn"
+              : health === "Slowing"
+                ? "caution"
+                : "ok";
+          const tiles: { label: string; value: string; hint?: string; tone?: string }[] = [
+            { label: "Phase", value: phaseLabel(progress.phase), tone: "phase" },
+            { label: "Progress", value: `${pct}%` },
+            {
+              label: "Pages",
+              value: pages == null || pages === "" ? "—" : pagesEst > 0 ? `${pages}/${pagesEst}` : String(pages),
+            },
+            { label: "Enum hits", value: String(progress.enum_hits ?? "—") },
+            { label: "Findings", value: String(progress.findings ?? "—") },
+            { label: "Duration", value: durationLabel },
+            { label: "Queue", value: String(progress.queue_size ?? "—") },
+            {
+              label: "Enum words",
+              value:
+                wordsTotal > 0
+                  ? `${wordsDone.toLocaleString()}/${wordsTotal.toLocaleString()}`
+                  : wordsDone
+                    ? String(wordsDone)
+                    : "—",
+            },
+            { label: "ETA", value: formatEta(progress.eta_seconds) },
+            {
+              label: "Health",
+              value: health,
+              hint: String(progress.health_detail || ""),
+              tone: healthClass,
+            },
+            {
+              label: "Blocks",
+              value: String(progress.challenge_events ?? progress.blocks ?? "—"),
+              hint: "Challenges / WAF catches",
+            },
+            { label: "Errors", value: String(progress.errors ?? "—") },
+            {
+              label: "Pages/min",
+              value: progress.urls_per_minute != null ? String(progress.urls_per_minute) : "—",
+            },
+            {
+              label: "Protections",
+              value: String(progress.protections_label || "none"),
+              tone: "text",
+            },
+            { label: "Mode", value: job.mode, tone: "text" },
+          ];
           return (
             <div className="progress-panel" style={{ marginTop: "1.1rem" }}>
-              <div className="progress-head">
-                <span className={`badge phase-${String(progress.phase || "running")}`}>
-                  {phaseLabel(progress.phase)}
-                </span>
-                <span className="mono muted">{pct}%</span>
-              </div>
               <div className="progress-track" aria-hidden="true">
                 <div className={`progress-fill ${active ? "live" : ""}`} style={{ width: `${pct}%` }} />
               </div>
               <p className="progress-line muted">
                 {String(progress.progress_text || (active ? "Waiting for first progress update…" : "—"))}
               </p>
-              <div className="stats">
-                <div className="stat">
-                  <div className="stat-num">
-                    {pages == null ? "—" : pagesEst > 0 ? `${pages}/${pagesEst}` : String(pages)}
+              <div className="stats cockpit">
+                {tiles.map((t) => (
+                  <div
+                    key={t.label}
+                    className={`stat ${t.tone ? `stat-${t.tone}` : ""}`}
+                    title={t.hint || undefined}
+                  >
+                    <div className="stat-num">{t.value}</div>
+                    <div className="stat-label">{t.label}</div>
                   </div>
-                  <div className="stat-label">Pages</div>
-                </div>
-                <div className="stat">
-                  <div className="stat-num">{String(progress.enum_hits ?? "—")}</div>
-                  <div className="stat-label">Enum hits</div>
-                </div>
-                <div className="stat">
-                  <div className="stat-num">{String(progress.findings ?? "—")}</div>
-                  <div className="stat-label">Findings</div>
-                </div>
-                <div className="stat">
-                  <div className="stat-num">{durationLabel}</div>
-                  <div className="stat-label">Duration</div>
-                </div>
-                <div className="stat">
-                  <div className="stat-num" style={{ fontSize: "1rem" }}>{job.mode}</div>
-                  <div className="stat-label">Mode</div>
-                </div>
-              </div>
-              <div className="stats progress-extra">
-                <div className="stat">
-                  <div className="stat-num">
-                    {wordsTotal > 0 ? `${wordsDone.toLocaleString()}/${wordsTotal.toLocaleString()}` : wordsDone || "—"}
-                  </div>
-                  <div className="stat-label">Enum words</div>
-                </div>
-                <div className="stat">
-                  <div className="stat-num">{String(progress.queue_size ?? "—")}</div>
-                  <div className="stat-label">Queue</div>
-                </div>
-                <div className="stat">
-                  <div className="stat-num">{formatEta(progress.eta_seconds)}</div>
-                  <div className="stat-label">ETA</div>
-                </div>
-                <div className="stat">
-                  <div className="stat-num">
-                    {progress.urls_per_minute != null ? String(progress.urls_per_minute) : "—"}
-                  </div>
-                  <div className="stat-label">Pages/min</div>
-                </div>
+                ))}
               </div>
             </div>
           );

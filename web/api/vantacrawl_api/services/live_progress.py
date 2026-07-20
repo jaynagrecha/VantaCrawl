@@ -112,6 +112,33 @@ def build_live_progress(
     enum_urls = list(snap.get("enum_hit_urls") or prev.get("enum_hit_urls") or [])[:80]
     preview = _findings_preview(stats) or list(prev.get("findings_preview") or [])[:40]
 
+    errors = int(snap.get("errors") or prev.get("errors") or 0)
+    defense = snap.get("defense") if isinstance(snap.get("defense"), dict) else {}
+    protections = list(defense.get("protections_detected") or prev.get("protections") or [])
+    blocks = int(
+        defense.get("caught_by_protection")
+        or prev.get("blocks")
+        or 0
+    )
+    # Log-derived challenges (Cloudflare backoff lines) merge in from previous
+    log_challenges = int(prev.get("challenge_events") or 0)
+    challenge_events = max(blocks, log_challenges)
+
+    health = "OK"
+    health_detail = "No blocks detected"
+    if challenge_events >= 8 or (protections and challenge_events >= 3):
+        health = "Challenged"
+        health_detail = "Target is blocking or challenging the scan"
+    elif challenge_events > 0:
+        health = "Slowing"
+        health_detail = "Some challenges / rate limits seen"
+    elif errors >= 15:
+        health = "Degraded"
+        health_detail = "Elevated request errors"
+    elif protections:
+        health = "OK"
+        health_detail = "Protections seen, traffic still flowing"
+
     return {
         "phase": resolved_phase,
         "progress_pct": progress_pct,
@@ -131,4 +158,11 @@ def build_live_progress(
         "bytes_downloaded": int(snap.get("bytes_downloaded") or prev.get("bytes_downloaded") or 0),
         "bytes_total": int(total or prev.get("bytes_total") or 0),
         "bytes_done": int(done or prev.get("bytes_done") or 0),
+        "errors": errors,
+        "blocks": blocks,
+        "challenge_events": challenge_events,
+        "protections": protections[:8],
+        "protections_label": ", ".join(protections[:4]) if protections else "none",
+        "health": health,
+        "health_detail": health_detail,
     }

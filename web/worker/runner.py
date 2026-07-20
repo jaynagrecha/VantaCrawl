@@ -265,9 +265,20 @@ async def run_job(job_id: str) -> None:
             phase = "crawl"
         elif "security" in low or "vuln" in low or "finding" in low:
             phase = "security"
+        dirty = False
         if phase:
             live_progress_state["phase"] = phase
             live_progress_state["progress_text"] = text[:240]
+            dirty = True
+        if "cf-challenge" in low or "slowing down for a moment" in low:
+            live_progress_state["challenge_events"] = int(live_progress_state.get("challenge_events") or 0) + 1
+            dirty = True
+        if "protections spotted so far:" in low:
+            names = text.split(":", 1)[-1].strip()
+            if names:
+                live_progress_state["protections"] = [n.strip() for n in names.split(",") if n.strip()]
+                dirty = True
+        if dirty:
             _publish_live(live_progress_state)
         publish_progress(job_id, {"status": _status_now(), "log": text})
 
