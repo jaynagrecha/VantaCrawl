@@ -479,7 +479,7 @@ footer.meta {{ color: var(--muted); font-size: .85rem; margin-top: 1.5rem; }}
 <body>
 <header class="topbar">
   <div class="topbar-inner">
-    <div class="brand">Vanta<span>Crawl</span> Report</div>
+    <div class="brand">Vanta<span>Crawl</span> Technical Report</div>
     <div class="toolbar">
       <input id="report-search" type="search" placeholder="Search report  (press / )" autocomplete="off">
       <div class="sev-filters" title="Filter findings by severity">

@@ -50,6 +50,15 @@ class ReportWriter:
         if config_flags.get("html_report", True):
             paths["html"] = self.write_html(stats, self.last_conclusion)
 
+        if config_flags.get("assessment_report", True):
+            paths.update(
+                self.write_assessment_report(
+                    stats,
+                    config_meta,
+                    conclusion=self.last_conclusion or None,
+                )
+            )
+
         self.close_warc()
         self.last_paths = paths
         return paths
@@ -97,6 +106,56 @@ class ReportWriter:
             stats=stats,
             profile=profile,
         )
+
+    def write_assessment_report(
+        self,
+        stats: CrawlStats,
+        config_meta: Optional[dict] = None,
+        *,
+        conclusion: Optional[dict] = None,
+    ) -> Dict[str, str]:
+        from assessment_html import render_assessment_html
+        from assessment_report import build_assessment_document
+
+        meta = dict(config_meta or {})
+        doc = build_assessment_document(
+            stats,
+            self.start_url,
+            config_meta=meta,
+            conclusion=conclusion,
+            job_title=str(meta.get("title") or ""),
+            mode=str(meta.get("mode") or meta.get("profile") or ""),
+        )
+        html_path = os.path.join(self.report_dir, f"{self.base_name}_ASSESSMENT_REPORT.html")
+        tech_name = f"{self.base_name}_SEARCH_REPORT.html"
+        with open(html_path, "w", encoding="utf-8") as handle:
+            handle.write(render_assessment_html(doc, technical_report_name=tech_name))
+
+        # Compact plain-text executive companion
+        txt_path = os.path.join(self.report_dir, f"{self.base_name}_ASSESSMENT_REPORT.txt")
+        lines = [
+            f"{doc.get('product')} — {doc.get('document_title')}",
+            f"Target: {doc.get('start_url')}",
+            f"Generated: {doc.get('generated_at')}",
+            f"Overall risk: {doc.get('risk_level')}",
+            "",
+            str(doc.get("exec_headline") or ""),
+            "",
+            "Priority points:",
+        ]
+        for item in doc.get("top_executive_points") or []:
+            lines.append(f"- {item}")
+        lines.extend(["", "Remediation roadmap:"])
+        for item in doc.get("roadmap") or []:
+            lines.append(f"- [{item.get('priority')}] {item.get('item')}")
+        lines.append("")
+        with open(txt_path, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines))
+
+        return {
+            "assessment_report_html": html_path,
+            "assessment_report_txt": txt_path,
+        }
 
     def write_json(self, stats: CrawlStats) -> str:
         path = os.path.join(self.report_dir, f"{self.base_name}.json")

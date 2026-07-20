@@ -1166,21 +1166,26 @@ class CrawlerApp(QMainWindow):
         layout.addWidget(report_text)
 
         button_row = QHBoxLayout()
-        open_html_btn = QPushButton("Open HTML report")
-        open_txt_btn = QPushButton("Open text report")
+        open_assessment_btn = QPushButton("Open assessment report")
+        open_tech_btn = QPushButton("Open technical report")
+        open_txt_btn = QPushButton("Open assessment text")
         open_folder_btn = QPushButton("Open Reports folder")
 
+        assessment_path = report_paths.get("assessment_report_html", "")
         html_path = report_paths.get("search_report_html", "")
-        txt_path = report_paths.get("search_report_txt", "")
+        txt_path = report_paths.get("assessment_report_txt") or report_paths.get("search_report_txt", "")
 
-        open_html_btn.setEnabled(bool(html_path and os.path.isfile(html_path)))
+        open_assessment_btn.setEnabled(bool(assessment_path and os.path.isfile(assessment_path)))
+        open_tech_btn.setEnabled(bool(html_path and os.path.isfile(html_path)))
         open_txt_btn.setEnabled(bool(txt_path and os.path.isfile(txt_path)))
 
-        open_html_btn.clicked.connect(lambda: self._open_path(html_path))
+        open_assessment_btn.clicked.connect(lambda: self._open_path(assessment_path))
+        open_tech_btn.clicked.connect(lambda: self._open_path(html_path))
         open_txt_btn.clicked.connect(lambda: self._open_path(txt_path))
         open_folder_btn.clicked.connect(lambda: self._open_path(os.path.join(BASE_DIR, "Reports")))
 
-        button_row.addWidget(open_html_btn)
+        button_row.addWidget(open_assessment_btn)
+        button_row.addWidget(open_tech_btn)
         button_row.addWidget(open_txt_btn)
         button_row.addWidget(open_folder_btn)
         layout.addLayout(button_row)
@@ -1191,11 +1196,13 @@ class CrawlerApp(QMainWindow):
         dialog.exec_()
 
     def view_last_report(self):
-        html_path = self.last_report_paths.get("search_report_html", "")
+        assessment = self.last_report_paths.get("assessment_report_html", "")
+        technical = self.last_report_paths.get("search_report_html", "")
+        html_path = assessment if assessment and os.path.isfile(assessment) else technical
         if html_path and os.path.isfile(html_path):
             self._open_path(html_path)
         else:
-            self.output_text.append("No search report available yet. Run a crawl first.")
+            self.output_text.append("No assessment/technical report available yet. Run a crawl first.")
 
     @staticmethod
     def _open_path(path):

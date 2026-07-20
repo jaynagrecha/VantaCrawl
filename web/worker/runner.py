@@ -496,8 +496,15 @@ async def run_job(job_id: str) -> None:
                     output_callback("Scan stop confirmed.")
                 break  # do not start next target after stop
 
-        html_matches = sorted(report_dir.glob("*_SEARCH_REPORT.html")) if report_dir.is_dir() else []
-        txt_matches = sorted(report_dir.glob("*_SEARCH_REPORT.txt")) if report_dir.is_dir() else []
+        assessment_matches = (
+            sorted(report_dir.glob("*_ASSESSMENT_REPORT.html")) if report_dir.is_dir() else []
+        )
+        html_matches = assessment_matches or (
+            sorted(report_dir.glob("*_SEARCH_REPORT.html")) if report_dir.is_dir() else []
+        )
+        txt_matches = (
+            sorted(report_dir.glob("*_ASSESSMENT_REPORT.txt")) if report_dir.is_dir() else []
+        ) or (sorted(report_dir.glob("*_SEARCH_REPORT.txt")) if report_dir.is_dir() else [])
         # Honour force-cancel from API while we were winding down
         latest = _get_job(job_id)
         if latest and latest.status == "cancelled":

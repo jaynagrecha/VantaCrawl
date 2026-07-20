@@ -105,7 +105,11 @@ _HUMAN = {
     "evasion_decoy_requests": ("Decoy requests", "Occasional benign decoy fetches (noisier)."),
     "evasion_http2": ("Prefer HTTP/2", "Use HTTP/2 when the target supports it."),
     "evasion_language_rotate": ("Language rotate", "Rotate Accept-Language values."),
-    "html_report": ("HTML report", "Write the interactive HTML search report."),
+    "html_report": ("HTML report", "Write the interactive technical HTML search report."),
+    "assessment_report": (
+        "Assessment report",
+        "Write the professional dual-audience assessment HTML (executive + engineer).",
+    ),
     "json_report": ("JSON report", "Write machine-readable JSON output."),
     "csv_export": ("CSV export", "Export findings/URLs as CSV."),
     "sqlite_export": ("SQLite export", "Write a SQLite findings database."),
@@ -459,6 +463,7 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
         "id": "reports",
         "title": "Reports & exports",
         "keys": [
+            "assessment_report",
             "html_report",
             "json_report",
             "csv_export",

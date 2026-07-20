@@ -71,10 +71,12 @@ def _html_path(job: ScanJob) -> Path:
     if path.is_file():
         return path
     report_dir = Path(job.report_dir or "")
-    matches = sorted(report_dir.glob("*_SEARCH_REPORT.html")) if report_dir.is_dir() else []
-    if not matches:
-        raise HTTPException(status_code=404, detail="HTML report not ready")
-    return matches[-1]
+    # Prefer professional assessment deliverable when present
+    for pattern in ("*_ASSESSMENT_REPORT.html", "*_SEARCH_REPORT.html"):
+        matches = sorted(report_dir.glob(pattern)) if report_dir.is_dir() else []
+        if matches:
+            return matches[-1]
+    raise HTTPException(status_code=404, detail="HTML report not ready")
 
 
 def _txt_path(job: ScanJob) -> Path:
@@ -82,9 +84,18 @@ def _txt_path(job: ScanJob) -> Path:
     if path.is_file():
         return path
     report_dir = Path(job.report_dir or "")
-    matches = sorted(report_dir.glob("*_SEARCH_REPORT.txt")) if report_dir.is_dir() else []
+    for pattern in ("*_ASSESSMENT_REPORT.txt", "*_SEARCH_REPORT.txt"):
+        matches = sorted(report_dir.glob(pattern)) if report_dir.is_dir() else []
+        if matches:
+            return matches[-1]
+    raise HTTPException(status_code=404, detail="Text report not ready")
+
+
+def _technical_html_path(job: ScanJob) -> Path:
+    report_dir = Path(job.report_dir or "")
+    matches = sorted(report_dir.glob("*_SEARCH_REPORT.html")) if report_dir.is_dir() else []
     if not matches:
-        raise HTTPException(status_code=404, detail="Text report not ready")
+        raise HTTPException(status_code=404, detail="Technical HTML report not ready")
     return matches[-1]
 
 
@@ -131,6 +142,12 @@ def compare_html(session: SessionDep, user: UserAuth):
 def report_html(job_id: str, session: SessionDep, user: UserAuth):
     job = _owned_job(session, job_id, user)
     return FileResponse(_html_path(job), media_type="text/html")
+
+
+@router.get("/{job_id}/technical.html")
+def report_technical_html(job_id: str, session: SessionDep, user: UserAuth):
+    job = _owned_job(session, job_id, user)
+    return FileResponse(_technical_html_path(job), media_type="text/html")
 
 
 @router.get("/{job_id}/txt")

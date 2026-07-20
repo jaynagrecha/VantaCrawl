@@ -181,10 +181,11 @@ export default function JobPage() {
     return <div className="card muted">{error || "Loading job…"}</div>;
   }
 
-  const reportReady = Boolean(job.report_html_path);
   const jobFinished = ["completed", "failed", "cancelled"].includes(job.status);
+  const reportReady = Boolean(job.report_html_path) || (jobFinished && job.status === "completed");
   const tok = encodeURIComponent(getToken() || "");
   const htmlUrl = `/api/reports/${job.id}/html?token=${tok}`;
+  const techUrl = `/api/reports/${job.id}/technical.html?token=${tok}`;
   const txtUrl = `/api/reports/${job.id}/txt?token=${tok}`;
   const embedUrl = `/api/reports/${job.id}/embed?token=${tok}`;
   const logUrl = `/api/reports/${job.id}/log?token=${tok}`;
@@ -426,15 +427,21 @@ export default function JobPage() {
           <>
             <div style={{ display: "flex", gap: ".6rem", marginBottom: ".75rem", flexWrap: "wrap" }}>
               <a className="btn primary" href={htmlUrl} target="_blank" rel="noreferrer">
-                Open HTML report
+                Open assessment report
+              </a>
+              <a className="btn" href={techUrl} target="_blank" rel="noreferrer">
+                Open technical report
               </a>
               <a className="btn" href={txtUrl} target="_blank" rel="noreferrer">
-                Download text
+                Download assessment text
               </a>
               <a className="btn" href={zipUrl}>
                 Download all (zip)
               </a>
             </div>
+            <p className="muted" style={{ marginTop: 0, marginBottom: ".85rem" }}>
+              Assessment = executive + engineer dual report. Technical = interactive search/findings appendix.
+            </p>
             {artifacts.length > 0 ? (
               <table className="table" style={{ marginBottom: "1rem" }}>
                 <thead>

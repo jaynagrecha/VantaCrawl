@@ -116,6 +116,7 @@ class CrawlConfig:
     active_probe_max_forms: int = 3
 
     html_report: bool = True
+    assessment_report: bool = True
     json_report: bool = True
     sqlite_export: bool = True
     csv_export: bool = True

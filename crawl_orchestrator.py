@@ -758,6 +758,8 @@ async def run_full_crawl_async(
     output_callback("\nGenerating reports...")
     from scan_setup_report import config_to_report_meta
 
+    report_meta = config_to_report_meta(config)
+    report_meta.setdefault("mode", getattr(config, "profile", "full"))
     report_paths = reporter.write_all(
         stats,
         {
@@ -766,8 +768,9 @@ async def run_full_crawl_async(
             "json_report": config.json_report,
             "sqlite_export": config.sqlite_export,
             "csv_export": config.csv_export,
+            "assessment_report": getattr(config, "assessment_report", True),
         },
-        config_meta=config_to_report_meta(config),
+        config_meta=report_meta,
     )
     if stats.defense_tracker is not None:
         defense_paths = write_defense_reports(
@@ -782,10 +785,14 @@ async def run_full_crawl_async(
 
     if reporter.last_conclusion:
         output_callback("\n" + reporter.last_conclusion.get("text", ""))
+    if report_paths.get("assessment_report_html"):
+        output_callback(f"\nAssessment report (HTML): {report_paths['assessment_report_html']}")
+    if report_paths.get("assessment_report_txt"):
+        output_callback(f"Assessment report (text): {report_paths['assessment_report_txt']}")
     if report_paths.get("search_report_html"):
-        output_callback(f"\nSearch report (HTML): {report_paths['search_report_html']}")
+        output_callback(f"Technical search report (HTML): {report_paths['search_report_html']}")
     if report_paths.get("search_report_txt"):
-        output_callback(f"Search report (text): {report_paths['search_report_txt']}")
+        output_callback(f"Technical search report (text): {report_paths['search_report_txt']}")
     output_callback(stats.format_friendly_line())
     output_callback(f"All reports saved to: {config.report_dir()}")
 

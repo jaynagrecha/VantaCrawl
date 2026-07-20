@@ -36,7 +36,7 @@ def test_search_report_has_interactive_chrome():
         stats=stats,
         profile="full",
     )
-    assert "Cipher" in html and "Map" in html
+    assert "Vanta" in html and "Crawl" in html and "Technical Report" in html
     assert 'id="report-search"' in html
     assert 'id="btn-export"' in html
     assert 'id="btn-collapse"' in html
