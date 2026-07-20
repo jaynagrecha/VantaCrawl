@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, EmailStr, Field, HttpUrl
+from pydantic import BaseModel, EmailStr, Field, HttpUrl, field_serializer
 
 
 class RegisterRequest(BaseModel):
@@ -57,6 +57,15 @@ class JobSettingsPatch(BaseModel):
     settings: Dict[str, Any] = Field(default_factory=dict)
 
 
+def _utc_iso(value: Optional[datetime]) -> Optional[str]:
+    """Serialize naive UTC datetimes with a Z so browsers do not treat them as local time."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.isoformat() + "Z"
+    return value.isoformat()
+
+
 class JobOut(BaseModel):
     id: str
     title: str
@@ -75,6 +84,10 @@ class JobOut(BaseModel):
     started_at: Optional[datetime]
     finished_at: Optional[datetime]
     updated_at: datetime
+
+    @field_serializer("created_at", "started_at", "finished_at", "updated_at")
+    def serialize_datetimes(self, value: Optional[datetime]) -> Optional[str]:
+        return _utc_iso(value)
 
 
 class JobListOut(BaseModel):

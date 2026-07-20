@@ -14,13 +14,32 @@ function formatDuration(totalSeconds: number): string {
   return `${s}s`;
 }
 
+/** API stores UTC without timezone; browsers would otherwise treat that as local (IST +5:30 → inflated duration). */
+function parseUtcMs(raw: string): number {
+  const s = raw.trim();
+  if (!s) return NaN;
+  if (/[zZ]$/.test(s) || /[+-]\d{2}:?\d{2}$/.test(s)) {
+    return Date.parse(s);
+  }
+  if (s.includes("T")) {
+    return Date.parse(`${s}Z`);
+  }
+  return Date.parse(`${s.replace(" ", "T")}Z`);
+}
+
 function jobDurationSeconds(job: Job, nowMs: number): number | null {
   const startRaw = job.started_at || job.created_at;
   if (!startRaw) return null;
-  const start = Date.parse(startRaw);
+  const start = parseUtcMs(startRaw);
   if (!Number.isFinite(start)) return null;
-  const endRaw = job.finished_at;
-  const end = endRaw ? Date.parse(endRaw) : nowMs;
+
+  let end = nowMs;
+  if (job.finished_at) {
+    end = parseUtcMs(job.finished_at);
+  } else if (job.status === "stopping" && job.updated_at) {
+    // Freeze the clock when stop was requested so a hung stop does not keep counting
+    end = parseUtcMs(job.updated_at);
+  }
   if (!Number.isFinite(end)) return null;
   return Math.max(0, (end - start) / 1000);
 }
