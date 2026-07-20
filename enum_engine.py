@@ -440,6 +440,7 @@ async def run_pro_directory_enum(
             found_set.update(state.get("found_urls", []))
             output_callback(f"Resumed enum checkpoint at word {resume_index:,}/{total_words:,}")
 
+    batch_size = max(1, int(config.enum_concurrency) or 1)
     output_callback(
         f"Pro enum: {total_words:,} words · {batch_size} threads · "
         f"{'flat' if config.enum_flat_scan else f'depth {config.branch_depth_limit or config.max_depth}'}"
