@@ -114,7 +114,7 @@ h2 { margin: 0 0 .75rem; font-size: 1.15rem; }
 }
 .badge.failed { color: var(--danger); border-color: rgba(255,107,122,.4); }
 .badge.completed { color: #7dffa8; border-color: rgba(125,255,168,.35); }
-.badge.phase-crawl, .badge.phase-running, .badge.phase-starting { color: var(--accent); border-color: rgba(61,214,198,.4); }
+.badge.phase-crawl, .badge.phase-running, .badge.phase-starting, .badge.phase-recon { color: var(--accent); border-color: rgba(61,214,198,.4); }
 .badge.phase-enum { color: #9ecbff; border-color: rgba(158,203,255,.4); }
 .badge.phase-security { color: #ffb4a2; border-color: rgba(255,180,162,.4); }
 .badge.phase-download { color: #c4b5fd; border-color: rgba(196,181,253,.4); }

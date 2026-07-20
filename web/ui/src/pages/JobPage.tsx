@@ -28,10 +28,16 @@ function phaseLabel(phase: unknown): string {
   if (p === "enum") return "Directory enum";
   if (p === "download") return "Download";
   if (p === "security") return "Security";
+  if (p === "recon") return "Recon";
   if (p === "starting") return "Starting";
   if (p === "completed") return "Completed";
   if (p === "cancelled" || p === "failed") return p;
   return p || "Running";
+}
+
+function tileValue(value: unknown, fallback = "0"): string {
+  if (value == null || value === "") return fallback;
+  return String(value);
 }
 
 /** API stores UTC without timezone; browsers would otherwise treat that as local (IST +5:30 → inflated duration). */
@@ -232,13 +238,13 @@ export default function JobPage() {
           const wordsDone = Number(progress.enum_words_tested) || 0;
           const wordsTotal = Number(progress.enum_words_total) || 0;
           const pagesEst = Number(progress.pages_estimate) || 0;
-          const pages = progress.pages_crawled;
+          const pages = Number(progress.pages_crawled) || 0;
           const active = ["queued", "running", "paused", "stopping"].includes(job.status);
-          const health = String(progress.health || (active ? "…" : "—"));
+          const health = String(progress.health || (active ? "Waiting" : "—"));
           const healthClass =
             health === "Challenged" || health === "Degraded"
               ? "warn"
-              : health === "Slowing"
+              : health === "Slowing" || health === "Waiting"
                 ? "caution"
                 : "ok";
           const tiles: { label: string; value: string; hint?: string; tone?: string }[] = [
@@ -246,37 +252,35 @@ export default function JobPage() {
             { label: "Progress", value: `${pct}%` },
             {
               label: "Pages",
-              value: pages == null || pages === "" ? "—" : pagesEst > 0 ? `${pages}/${pagesEst}` : String(pages),
+              value: pagesEst > 0 ? `${pages}/${pagesEst}` : tileValue(pages),
             },
-            { label: "Enum hits", value: String(progress.enum_hits ?? "—") },
-            { label: "Findings", value: String(progress.findings ?? "—") },
+            { label: "Enum hits", value: tileValue(progress.enum_hits) },
+            { label: "Findings", value: tileValue(progress.findings) },
             { label: "Duration", value: durationLabel },
-            { label: "Queue", value: String(progress.queue_size ?? "—") },
+            { label: "Queue", value: tileValue(progress.queue_size) },
             {
               label: "Enum words",
               value:
                 wordsTotal > 0
                   ? `${wordsDone.toLocaleString()}/${wordsTotal.toLocaleString()}`
-                  : wordsDone
-                    ? String(wordsDone)
-                    : "—",
+                  : tileValue(wordsDone),
             },
             { label: "ETA", value: formatEta(progress.eta_seconds) },
             {
               label: "Health",
               value: health,
-              hint: String(progress.health_detail || ""),
+              hint: String(progress.health_detail || "Waiting for worker progress events"),
               tone: healthClass,
             },
             {
               label: "Blocks",
-              value: String(progress.challenge_events ?? progress.blocks ?? "—"),
+              value: tileValue(progress.challenge_events ?? progress.blocks),
               hint: "Challenges / WAF catches",
             },
-            { label: "Errors", value: String(progress.errors ?? "—") },
+            { label: "Errors", value: tileValue(progress.errors) },
             {
               label: "Pages/min",
-              value: progress.urls_per_minute != null ? String(progress.urls_per_minute) : "—",
+              value: tileValue(progress.urls_per_minute),
             },
             {
               label: "Protections",

@@ -265,21 +265,30 @@ async def run_job(job_id: str) -> None:
             phase = "crawl"
         elif "security" in low or "vuln" in low or "finding" in low:
             phase = "security"
-        dirty = False
+        elif any(
+            k in low
+            for k in (
+                "wayback",
+                "common crawl",
+                "historical",
+                "request stealth",
+                "protections spotted",
+                "looking up old urls",
+                "checking what protections",
+            )
+        ):
+            phase = "recon"
+        live_progress_state["progress_text"] = text[:240]
         if phase:
             live_progress_state["phase"] = phase
-            live_progress_state["progress_text"] = text[:240]
-            dirty = True
         if "cf-challenge" in low or "slowing down for a moment" in low:
             live_progress_state["challenge_events"] = int(live_progress_state.get("challenge_events") or 0) + 1
-            dirty = True
         if "protections spotted so far:" in low:
             names = text.split(":", 1)[-1].strip()
             if names:
                 live_progress_state["protections"] = [n.strip() for n in names.split(",") if n.strip()]
-                dirty = True
-        if dirty:
-            _publish_live(live_progress_state)
+        # Always refresh cockpit on log lines so tiles leave "Starting" during recon
+        _publish_live(live_progress_state)
         publish_progress(job_id, {"status": _status_now(), "log": text})
 
     def update_progress(total_or_payload=0, downloaded_size=0, size_text=""):
@@ -369,13 +378,17 @@ async def run_job(job_id: str) -> None:
 
     async def stats_ticker():
         while not stop_flag["stop"]:
-            await asyncio.sleep(1.5)
             try:
                 _publish_live(dict(live_progress_state))
             except Exception:
                 log.exception("stats_ticker failed for %s", job_id)
+            await asyncio.sleep(1.5)
 
     ticker = asyncio.create_task(stats_ticker())
+    live_progress_state["phase"] = "recon"
+    live_progress_state["progress_text"] = "Worker started — preparing scan…"
+    live_progress_state["health"] = "Waiting"
+    _publish_live(live_progress_state, force_db=True, message="Worker started")
     use_browser = False
     try:
         for index, url in enumerate(targets):

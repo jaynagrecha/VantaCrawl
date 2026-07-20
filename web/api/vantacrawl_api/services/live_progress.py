@@ -38,15 +38,37 @@ def infer_phase(progress_text: str, *, enum_only: bool = False, previous: str = 
     text = (progress_text or "").lower()
     if "trying folder/file" in text or "folder/file names" in text or "brute force" in text:
         return "enum"
-    if text.startswith("page ") or "· queue" in text:
+    if text.startswith("page ") or "· queue" in text or text.startswith("crawling:"):
         return "crawl"
     if "downloaded" in text and "total downloaded" in text:
         return "download"
-    if any(k in text for k in ("security", "vuln", "finding", "defense")):
+    if any(k in text for k in ("security", "vuln", "finding", "defense verify")):
         return "security"
-    if previous in ("crawl", "enum", "download", "security", "starting"):
+    if any(
+        k in text
+        for k in (
+            "wayback",
+            "common crawl",
+            "historical seed",
+            "request stealth",
+            "protections spotted",
+            "checking what protections",
+            "looking up old urls",
+        )
+    ):
+        return "recon"
+    if previous in ("crawl", "enum", "download", "security", "recon", "starting"):
         return previous
     return "enum" if enum_only else "crawl"
+
+
+def _num(value: Any, default: int = 0) -> int:
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def build_live_progress(
@@ -64,9 +86,9 @@ def build_live_progress(
     text = (progress_text or prev.get("progress_text") or "")[:240]
     resolved_phase = phase or infer_phase(text, enum_only=enum_only, previous=str(prev.get("phase") or ""))
 
-    pages = int(snap.get("pages_crawled") or prev.get("pages_crawled") or 0)
-    estimate = int(getattr(stats, "session_total_estimate", 0) or prev.get("pages_estimate") or 0)
-    queue = int(snap.get("queue_size") or prev.get("queue_size") or 0)
+    pages = _num(snap.get("pages_crawled"), _num(prev.get("pages_crawled")))
+    estimate = _num(getattr(stats, "session_total_estimate", 0), _num(prev.get("pages_estimate")))
+    queue = _num(snap.get("queue_size"), _num(prev.get("queue_size")))
     page_match = _PAGE_RE.search(text)
     if page_match:
         pages = int(page_match.group(1))
