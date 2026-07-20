@@ -136,6 +136,17 @@ h2 { margin: 0 0 .75rem; font-size: 1.15rem; }
   animation: progress-shine 2.2s linear infinite;
 }
 .progress-line { margin: 0; font-size: .86rem; min-height: 1.2em; }
+.progress-heartbeat {
+  margin: .35rem 0 0;
+  font-size: .82rem;
+  color: #d4a24c;
+  letter-spacing: .01em;
+  animation: heartbeat-pulse 1.6s ease-in-out infinite;
+}
+@keyframes heartbeat-pulse {
+  0%, 100% { opacity: .72; }
+  50% { opacity: 1; }
+}
 .stats.cockpit {
   grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
 }

@@ -23,9 +23,11 @@ def test_block_journal_and_forensic_capture():
     assert journal["status"] == 403
     assert journal["url"].endswith("/api/users")
     assert journal["reason"]
+    assert str(journal.get("time") or "").endswith("IST")
     forensic = data["block_events_forensic"][0]
     assert "Server" in forensic["headers"] or "server" in {k.lower() for k in forensic["headers"]}
     assert "Akamai" in forensic["body_snippet"] or "akamai" in forensic["body_snippet"].lower()
+    assert str(forensic.get("time_ist") or "").endswith("IST")
     plain = tracker.format_plain_report()
     assert "FORENSIC BLOCK" in plain
     assert "HTTP 403" in plain

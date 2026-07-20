@@ -240,9 +240,18 @@ async def run_job(job_id: str) -> None:
     def _publish_live(payload: Dict[str, Any], *, force_db: bool = False, message: str = "") -> None:
         from vantacrawl_api.services.live_progress import build_live_progress
 
+        stats_obj = stats_holder.get("stats")
+        payload = dict(payload)
+        # Keep Progress: elapsed fresh even when the crawler stalls on WAF/security
+        # and stops emitting new friendly stats lines.
+        text = str(payload.get("progress_text") or live_progress_state.get("progress_text") or "")
+        if stats_obj is not None and hasattr(stats_obj, "format_friendly_line"):
+            if text.startswith("Progress:"):
+                payload["progress_text"] = stats_obj.format_friendly_line()
+
         # Prefer in-memory merge; stats object is closed over below after creation
         merged = build_live_progress(
-            stats_holder["stats"],
+            stats_obj,
             progress_text=str(payload.get("progress_text") or ""),
             total=int(payload.get("bytes_total") or 0),
             done=int(payload.get("bytes_done") or 0),
@@ -400,6 +409,18 @@ async def run_job(job_id: str) -> None:
     async def stats_ticker():
         while not stop_flag["stop"]:
             try:
+                st = stats_holder.get("stats")
+                # Once the scan has real work (or a Progress: line exists), keep the
+                # cockpit Progress: clock alive during WAF stalls / findings spam.
+                if st is not None and hasattr(st, "format_friendly_line"):
+                    prev = str(live_progress_state.get("progress_text") or "")
+                    has_work = bool(
+                        getattr(st, "pages_crawled", 0)
+                        or getattr(st, "enum_words_tested", 0)
+                        or len(getattr(st, "findings", []) or [])
+                    )
+                    if prev.startswith("Progress:") or has_work:
+                        live_progress_state["progress_text"] = st.format_friendly_line()
                 _publish_live(dict(live_progress_state))
             except Exception:
                 log.exception("stats_ticker failed for %s", job_id)

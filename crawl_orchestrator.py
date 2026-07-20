@@ -236,6 +236,7 @@ async def run_full_crawl_async(
     evasion = evasion_from_crawl_config(config)
     defense = DefenseTracker(start_url=config.start_url) if getattr(config, "defense_verify", True) else None
     stats.defense_tracker = defense
+    stats.evasion_session = evasion
     headers = config.merged_headers(evasion.base_client_headers() if evasion.config.enabled else get_request_headers())
     proxy = config.httpx_proxy()
     auth = config.httpx_auth()

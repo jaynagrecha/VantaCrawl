@@ -194,19 +194,34 @@ def build_live_progress(
         and errors >= 8
     )
 
+    caught = int(defense.get("caught_by_protection") or blocks or 0)
+    unchallenged = int(defense.get("completed_without_challenge") or 0)
+    scored = max(caught + unchallenged, pages + errors, 1)
+    block_rate = challenge_events / scored
+    block_rate_pct = round(block_rate * 100, 1)
+    # Big WAF sites trip a few 403s immediately — don't scream Challenged at 3.
+    # Challenged when block *rate* is high with a meaningful sample, or absolute floor.
+    is_challenged = (challenge_events >= 12 and block_rate >= 0.15) or challenge_events >= 25
+
+    backoff_rem = float(snap.get("backoff_remaining_seconds") or prev.get("backoff_remaining_seconds") or 0)
+    heartbeat = str(snap.get("heartbeat") or prev.get("heartbeat") or "")
+    if backoff_rem > 0.4 and not heartbeat:
+        heartbeat = f"Waiting on WAF backoff… {int(backoff_rem + 0.99)}s"
+
     health = "OK"
     health_detail = "Scan progressing normally"
-    if challenge_events >= 8 or (protections and challenge_events >= 3):
+    if is_challenged:
         health = "Challenged"
         health_detail = (
-            f"{challenge_events} WAF/bot block(s) or challenges"
-            + (f" ({', '.join(protections[:3])})" if protections else "")
+            f"{challenge_events} WAF/bot block(s) ({block_rate_pct}% of scored traffic)"
+            + (f" · {', '.join(protections[:3])}" if protections else "")
             + " — separate from fetch Errors"
         )
     elif challenge_events > 0:
         health = "Slowing"
         health_detail = (
-            f"{challenge_events} challenge/block event(s) — not counted as Errors"
+            f"{challenge_events} challenge/block event(s) ({block_rate_pct}% of scored) — "
+            "normal on protected sites; journal has the detail"
         )
     elif stalled or (error_rate >= 0.25 and errors >= 10) or (pages < 8 and errors >= 15):
         health = "Degraded"
@@ -234,6 +249,9 @@ def build_live_progress(
         health = "OK"
         health_detail = f"{errors} failed fetch(es) ({error_rate_pct}%) — within normal range"
 
+    if heartbeat:
+        health_detail = f"{heartbeat} · {health_detail}"
+
     return {
         "phase": resolved_phase,
         "progress_pct": progress_pct,
@@ -257,11 +275,14 @@ def build_live_progress(
         "error_rate_pct": error_rate_pct,
         "blocks": blocks,
         "challenge_events": challenge_events,
+        "block_rate_pct": block_rate_pct,
         "protections": protections[:8],
         "protections_label": ", ".join(protections[:4]) if protections else "none",
         "block_journal": block_journal,
         "block_status_counts": block_status_counts,
         "protection_block_counts": protection_block_counts,
+        "backoff_remaining_seconds": round(backoff_rem, 1),
+        "heartbeat": heartbeat,
         "health": health,
         "health_detail": health_detail,
     }

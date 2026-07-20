@@ -12,10 +12,26 @@ import os
 import time
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from evasion_layer import detect_challenge
+
+try:
+    from zoneinfo import ZoneInfo
+
+    _IST = ZoneInfo("Asia/Kolkata")
+except Exception:  # pragma: no cover - Windows without tzdata fallback
+    _IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _format_ist(ts: float, *, with_date: bool = False) -> str:
+    """Format unix time in India Standard Time for journal / forensic UI."""
+    dt = datetime.fromtimestamp(float(ts), tz=timezone.utc).astimezone(_IST)
+    if with_date:
+        return dt.strftime("%Y-%m-%d %H:%M:%S IST")
+    return dt.strftime("%H:%M:%S IST")
 
 # Header / body signals → protection family
 PROTECTION_SIGNATURES = (
@@ -112,8 +128,8 @@ class DefenseEvent:
             "signal": signal,
             "protections": protections,
             "reason": self.reason,
-            # Explicit UTC clock — browsers must not treat this as local time
-            "time": time.strftime("%H:%M:%S UTC", time.gmtime(self.time)),
+            # IST for operators in India — time_unix remains the source of truth
+            "time": _format_ist(self.time),
             "time_unix": self.time,
         }
 
@@ -129,7 +145,9 @@ class DefenseEvent:
             "headers": dict(self.headers),
             "body_snippet": self.body_snippet,
             "time_unix": self.time,
-            "time_utc": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(self.time)),
+            "time_ist": _format_ist(self.time, with_date=True),
+            # Kept for older report templates; same IST stamp
+            "time_utc": _format_ist(self.time, with_date=True),
         }
 
 

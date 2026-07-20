@@ -112,6 +112,9 @@ CHALLENGE_MARKERS = (
     "bot detection",
     "perimeterx",
     "datadome",
+    "sucuri",
+    "cloudproxy",
+    "x-sucuri",
 )
 
 CHALLENGE_STATUS = {403, 429, 503}
@@ -155,6 +158,16 @@ class EvasionSession:
             self._accept_language = random.choice(profile["accept_language"])
         else:
             self._accept_language = profile["accept_language"][0]
+
+    def backoff_remaining(self) -> float:
+        """Seconds left on adaptive WAF/rate-limit pause (0 if idle)."""
+        return max(0.0, float(self._backoff_until) - time.time())
+
+    def heartbeat_label(self) -> str:
+        rem = self.backoff_remaining()
+        if rem <= 0.4:
+            return ""
+        return f"Waiting on WAF backoff… {int(rem + 0.99)}s"
 
     def _pick_profile_name(self) -> str:
         name = (self.config.browser_profile or "chrome").lower()
@@ -291,10 +304,17 @@ class EvasionSession:
             self._challenge_hits += 1
             self.last_challenge = challenge
             if self.config.adaptive_backoff:
-                # Exponential-ish backoff for lab hardening observation
-                seconds = min(30.0, 1.5 * (2 ** min(self._challenge_hits, 4)))
+                # Milder pauses so big WAF sites don't look "stuck" for 30–60s.
+                # 429 / rate-limit still backs off harder than a plain WAF 403.
+                hits = min(self._challenge_hits, 3)
+                rate_limited = challenge == "rate_limit" or status_code == 429
+                if rate_limited:
+                    seconds = min(18.0, 1.0 * (2**hits))
+                else:
+                    # sucuri/cf/akamai hard blocks — short pacing, keep crawl moving
+                    seconds = min(6.0, 0.5 * (2**hits))
                 if self.effective_level() == "aggressive":
-                    seconds = min(60.0, seconds * 1.5)
+                    seconds = min(24.0 if rate_limited else 10.0, seconds * 1.25)
                 self._backoff_until = time.time() + seconds
         elif status_code in (200, 204, 301, 302) and self._challenge_hits:
             # Cool down after success
@@ -424,6 +444,8 @@ def make_httpx_hooks(session: Optional[EvasionSession] = None, output_callback=N
             bits.append("datadome")
         if "akamai" in server:
             bits.append("akamai")
+        if "sucuri" in server or header_map.get("x-sucuri-id") or header_map.get("x-sucuri-block"):
+            bits.append("sucuri")
         preview = " ".join(bits)
 
         if defense_tracker is not None:
@@ -433,9 +455,10 @@ def make_httpx_hooks(session: Optional[EvasionSession] = None, output_callback=N
             before = session._challenge_hits
             session.after_request(url, response.status_code, preview)
             if output_callback and session._challenge_hits > before and session.last_challenge:
+                wait = max(1, int(session.backoff_remaining() + 0.99))
                 output_callback(
                     f"Protection / challenge signal detected ({session.last_challenge}) — "
-                    f"slowing down for a moment."
+                    f"slowing down for a moment (~{wait}s)."
                 )
 
     response_hooks.append(on_response)

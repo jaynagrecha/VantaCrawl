@@ -71,6 +71,49 @@ function jobDurationSeconds(job: Job, nowMs: number): number | null {
   return Math.max(0, (end - start) / 1000);
 }
 
+/** Match backend user_output.format_duration_friendly for Progress: lines. */
+function formatDurationFriendly(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const rem = total % 3600;
+  const minutes = Math.floor(rem / 60);
+  const secs = rem % 60;
+  if (hours) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  if (minutes) return `${minutes}m ${String(secs).padStart(2, "0")}s`;
+  return `${secs}s`;
+}
+
+/** Prefer crawl elapsed_seconds; fall back to job wall clock before first stats. */
+function scanDurationSeconds(
+  job: Job,
+  progress: Record<string, unknown>,
+  nowMs: number,
+  elapsedSyncedAtMs: number
+): number | null {
+  const crawl = Number(progress.elapsed_seconds);
+  const active = ["queued", "running", "paused", "stopping", "scheduled"].includes(job.status);
+  const hasCrawlClock =
+    Number.isFinite(crawl) &&
+    crawl >= 0 &&
+    (crawl > 0 || Number(progress.pages_crawled) > 0 || Number(progress.findings) > 0);
+
+  if (hasCrawlClock) {
+    if (!active || job.status === "paused") return crawl;
+    // Soft tick between worker progress publishes (~1.5s)
+    const drift = Math.max(0, (nowMs - elapsedSyncedAtMs) / 1000);
+    return crawl + Math.min(drift, 3);
+  }
+  return jobDurationSeconds(job, nowMs);
+}
+
+function withLiveElapsed(text: string, elapsedSecs: number | null): string {
+  if (!text.startsWith("Progress:") || elapsedSecs == null || !Number.isFinite(elapsedSecs)) {
+    return text;
+  }
+  const label = formatDurationFriendly(elapsedSecs);
+  return text.replace(/(?:\d+h\s+\d{2}m|\d+m\s+\d{2}s|\d+s)\s+elapsed/, `${label} elapsed`);
+}
+
 export default function JobPage() {
   const { id = "" } = useParams();
   const [job, setJob] = useState<Job | null>(null);
@@ -81,6 +124,8 @@ export default function JobPage() {
   const [artifacts, setArtifacts] = useState<{ name: string; path: string; size: number; kind: string }[]>([]);
   const logRef = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
+  const elapsedSyncedAtRef = useRef(Date.now());
+  const lastElapsedRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -151,6 +196,15 @@ export default function JobPage() {
   }, [id, job?.status, job?.report_html_path]);
 
   const progress = job?.progress_json || {};
+  useEffect(() => {
+    const e = Number(progress.elapsed_seconds);
+    if (!Number.isFinite(e)) return;
+    if (lastElapsedRef.current !== e) {
+      lastElapsedRef.current = e;
+      elapsedSyncedAtRef.current = Date.now();
+    }
+  }, [progress.elapsed_seconds]);
+
   const logText = useMemo(() => {
     const base = job?.log_tail || "";
     return (base + logExtra).slice(-24000);
@@ -191,8 +245,12 @@ export default function JobPage() {
   const embedUrl = `/api/reports/${job.id}/embed?token=${tok}`;
   const logUrl = `/api/reports/${job.id}/log?token=${tok}`;
   const zipUrl = `/api/reports/${job.id}/bundle.zip?token=${tok}`;
-  const durationSecs = jobDurationSeconds(job, nowMs);
+  const durationSecs = scanDurationSeconds(job, progress as Record<string, unknown>, nowMs, elapsedSyncedAtRef.current);
   const durationLabel = durationSecs == null ? "—" : formatDuration(durationSecs);
+  const progressLine = withLiveElapsed(
+    String(progress.progress_text || ""),
+    durationSecs
+  );
 
   const canPause = job.status === "running" || job.status === "queued";
   const canResume = job.status === "paused" || job.status === "scheduled";
@@ -262,6 +320,11 @@ export default function JobPage() {
               : health === "Slowing" || health === "Noisy" || health === "Waiting"
                 ? "caution"
                 : "ok";
+          const heartbeat = String(progress.heartbeat || "");
+          const backoffRem = Number(progress.backoff_remaining_seconds) || 0;
+          const heartbeatLine =
+            heartbeat ||
+            (backoffRem > 0.4 ? `Waiting on WAF backoff… ${Math.ceil(backoffRem)}s` : "");
           const tiles: { label: string; value: string; hint?: string; tone?: string }[] = [
             { label: "Phase", value: phaseLabel(progress.phase), tone: "phase" },
             { label: "Progress", value: `${pct}%` },
@@ -324,8 +387,13 @@ export default function JobPage() {
                 <div className={`progress-fill ${active ? "live" : ""}`} style={{ width: `${pct}%` }} />
               </div>
               <p className="progress-line muted">
-                {String(progress.progress_text || (active ? "Waiting for first progress update…" : "—"))}
+                {progressLine || (active ? "Waiting for first progress update…" : "—")}
               </p>
+              {heartbeatLine ? (
+                <p className="progress-heartbeat" title="Scanner is paused briefly after a WAF/rate-limit signal">
+                  {heartbeatLine}
+                </p>
+              ) : null}
               <div className="stats cockpit">
                 {tiles.map((t) => (
                   <div
@@ -368,7 +436,7 @@ export default function JobPage() {
                                 {p}
                               </span>
                             ))}
-                            <span className="muted" title="Event time (UTC)">
+                            <span className="muted" title="Event time (IST)">
                               {ev.time || ""}
                             </span>
                           </div>

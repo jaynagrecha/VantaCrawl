@@ -40,6 +40,7 @@ class CrawlStats:
     discovered_urls: Set[str] = field(default_factory=set)
     session_total_estimate: int = 0
     defense_tracker: Any = None
+    evasion_session: Any = None
     _finding_dedupe: Set[str] = field(default_factory=set)
     finding_repeat_suppressed: int = 0
 
@@ -188,6 +189,16 @@ class CrawlStats:
 
     def snapshot(self) -> Dict[str, Any]:
         elapsed = max(self.elapsed_seconds(), 0.001)
+        evasion = self.evasion_session
+        backoff_rem = 0.0
+        heartbeat = ""
+        if evasion is not None:
+            try:
+                backoff_rem = float(evasion.backoff_remaining())
+                heartbeat = str(evasion.heartbeat_label() or "")
+            except Exception:
+                backoff_rem = 0.0
+                heartbeat = ""
         return {
             "elapsed_seconds": round(elapsed, 1),
             "pages_crawled": self.pages_crawled,
@@ -206,6 +217,8 @@ class CrawlStats:
             "broken_links_count": len(self.broken_links),
             "technologies": dict(self.technologies.most_common(20)),
             "paused": self.paused,
+            "backoff_remaining_seconds": round(backoff_rem, 1),
+            "heartbeat": heartbeat,
             "defense": self.defense_tracker.to_dict() if self.defense_tracker else None,
             "discovered_url_count": len(self.discovered_urls),
             "historical_seed_count": len(self.historical_seed_urls),

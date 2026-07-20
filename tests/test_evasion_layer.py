@@ -42,6 +42,16 @@ def test_backoff_after_challenge():
     session.after_request("https://lab.local/x", 429, "")
     assert session._backoff_until > 0
     assert session.last_challenge == "rate_limit"
+    assert session.backoff_remaining() > 0
+
+
+def test_waf_403_backoff_milder_than_old_30s_cap():
+    session = EvasionSession(EvasionConfig(enabled=True, level="stealth", adaptive_backoff=True))
+    for _ in range(6):
+        session.after_request("https://lab.local/x", 403, "sucuri cloudproxy access denied")
+    # Hard WAF blocks should not park the crawl for tens of seconds
+    assert session.backoff_remaining() <= 6.5
+    assert "Waiting on WAF backoff" in session.heartbeat_label()
 
 
 def test_config_profile_stealth_sets_stealth_evasion():
