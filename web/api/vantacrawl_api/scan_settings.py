@@ -32,9 +32,7 @@ EDITABLE_DEFAULTS_SKIP = {
     "subdomain_wordlist",
     "extra_wordlists",
     "vhost_wordlist",
-    "distributed_redis_url",
-    "login_password",
-    "auth_password",
+    # Paths / lists that need upload UX (not free-text paths on Render)
 }
 
 _HUMAN = {
@@ -113,6 +111,47 @@ _HUMAN = {
     "sqlite_export": ("SQLite export", "Write a SQLite findings database."),
     "search_conclusion_report": ("Search conclusion", "Plain-language conclusion section."),
     "site_graph_export": ("Site graph", "Export a site map / graph view."),
+    "profile": ("Content profile", "Desktop preset that tunes crawl/enum aggressiveness."),
+    "branch_depth_limit": ("Branch depth limit", "Extra cap on branching depth (0 = off)."),
+    "response_fingerprint": ("Response fingerprint", "Fingerprint bodies to spot soft-404 wildcards."),
+    "legacy_wordlist_expansion": ("Legacy wordlist expansion", "Expand every word with every extension (slow)."),
+    "extension_aware_wordlist": ("Extension-aware wordlist", "Smarter extension handling while enumerating."),
+    "enum_status_whitelist": ("Status whitelist", "Only treat these codes as hits (comma-separated)."),
+    "exclude_lengths": ("Exclude lengths", "Ignore responses with these Content-Lengths."),
+    "exclude_body_hashes": ("Exclude body hashes", "Ignore responses matching these hashes."),
+    "enum_prefixes": ("Enum prefixes", "Comma-separated path prefixes to enumerate under."),
+    "auto_prefix_enum": ("Auto prefix enum", "Derive prefixes from discovered paths."),
+    "enum_similarity_threshold": ("Similarity threshold", "Soft-404 similarity cutoff (higher = stricter)."),
+    "status_code_report": ("Status-code reporting", "Record HTTP status detail on enum hits."),
+    "queue_enum_for_crawl": ("Queue enum for crawl", "Feed enum hits into the crawl queue."),
+    "skip_enum_download": ("Skip enum download", "Do not download bodies during brute force."),
+    "resume_enum_checkpoint": ("Resume enum checkpoint", "Continue enum from the last checkpoint."),
+    "enum_checkpoint_interval": ("Enum checkpoint interval", "Save enum progress every N words."),
+    "broken_link_sample_size": ("Broken-link sample", "Max links to sample for broken-link checks."),
+    "nuclei_scan": ("Nuclei scan", "Run Nuclei if installed on the worker (authorized only)."),
+    "nuclei_severity": ("Nuclei severity", "Comma-separated severities to include."),
+    "save_server_side_as_txt": ("Save PHP/ASP as .txt", "Store server-side scripts as text in the mirror."),
+    "extensions": ("Download extensions", "Only download these extensions (comma-separated, empty = all)."),
+    "incremental_mirror": ("Incremental mirror", "Skip unchanged files via ETag / Last-Modified."),
+    "selenium_fallback": ("Selenium fallback", "Render pages in Chrome when plain HTTP fails (needs Chrome)."),
+    "deep_mirror": ("Deep mirror", "Render all HTML in Chrome for offline fidelity (slow)."),
+    "screenshot_capture": ("Screenshot capture", "Capture page screenshots (needs Chrome)."),
+    "proxy_url": ("Proxy URL", "Optional HTTP(S) proxy, e.g. http://user:pass@host:8080"),
+    "auth_username": ("Basic auth username", "HTTP basic authentication username."),
+    "auth_password": ("Basic auth password", "HTTP basic authentication password."),
+    "cookie_string": ("Cookie string", "Raw Cookie header value for authenticated crawling."),
+    "use_selenium_login": ("Browser login first", "Open a browser login flow before crawling (needs Chrome)."),
+    "login_url": ("Login URL", "Page where the login form lives."),
+    "login_username": ("Login username", "Username / email for the login form."),
+    "login_password": ("Login password", "Password for the login form."),
+    "resume_checkpoint": ("Resume crawl checkpoint", "Continue from the last crawl checkpoint."),
+    "checkpoint_interval": ("Crawl checkpoint interval", "Save crawl progress every N pages."),
+    "disk_space_guard_mb": ("Disk space guard (MB)", "Stop downloads if free disk falls below this."),
+    "distributed_redis_url": ("Distributed Redis URL", "Optional Redis URL for distributed queue mode."),
+    "schedule_interval_hours": ("Rescan interval (hours)", "0 = once. Web SaaS stores this; dedicated scheduler is a follow-up."),
+    "burp_export": ("Burp XML export", "Write Burp-style findings XML."),
+    "zap_export": ("ZAP JSON export", "Write OWASP ZAP-style findings JSON."),
+    "priority_html_first": ("Priority HTML queue", "Fetch HTML pages before other assets."),
 }
 
 _UA_STRATEGIES = (
@@ -197,6 +236,29 @@ def setting_fields() -> Dict[str, Dict[str, Any]]:
             control="text_with_presets",
             presets=[{"value": value, "label": label} for value, label in _STATUS_BLACKLIST_PRESETS],
         ),
+        "profile": _field(
+            "profile",
+            control="select",
+            options=[
+                {"value": "full", "label": "Full - balanced desktop default"},
+                {"value": "quick", "label": "Quick - lighter discovery"},
+                {"value": "stealth", "label": "Stealth - slower, quieter"},
+                {"value": "gobuster", "label": "Gobuster-style - enum-heavy"},
+            ],
+        ),
+        "auth_password": _field("auth_password", control="password"),
+        "login_password": _field("login_password", control="password"),
+        "nuclei_severity": _field(
+            "nuclei_severity",
+            control="select",
+            options=[
+                {"value": "critical", "label": "critical"},
+                {"value": "high,critical", "label": "high, critical"},
+                {"value": "medium,high,critical", "label": "medium, high, critical (default)"},
+                {"value": "low,medium,high,critical", "label": "low through critical"},
+                {"value": "info,low,medium,high,critical", "label": "all severities"},
+            ],
+        ),
     }
     # Defaults for every editable key so the UI always has a human label
     cfg = CrawlConfig(start_url="https://example.com")
@@ -223,6 +285,16 @@ def default_settings() -> Dict[str, Any]:
     for key in EDITABLE_DEFAULTS_SKIP:
         data.pop(key, None)
     data.pop("custom_headers", None)
+    data.pop("blocked_content_types", None)
+    # UI-friendly string for list-typed extensions
+    ext = data.get("extensions")
+    if isinstance(ext, list):
+        data["extensions"] = ",".join(str(x) for x in ext)
+    elif ext is None:
+        data["extensions"] = ""
+    # Never ship default secrets into the browser form
+    data["auth_password"] = ""
+    data["login_password"] = ""
     return data
 
 
@@ -231,9 +303,11 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
         "id": "core",
         "title": "Core",
         "keys": [
+            "profile",
             "restrict_domain",
             "max_depth",
             "link_depth_limit",
+            "branch_depth_limit",
             "crawl_concurrency",
             "enum_concurrency",
             "download_concurrency",
@@ -241,6 +315,7 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "bypass_forbidden",
             "enum_only",
             "enum_flat_scan",
+            "priority_html_first",
         ],
     },
     {
@@ -268,11 +343,23 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
         "title": "Directory enum",
         "keys": [
             "wildcard_detection",
+            "response_fingerprint",
             "gobuster_style_extensions",
+            "legacy_wordlist_expansion",
+            "extension_aware_wordlist",
             "smart_wordlist_order",
             "enum_extensions",
             "enum_status_blacklist",
+            "enum_status_whitelist",
+            "exclude_lengths",
+            "exclude_body_hashes",
+            "enum_prefixes",
+            "auto_prefix_enum",
             "enum_method",
+            "enum_similarity_threshold",
+            "status_code_report",
+            "queue_enum_for_crawl",
+            "skip_enum_download",
             "enum_auto_crawl_hits",
             "enum_auto_vuln_scan",
             "vhost_enum",
@@ -280,6 +367,8 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "gcs_enum",
             "smart_false_positive",
             "false_positive_learning",
+            "resume_enum_checkpoint",
+            "enum_checkpoint_interval",
         ],
     },
     {
@@ -296,9 +385,12 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "tech_fingerprint",
             "sensitive_file_highlights",
             "broken_link_report",
+            "broken_link_sample_size",
             "defense_verify",
             "active_probe_max_params",
             "active_probe_max_forms",
+            "nuclei_scan",
+            "nuclei_severity",
         ],
     },
     {
@@ -309,9 +401,40 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "mirror_page_assets",
             "preserve_structure",
             "rewrite_local",
+            "save_server_side_as_txt",
+            "extensions",
             "duplicate_content_detection",
+            "incremental_mirror",
             "warc_export",
             "skip_tracking_downloads",
+            "selenium_fallback",
+            "deep_mirror",
+            "screenshot_capture",
+        ],
+    },
+    {
+        "id": "connection",
+        "title": "Connection & auth",
+        "keys": [
+            "proxy_url",
+            "auth_username",
+            "auth_password",
+            "cookie_string",
+            "use_selenium_login",
+            "login_url",
+            "login_username",
+            "login_password",
+        ],
+    },
+    {
+        "id": "operations",
+        "title": "Operations",
+        "keys": [
+            "resume_checkpoint",
+            "checkpoint_interval",
+            "disk_space_guard_mb",
+            "distributed_redis_url",
+            "schedule_interval_hours",
         ],
     },
     {
@@ -334,7 +457,7 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
     },
     {
         "id": "reports",
-        "title": "Reports",
+        "title": "Reports & exports",
         "keys": [
             "html_report",
             "json_report",
@@ -342,6 +465,8 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "sqlite_export",
             "search_conclusion_report",
             "site_graph_export",
+            "burp_export",
+            "zap_export",
         ],
     },
 ]

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, getToken, Job } from "../api";
+import ScanActivity from "../components/ScanActivity";
 
 export default function JobPage() {
   const { id = "" } = useParams();
@@ -92,6 +93,7 @@ export default function JobPage() {
         </div>
         {error && <div className="error" style={{ marginTop: "1rem" }}>{error}</div>}
         {job.error_message && <div className="error" style={{ marginTop: "1rem" }}>{job.error_message}</div>}
+        <ScanActivity status={job.status} />
         <div className="stats" style={{ marginTop: "1.1rem" }}>
           <div className="stat">
             <div className="stat-num">{String(progress.pages_crawled ?? "—")}</div>

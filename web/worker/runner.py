@@ -100,6 +100,12 @@ def _build_crawl_config(job: ScanJob) -> CrawlConfig:
             except Exception:
                 pass
 
+    # Web UI sends extensions as a comma-separated string
+    ext = getattr(cfg, "extensions", None)
+    if isinstance(ext, str):
+        parts = [p.strip() for p in ext.split(",") if p.strip()]
+        cfg.extensions = parts or None
+
     # Override report_dir()
     cfg.report_dir = lambda: str(report_dir)  # type: ignore[method-assign]
     return cfg

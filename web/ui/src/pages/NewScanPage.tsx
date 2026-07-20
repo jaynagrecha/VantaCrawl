@@ -44,6 +44,7 @@ function SettingControl({
   const isNumber = typeof value === "number" || control === "number";
   const isSelect = control === "select" && options.length > 0;
   const isPresetText = control === "text_with_presets";
+  const isPassword = control === "password";
 
   if (isBool) {
     return (
@@ -131,6 +132,8 @@ function SettingControl({
       <label>{label}</label>
       {help ? <p className="setting-help-inline">{help}</p> : null}
       <input
+        type={isPassword ? "password" : "text"}
+        autoComplete={isPassword ? "new-password" : undefined}
         value={value == null ? "" : String(value)}
         onChange={(e) => onChange(fieldKey, e.target.value)}
       />

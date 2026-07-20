@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, Job } from "../api";
+import ScanActivity from "../components/ScanActivity";
 
 export default function DashboardPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -53,7 +54,10 @@ export default function DashboardPage() {
                       {job.start_url}
                     </td>
                     <td>
-                      <span className={`badge ${job.status}`}>{job.status}</span>
+                      <div style={{ display: "flex", alignItems: "center", gap: ".45rem", flexWrap: "wrap" }}>
+                        <span className={`badge ${job.status}`}>{job.status}</span>
+                        <ScanActivity status={job.status} compact label={job.status === "running" ? "Scanning" : undefined} />
+                      </div>
                     </td>
                     <td className="muted">{job.mode}</td>
                     <td>
