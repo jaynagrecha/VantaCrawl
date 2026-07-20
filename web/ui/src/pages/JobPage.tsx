@@ -122,7 +122,7 @@ export default function JobPage() {
     el.scrollTop = el.scrollHeight;
   }, [logText]);
 
-  async function runAction(kind: "pause" | "resume" | "stop" | "force-cancel") {
+  async function runAction(kind: "pause" | "resume" | "stop" | "force-cancel" | "summary-report") {
     if (!job) return;
     setActionError("");
     try {
@@ -130,6 +130,7 @@ export default function JobPage() {
       if (kind === "resume") await api.resumeJob(job.id);
       if (kind === "stop") await api.stopJob(job.id);
       if (kind === "force-cancel") await api.forceCancelJob(job.id);
+      if (kind === "summary-report") await api.buildSummaryReport(job.id);
       const fresh = await api.getJob(job.id);
       setJob(fresh);
     } catch (err: any) {
@@ -141,7 +142,8 @@ export default function JobPage() {
     return <div className="card muted">{error || "Loading job…"}</div>;
   }
 
-  const reportReady = ["completed", "failed", "cancelled"].includes(job.status) || Boolean(job.report_html_path);
+  const reportReady = Boolean(job.report_html_path);
+  const jobFinished = ["completed", "failed", "cancelled"].includes(job.status);
   const tok = encodeURIComponent(getToken() || "");
   const htmlUrl = `/api/reports/${job.id}/html?token=${tok}`;
   const txtUrl = `/api/reports/${job.id}/txt?token=${tok}`;
@@ -300,7 +302,23 @@ export default function JobPage() {
       <section className="card">
         <h2>Report & artifacts</h2>
         {!reportReady ? (
-          <p className="muted">HTML report and artifacts appear when the worker finishes writing files.</p>
+          <div>
+            <p className="muted">
+              {jobFinished
+                ? "No full HTML report was written (scan stopped early or was blocked). You can generate a summary from the log, or export the log above."
+                : "HTML report appears when the worker finishes (or when a stuck job is force-cancelled)."}
+            </p>
+            {jobFinished ? (
+              <button
+                className="btn primary"
+                type="button"
+                style={{ marginTop: ".75rem" }}
+                onClick={() => runAction("summary-report")}
+              >
+                Generate summary report
+              </button>
+            ) : null}
+          </div>
         ) : (
           <>
             <div style={{ display: "flex", gap: ".6rem", marginBottom: ".75rem", flexWrap: "wrap" }}>

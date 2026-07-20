@@ -302,14 +302,43 @@ def resume_job(job_id: str, session: SessionDep, user: CurrentUser):
 
 
 def _force_cancel(job: ScanJob, session, *, note: str) -> MessageOut:
+    from ..services.summary_report import write_summary_report
+
     set_job_command(job.id, "stop")
     job.status = "cancelled"
     job.finished_at = datetime.utcnow()
     job.updated_at = datetime.utcnow()
     job.error_message = job.error_message or note
+    # Ensure the UI has a report even when the worker never finished writing one
+    if not (job.report_html_path and Path(job.report_html_path).is_file()):
+        report_dir = Path(job.report_dir or "")
+        if not report_dir:
+            settings = get_settings()
+            report_dir = Path(settings.jobs_dir) / job.id / "reports"
+            job.report_dir = str(report_dir)
+        html_path, txt_path = write_summary_report(
+            report_dir,
+            job_id=job.id,
+            title=job.title or "Scan",
+            start_url=job.start_url or "",
+            status="cancelled",
+            progress=job.progress_json or {},
+            log_tail=job.log_tail or "",
+            note=note
+            + " Full crawl report was never produced (often blocked by Cloudflare).",
+        )
+        job.report_html_path = html_path
+        job.report_txt_path = txt_path
     session.add(job)
     session.commit()
-    publish_progress(job.id, {"status": "cancelled", "message": "Force-cancelled"})
+    publish_progress(
+        job.id,
+        {
+            "status": "cancelled",
+            "message": "Force-cancelled",
+            "progress": job.progress_json or {},
+        },
+    )
     return MessageOut(message="Force-cancelled")
 
 
@@ -349,6 +378,35 @@ def force_cancel_job(job_id: str, session: SessionDep, user: CurrentUser):
     if job.status in ("completed", "cancelled", "failed"):
         return MessageOut(message=f"Already {job.status}")
     return _force_cancel(job, session, note="Force-cancelled by user")
+
+
+@router.post("/{job_id}/summary-report", response_model=MessageOut)
+def build_summary_report(job_id: str, session: SessionDep, user: CurrentUser):
+    """Build a summary HTML report from logs/progress when the full report never wrote."""
+    from ..services.summary_report import write_summary_report
+
+    job = _owned(session.get(ScanJob, job_id), user)
+    report_dir = Path(job.report_dir or "")
+    if not report_dir:
+        settings = get_settings()
+        report_dir = Path(settings.jobs_dir) / job.id / "reports"
+        job.report_dir = str(report_dir)
+    html_path, txt_path = write_summary_report(
+        report_dir,
+        job_id=job.id,
+        title=job.title or "Scan",
+        start_url=job.start_url or "",
+        status=job.status,
+        progress=job.progress_json or {},
+        log_tail=job.log_tail or "",
+        note="Summary report generated on demand (full crawl report was not available).",
+    )
+    job.report_html_path = html_path
+    job.report_txt_path = txt_path
+    job.updated_at = datetime.utcnow()
+    session.add(job)
+    session.commit()
+    return MessageOut(message="Summary report ready")
 
 
 @router.websocket("/{job_id}/ws")

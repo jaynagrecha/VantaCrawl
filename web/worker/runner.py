@@ -385,12 +385,34 @@ async def run_job(job_id: str) -> None:
             "elapsed_seconds": stats.elapsed_seconds() if hasattr(stats, "elapsed_seconds") else None,
         }
         finished_job = _get_job(job_id)
+        html_path = str(html_matches[-1]) if html_matches else ""
+        txt_path = str(txt_matches[-1]) if txt_matches else ""
+        if not html_path:
+            from vantacrawl_api.services.summary_report import write_summary_report
+
+            note = ""
+            if status == "cancelled":
+                note = (
+                    "Scan was stopped before the full report was written. "
+                    "Cloudflare challenges often prevent enum/crawl from finishing."
+                )
+            html_path, txt_path = write_summary_report(
+                report_dir,
+                job_id=job_id,
+                title=(finished_job.title if finished_job else "") or "Scan",
+                start_url=(finished_job.start_url if finished_job else "") or "",
+                status=status,
+                progress=progress,
+                log_tail=(finished_job.log_tail if finished_job else "") or "",
+                note=note,
+            )
+            output_callback("Wrote summary report (full HTML report was not produced).")
         _update_job(
             job_id,
             status=status,
             finished_at=datetime.utcnow(),
-            report_html_path=str(html_matches[-1]) if html_matches else "",
-            report_txt_path=str(txt_matches[-1]) if txt_matches else "",
+            report_html_path=html_path,
+            report_txt_path=txt_path,
             progress_json=progress,
         )
         publish_progress(job_id, {"status": status, "message": "Scan finished", "progress": progress})
@@ -401,11 +423,32 @@ async def run_job(job_id: str) -> None:
                 log.exception("Failed to schedule follow-up for %s", job_id)
     except Exception as exc:
         log.exception("Job %s failed", job_id)
+        failed_job = _get_job(job_id)
+        html_path = ""
+        txt_path = ""
+        try:
+            from vantacrawl_api.services.summary_report import write_summary_report
+
+            rdir = Path(failed_job.report_dir) if failed_job and failed_job.report_dir else report_dir
+            html_path, txt_path = write_summary_report(
+                rdir,
+                job_id=job_id,
+                title=(failed_job.title if failed_job else "") or "Scan",
+                start_url=(failed_job.start_url if failed_job else "") or "",
+                status="failed",
+                progress=(failed_job.progress_json if failed_job else {}) or {},
+                log_tail=(failed_job.log_tail if failed_job else "") or "",
+                note=f"Scan failed: {exc}",
+            )
+        except Exception:
+            log.exception("Failed to write summary report for %s", job_id)
         _update_job(
             job_id,
             status="failed",
             finished_at=datetime.utcnow(),
             error_message=str(exc)[:2000],
+            report_html_path=html_path,
+            report_txt_path=txt_path,
         )
         publish_progress(job_id, {"status": "failed", "message": str(exc)})
     finally:

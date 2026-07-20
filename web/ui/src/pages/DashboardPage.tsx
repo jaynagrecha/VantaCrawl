@@ -74,7 +74,7 @@ export default function DashboardPage() {
         <section className="card">
           <h2>Quick start</h2>
           <p className="muted">
-            Confirm authorization, pick a mode, choose a wordlist (or upload your own), tune speed, then watch live
+            Confirm authorization, pick a mode, upload a wordlist if you want, tune speed, then watch live
             progress and open the VantaCrawl HTML report.
           </p>
           <Link className="btn primary" to="/scans/new">
