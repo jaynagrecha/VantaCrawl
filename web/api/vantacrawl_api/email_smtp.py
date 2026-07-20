@@ -1,4 +1,4 @@
-﻿"""Gmail SMTP delivery for OTP emails."""
+"""Gmail SMTP delivery for OTP emails."""
 
 from __future__ import annotations
 

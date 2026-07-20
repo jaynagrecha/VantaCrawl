@@ -1,1 +1,1 @@
-﻿"""VantaCrawl web API package."""
+"""VantaCrawl web API package."""

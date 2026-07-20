@@ -1,4 +1,4 @@
-﻿"""Runtime settings for VantaCrawl web API (Render / local)."""
+"""Runtime settings for VantaCrawl web API (Render / local)."""
 
 from __future__ import annotations
 

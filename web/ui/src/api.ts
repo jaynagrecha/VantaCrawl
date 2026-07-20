@@ -1,4 +1,4 @@
-﻿const TOKEN_KEY = "vantacrawl_token";
+const TOKEN_KEY = "vantacrawl_token";
 
 export type User = {
   id: string;

@@ -1,4 +1,4 @@
-﻿# VantaCrawl Web (Option B)
+# VantaCrawl Web (Option B)
 
 Self-hosted web UI for the crawler / directory bruteforcer engine.
 

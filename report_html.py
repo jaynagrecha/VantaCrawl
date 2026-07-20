@@ -1,4 +1,4 @@
-﻿"""Dark commercial SaaS HTML search report (interactive)."""
+"""Dark commercial SaaS HTML search report (interactive)."""
 
 from __future__ import annotations
 

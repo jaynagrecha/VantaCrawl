@@ -1,4 +1,4 @@
-﻿"""Run a VantaCrawl scan job against the existing crawl orchestrator."""
+"""Run a VantaCrawl scan job against the existing crawl orchestrator."""
 
 from __future__ import annotations
 

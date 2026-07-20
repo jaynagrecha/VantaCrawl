@@ -1,4 +1,4 @@
-﻿"""Redis queue consumer for VantaCrawl scan jobs."""
+"""Redis queue consumer for VantaCrawl scan jobs."""
 
 from __future__ import annotations
 
