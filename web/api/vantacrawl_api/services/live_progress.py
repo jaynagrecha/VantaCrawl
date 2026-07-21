@@ -116,6 +116,24 @@ def _num(value: Any, default: int = 0) -> int:
         return default
 
 
+def _first_present(*values: Any, default: Any = None) -> Any:
+    """Like ``or`` chaining, but treat 0 / False as present (only skip None)."""
+    for value in values:
+        if value is not None:
+            return value
+    return default
+
+
+def _url_list(*sources: Any, limit: int = 80) -> List[str]:
+    """Return the first non-None source as a capped URL list (empty list is valid)."""
+    for source in sources:
+        if source is None:
+            continue
+        if isinstance(source, (list, tuple, set)):
+            return [str(u) for u in source if u][:limit]
+    return []
+
+
 def build_live_progress(
     stats,
     *,
@@ -142,19 +160,21 @@ def build_live_progress(
     if estimate < pages:
         estimate = pages
 
-    enum_done = int(snap.get("enum_words_tested") or prev.get("enum_words_tested") or 0)
-    enum_total = int(snap.get("enum_words_total") or prev.get("enum_words_total") or 0)
+    # 0 is a real counter value — never fall through with `x or prev` (sticky API/sub hits).
+    enum_done = _num(snap.get("enum_words_tested"), _num(prev.get("enum_words_tested")))
+    enum_total = _num(snap.get("enum_words_total"), _num(prev.get("enum_words_total")))
     enum_match = _ENUM_RE.search(text)
     if enum_match:
         enum_done = int(enum_match.group(1).replace(",", ""))
         enum_total = int(enum_match.group(2).replace(",", ""))
 
-    enum_hits = int(snap.get("enum_hits") or prev.get("enum_hits") or 0)
+    enum_hits = _num(snap.get("enum_hits"), _num(prev.get("enum_hits")))
     hits_match = _HITS_RE.search(text)
-    if hits_match:
+    # Only trust log-parsed hits while still in directory enum (avoids sticky ghosts in crawl).
+    if hits_match and resolved_phase == "enum":
         enum_hits = max(enum_hits, int(hits_match.group(1)))
 
-    findings = int(snap.get("findings_count") or prev.get("findings") or 0)
+    findings = _num(snap.get("findings_count"), _num(prev.get("findings")))
     elapsed = float(snap.get("elapsed_seconds") or prev.get("elapsed_seconds") or 0)
     upm = float(snap.get("urls_per_minute") or 0)
 
@@ -216,9 +236,26 @@ def build_live_progress(
 
     # Enum ETA must use enum-phase clock (not whole-job elapsed — that caused ~112h ghosts)
     eta_seconds: Optional[int] = None
-    enum_probing = str(snap.get("enum_probing") or prev.get("enum_probing") or "")
-    enum_current_word = str(snap.get("enum_current_word") or prev.get("enum_current_word") or "")
-    enum_current_path = str(snap.get("enum_current_path") or prev.get("enum_current_path") or "/")
+    # Prefer live snap labels; empty string is valid (clears stale probing from prior phase).
+    enum_probing = str(_first_present(snap.get("enum_probing"), prev.get("enum_probing"), default="") or "")
+    enum_current_word = str(
+        _first_present(snap.get("enum_current_word"), prev.get("enum_current_word"), default="") or ""
+    )
+    enum_current_path = str(
+        _first_present(snap.get("enum_current_path"), prev.get("enum_current_path"), default="/") or "/"
+    )
+    # Outside enum/api/sub phases, do not keep remapped probe labels on the cockpit.
+    if resolved_phase in ("crawl", "download", "security", "starting") and "enum_probing" in snap:
+        enum_probing = str(snap.get("enum_probing") or "")
+        enum_current_word = str(snap.get("enum_current_word") or "")
+        enum_current_path = str(snap.get("enum_current_path") or "/")
+
+    # Prefer live snap list (including empty) so API/sub remaps do not stick into crawl.
+    if "enum_hit_urls" in snap:
+        enum_urls = _url_list(snap.get("enum_hit_urls"), limit=80)
+    else:
+        enum_urls = _url_list(prev.get("enum_hit_urls"), limit=80)
+
     if resolved_phase == "recon" and (sub_total > 0 or sub_done > 0 or sub_host or sub_probing):
         # Reuse cockpit tiles during subdomain recon
         enum_done = sub_done
@@ -227,6 +264,13 @@ def build_live_progress(
         enum_probing = sub_probing or (f"Subdomain: {sub_host}" if sub_host else "")
         enum_current_path = sub_host or enum_current_path
         enum_current_word = sub_host.split(".")[0] if sub_host else enum_current_word
+        sub_urls = _url_list(
+            getattr(stats, "subdomain_urls", None),
+            snap.get("subdomain_urls") if "subdomain_urls" in snap else None,
+            limit=80,
+        )
+        if sub_urls:
+            enum_urls = sub_urls[:80]
     elif resolved_phase == "api_recon":
         # Reuse cockpit tiles: Enum words / Probing / Enum hits → API probe live state
         if api_total > 0 or api_done > 0 or api_path or api_probing:
@@ -236,6 +280,19 @@ def build_live_progress(
             enum_probing = api_probing or (f"API probe: {api_path}" if api_path else "")
             enum_current_path = api_path or enum_current_path
             enum_current_word = api_path.rstrip("/").split("/")[-1] if api_path else enum_current_word
+            from_eps = [
+                str(ep.get("url") or "")
+                for ep in (getattr(stats, "api_endpoints", None) or [])
+                if isinstance(ep, dict) and ep.get("url")
+            ]
+            api_urls = _url_list(
+                getattr(stats, "api_endpoint_urls", None),
+                from_eps or None,
+                snap.get("api_endpoint_urls") if "api_endpoint_urls" in snap else None,
+                limit=80,
+            )
+            if api_urls:
+                enum_urls = api_urls[:80]
         if api_total > api_done > 0:
             if hasattr(stats, "api_recon_eta_seconds"):
                 try:
@@ -264,8 +321,6 @@ def build_live_progress(
                 eta_seconds = None
     elif resolved_phase == "crawl" and estimate > pages and upm > 0:
         eta_seconds = max(0, int((estimate - pages) / (upm / 60.0)))
-
-    enum_urls = list(snap.get("enum_hit_urls") or prev.get("enum_hit_urls") or [])[:80]
     preview = _findings_preview(stats) or list(prev.get("findings_preview") or [])[:80]
     findings_full: List[Dict[str, Any]] = []
     try:
