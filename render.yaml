@@ -1,11 +1,15 @@
-# VantaCrawl — self-hosted SaaS on Render
+# VantaCrawl / SantaScan — SaaS on Render (Standard)
 #
-# Free tier: no Background Workers — API embeds a concurrent job pool
-#   (EMBED_WORKER=true, MAX_CONCURRENT_SCANS=3).
-# Paid tier (option 3): deploy the `vantacrawl-worker` service below and set
-#   EMBED_WORKER=false on the web service so only the dedicated worker consumes.
+# Concurrent scans: MAX_CONCURRENT_SCANS=8 (raise further in Dashboard if needed).
+# Per-user cap: MAX_CONCURRENT_SCANS_PER_USER=1.
+#
+# Web embeds the job consumer (EMBED_WORKER=true). If you run the dedicated
+# Background Worker below, set EMBED_WORKER=false on the web service so jobs
+# are not double-consumed.
 #
 # Set secret env vars in the Dashboard (do not commit real SMTP/admin secrets).
+# If the Live service is named differently (e.g. santascan-api), set the same
+# env vars there after deploy.
 
 databases:
   - name: vantacrawl-db
@@ -23,7 +27,7 @@ services:
   - type: web
     name: vantacrawl-api
     runtime: python
-    plan: free
+    plan: standard
     buildCommand: pip install -r web/requirements-render.txt -r web/api/requirements.txt && cd web/ui && npm install && npm run build
     startCommand: uvicorn vantacrawl_api.main:app --host 0.0.0.0 --port $PORT --app-dir web/api
     envVars:
@@ -34,7 +38,7 @@ services:
       - key: EMBED_WORKER
         value: "true"
       - key: MAX_CONCURRENT_SCANS
-        value: "3"
+        value: "8"
       - key: MAX_CONCURRENT_SCANS_PER_USER
         value: "1"
       - key: DATABASE_URL
@@ -73,12 +77,12 @@ services:
       - key: UI_DIST_DIR
         value: /opt/render/project/src/web/ui/dist
 
-  # Paid Render only (Background Workers are not on the free plan).
-  # After creating this service: set vantacrawl-api EMBED_WORKER=false.
+  # Dedicated scan consumer (optional on Standard). After this is Live,
+  # set the web service EMBED_WORKER=false.
   - type: worker
     name: vantacrawl-worker
     runtime: python
-    plan: starter
+    plan: standard
     maxShutdownDelaySeconds: 300
     buildCommand: pip install -r web/requirements-render.txt -r web/api/requirements.txt
     startCommand: python web/worker/worker.py
@@ -88,7 +92,7 @@ services:
       - key: PYTHONPATH
         value: /opt/render/project/src:/opt/render/project/src/web/api
       - key: MAX_CONCURRENT_SCANS
-        value: "3"
+        value: "8"
       - key: MAX_CONCURRENT_SCANS_PER_USER
         value: "1"
       - key: DATABASE_URL

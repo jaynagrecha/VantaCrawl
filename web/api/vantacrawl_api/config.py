@@ -52,7 +52,8 @@ class Settings(BaseSettings):
     # When a dedicated Background Worker is deployed, set EMBED_WORKER=false on the web service.
     embed_worker: bool = True
     # Parallel scan slots (different users can run at the same time).
-    max_concurrent_scans: int = 3
+    # Standard instances: 8 is a solid default; raise via MAX_CONCURRENT_SCANS.
+    max_concurrent_scans: int = 8
     # Cap per account so one user cannot fill the whole pool.
     max_concurrent_scans_per_user: int = 1
 
