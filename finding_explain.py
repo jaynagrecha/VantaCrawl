@@ -247,6 +247,49 @@ EXPLAINERS: List[Tuple[tuple, Dict[str, str]]] = [
         },
     ),
     (
+        ("stealable_credential", "missing httponly", "cookie `", "session/auth credential"),
+        {
+            "title": "Stealable session / auth cookie",
+            "what": (
+                "A response cookie looks like a session or auth credential and is missing protective flags "
+                "(HttpOnly and/or Secure). That means it can be stolen more easily than a hardened session cookie."
+            ),
+            "attacker": (
+                "With XSS, malware, or a network path that exposes the cookie, they replay it and act as the user "
+                "without knowing the password."
+            ),
+            "fix": (
+                "Set HttpOnly, Secure, and SameSite on session cookies; prefer short-lived tokens; "
+                "rotate on privilege change; avoid putting JWTs in JS-readable cookies."
+            ),
+        },
+    ),
+    (
+        ("mitigated_credential", "protective flags", "no practical js cookie-theft"),
+        {
+            "title": "Session cookie present (mitigated)",
+            "what": (
+                "A session/auth cookie was observed with protective flags. JavaScript cookie theft is largely "
+                "blocked; this is informational, not a confirmed exploitable issue."
+            ),
+            "attacker": (
+                "They would need non-JS paths (malware, physical access, or coercing the browser to send the cookie)."
+            ),
+            "fix": "Keep HttpOnly+Secure+SameSite; continue monitoring for XSS that can still trigger authenticated requests.",
+        },
+    ),
+    (
+        ("no_credential_impact", "analytics cookie", "not a login/session credential", "csrf/anti-forgery"),
+        {
+            "title": "Cookie without credential impact",
+            "what": (
+                "The cookie is analytics, preference, or CSRF-related — not a reusable login credential on its own."
+            ),
+            "attacker": "Stealing it alone does not grant account access (CSRF tokens need a live session too).",
+            "fix": "No urgent change for credential theft; keep normal cookie hygiene.",
+        },
+    ),
+    (
         ("api_leak", "information disclosure", "stack trace"),
         {
             "title": "Information disclosure",
@@ -384,6 +427,34 @@ def explain_finding(category: str = "", detail: str = "") -> Dict[str, str]:
 
     preferred = category_aliases.get(cat)
     if preferred:
+        # Cookie impact findings share category=authentication — match on detail first.
+        if cat == "authentication":
+            cookie_detail_keys = (
+                "stealable_credential",
+                "mitigated_credential",
+                "no_credential_impact",
+                "possible_credential",
+                "missing httponly",
+                "session/auth cookie",
+                "session/auth credential",
+                "analytics cookie",
+                "csrf/anti-forgery",
+                "not a login/session credential",
+                "no practical js cookie-theft",
+            )
+            if any(k in detail_l for k in cookie_detail_keys):
+                for keys, payload in EXPLAINERS:
+                    if any(k in detail_l for k in keys if len(k) >= 5):
+                        if any(
+                            x in keys
+                            for x in (
+                                "stealable_credential",
+                                "mitigated_credential",
+                                "no_credential_impact",
+                                "missing httponly",
+                            )
+                        ):
+                            return dict(payload)
         for keys, payload in EXPLAINERS:
             if cat == "header_audit":
                 if any(k in detail_l for k in keys):

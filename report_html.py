@@ -272,7 +272,14 @@ def render_search_report_html(
     cookies = model.get("cookies") or []
     cookie_rows = kv_table_html(
         cookies[:40],
-        (("name", "Name"), ("flags", "Flags")),
+        (
+            ("name", "Name"),
+            ("role", "Role"),
+            ("impact", "Impact"),
+            ("flags", "Flags"),
+            ("value_masked", "Value"),
+            ("summary", "Assessment"),
+        ),
         empty="No cookies inventoried",
     )
     third_party = model.get("third_party") or []
@@ -684,7 +691,7 @@ footer.meta {{ color: var(--muted); font-size: .85rem; margin-top: 1.5rem; }}
     <div class="section-body">
       <h3>Login / auth surfaces ({len(model.get('login_surfaces') or [])})</h3>
       {url_table_html(model.get('login_surfaces'), limit=30)}
-      <h3>Cookies</h3>{cookie_rows}
+      <h3>Cookies (role + stealable-credential impact)</h3>{cookie_rows}
       <h3>WebSockets ({len(model.get('websockets') or [])})</h3>
       {url_table_html(model.get('websockets'), limit=30)}
       <h3>Source maps ({len(model.get('sourcemaps') or [])})</h3>

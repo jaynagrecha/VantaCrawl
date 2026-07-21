@@ -1101,7 +1101,7 @@ async def _run_security_checks(
         stats.record_finding(category, severity, target, detail, evidence=evidence)
         if output_callback and severity in ("critical", "high", "medium"):
             shown = evidence
-            if evidence and category == "secrets_exposure":
+            if evidence and category in ("secrets_exposure", "authentication"):
                 try:
                     from security_scan import mask_secret_value
 
@@ -1179,9 +1179,22 @@ async def _run_security_checks(
     if config.header_audit:
         for cat, severity, detail in audit_security_headers(headers or {}, url):
             emit(cat, severity, url, detail)
-    cookies = inventory_cookies(headers or {})
-    if cookies:
-        stats.record_cookie_inventory(cookies)
+    try:
+        from cookie_impact import analyze_response_cookies
+
+        cookies, cookie_findings = analyze_response_cookies(
+            headers or {},
+            page_url=url,
+            include_request_cookie=True,
+        )
+        if cookies:
+            stats.record_cookie_inventory(cookies)
+        for cat, severity, detail, evidence in cookie_findings:
+            emit(cat, severity, url, detail, evidence=evidence)
+    except Exception:
+        cookies = inventory_cookies(headers or {})
+        if cookies:
+            stats.record_cookie_inventory(cookies)
     if config.tech_fingerprint:
         for tech in fingerprint_technology(headers or {}, body_text):
             stats.technologies[tech] += 1
