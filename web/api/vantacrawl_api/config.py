@@ -49,7 +49,12 @@ class Settings(BaseSettings):
     progress_channel_prefix: str = "vantacrawl:progress:"
 
     # Free Render has no Background Workers — run the queue consumer in-process.
+    # When a dedicated Background Worker is deployed, set EMBED_WORKER=false on the web service.
     embed_worker: bool = True
+    # Parallel scan slots (different users can run at the same time).
+    max_concurrent_scans: int = 3
+    # Cap per account so one user cannot fill the whole pool.
+    max_concurrent_scans_per_user: int = 1
 
     @property
     def smtp_sender(self) -> str:
