@@ -87,11 +87,11 @@ _HUMAN = {
     "enum_redirect_max_hops": ("Redirect max hops", "Max same-host redirects to follow while scoring."),
     "enum_method": (
         "Enum HTTP method",
-        "GET is browser-like (recommended). HEAD is lighter but often flagged by bot managers.",
+        "GET is required for stealth (Akamai bot rule: HTTP HEAD Method Used). HEAD is opt-in only.",
     ),
     "api_recon_method": (
         "API recon HTTP method",
-        "GET is recommended for active API probes (avoids HEAD bot rules).",
+        "GET is required for stealth (avoids Akamai HEAD bot rule 3904010). HEAD is opt-in only.",
     ),
     "enum_auto_crawl_hits": ("Auto-crawl enum hits", "Enqueue discovered directories/files into the crawl."),
     "enum_auto_vuln_scan": ("Auto-scan enum hits", "Run security checks on enum hits."),

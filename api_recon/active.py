@@ -92,9 +92,9 @@ async def run_active_api_enum(
     hits: List[ApiEndpoint] = []
     done = 0
     lock = asyncio.Lock()
-    verb = (method or "HEAD").upper()
+    verb = (method or "GET").upper()
     if verb not in ("GET", "HEAD"):
-        verb = "HEAD"
+        verb = "GET"
 
     def _publish(done_n: int, path: str = "") -> None:
         hit_n = len(hits)

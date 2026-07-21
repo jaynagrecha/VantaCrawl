@@ -18,23 +18,14 @@ async def _probe_bucket(
     *,
     provider: str,
 ) -> tuple[bool, str, int]:
-    """HEAD then GET on 403/ambiguous to classify real buckets vs NoSuchBucket."""
+    """GET probe to classify real buckets vs NoSuchBucket (avoid Akamai HEAD bot rule)."""
     try:
-        response = await client.head(url, timeout=8, follow_redirects=True)
+        response = await client.get(url, timeout=8, follow_redirects=True)
     except httpx.HTTPError:
         return False, "request failed", 0
     status = response.status_code
-    body = b""
-    if status in (200, 204, 301, 302, 307, 308):
-        ok, note = classify_bucket_response(status, body, provider=provider)
-        return ok, note, status
-    if status == 403:
-        try:
-            get_resp = await client.get(url, timeout=8, follow_redirects=True)
-            status = get_resp.status_code
-            body = get_resp.content or b""
-        except httpx.HTTPError:
-            body = b""
+    body = response.content or b""
+    if status in (200, 204, 301, 302, 307, 308, 403):
         ok, note = classify_bucket_response(status, body, provider=provider)
         return ok, note, status
     return False, f"ignored HTTP {status}", status

@@ -1200,7 +1200,8 @@ async def _check_broken_links(client, stats, links, base_domain, restrict_domain
     async def _one(link: str):
         async with sem:
             try:
-                response = await client.head(link, timeout=8, follow_redirects=True)
+                # GET — Akamai flags HEAD as bot rule 3904010
+                response = await client.get(link, timeout=8, follow_redirects=True)
                 if response.status_code >= 400:
                     stats.broken_links.append({"url": link, "status": str(response.status_code)})
             except httpx.HTTPError:
