@@ -47,10 +47,12 @@ class CrawlConfig:
     checkpoint_file: str = ""
     checkpoint_interval: int = 50
 
-    wayback_seeds: bool = True
-    common_crawl_seeds: bool = True
-    subdomain_enum: bool = True
+    # Heavy discovery is opt-in via mode presets / expert settings (avoids silent stalls).
+    wayback_seeds: bool = False
+    common_crawl_seeds: bool = False
+    subdomain_enum: bool = False
     subdomain_wordlist: str = DEFAULT_SUBDOMAIN_WORDLIST
+    subdomain_enum_limit: int = 500
     openapi_parse: bool = True
     # API recon module — passive+docs when on; active/GraphQL/import via sub-flags
     api_recon: bool = True

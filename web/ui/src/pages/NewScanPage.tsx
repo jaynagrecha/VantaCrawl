@@ -183,9 +183,10 @@ export default function NewScanPage() {
   useEffect(() => {
     if (!meta) return;
     const preset = meta.modes[mode]?.preset || {};
-    setSettings((prev) => ({ ...meta.default_settings, ...prev, ...preset }));
+    // Mode switch replaces settings from defaults + preset (do not keep stale discovery toggles).
+    setSettings({ ...meta.default_settings, ...preset });
     if (preset.speed) setSpeed(String(preset.speed));
-  }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [mode, meta]);
 
   const groups = meta?.setting_groups || [];
   const fields = meta?.setting_fields || {};

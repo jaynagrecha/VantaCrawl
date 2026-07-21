@@ -65,6 +65,10 @@ class CrawlStats:
     api_recon_current_path: str = ""
     api_recon_started_at: Optional[float] = None
     _api_recon_rate_samples: List[Tuple[float, int]] = field(default_factory=list)
+    subdomain_probes_done: int = 0
+    subdomain_probes_total: int = 0
+    subdomain_hits: int = 0
+    subdomain_current_host: str = ""
     rss_feed_urls: List[str] = field(default_factory=list)
     s3_buckets: List[str] = field(default_factory=list)
     gcs_buckets: List[str] = field(default_factory=list)
@@ -323,6 +327,34 @@ class CrawlStats:
             return f"API probe: {path} · {done:,}/{total:,}"
         return f"API probe: {path}"
 
+    def note_subdomain_progress(
+        self,
+        probes_done: int,
+        *,
+        total: int = 0,
+        host: str = "",
+        hits: Optional[int] = None,
+    ) -> None:
+        if total > 0:
+            self.subdomain_probes_total = max(self.subdomain_probes_total, int(total))
+        self.subdomain_probes_done = max(0, int(probes_done))
+        if host:
+            self.subdomain_current_host = str(host)
+        if hits is not None:
+            self.subdomain_hits = max(0, int(hits))
+
+    def subdomain_probing_label(self) -> str:
+        host = (self.subdomain_current_host or "").strip()
+        done = int(self.subdomain_probes_done or 0)
+        total = int(self.subdomain_probes_total or 0)
+        if not host and total <= 0:
+            return ""
+        if host and total > 0:
+            return f"Subdomain: {host} · {done:,}/{total:,}"
+        if host:
+            return f"Subdomain: {host}"
+        return f"Subdomain enum {done:,}/{total:,}"
+
     def snapshot(self) -> Dict[str, Any]:
         elapsed = max(self.elapsed_seconds(), 0.001)
         evasion = self.evasion_session
@@ -356,6 +388,11 @@ class CrawlStats:
             "api_recon_current_path": self.api_recon_current_path,
             "api_recon_eta_seconds": self.api_recon_eta_seconds(),
             "api_recon_probing": self.api_recon_probing_label(),
+            "subdomain_probes_done": self.subdomain_probes_done,
+            "subdomain_probes_total": self.subdomain_probes_total,
+            "subdomain_hits": self.subdomain_hits,
+            "subdomain_current_host": self.subdomain_current_host,
+            "subdomain_probing": self.subdomain_probing_label(),
             "bytes_downloaded": self.bytes_downloaded,
             "errors": self.errors,
             "queue_size": self.queue_size,

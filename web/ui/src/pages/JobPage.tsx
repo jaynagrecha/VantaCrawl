@@ -328,17 +328,29 @@ export default function JobPage() {
           const probingLine = String(progress.enum_probing || "");
           const phaseKey = String(progress.phase || "");
           const isApiRecon = phaseKey === "api_recon";
-          const hitsLabel = isApiRecon ? "API hits" : "Enum hits";
-          const wordsLabel = isApiRecon ? "API probes" : "Enum words";
-          const probingValue = isApiRecon
-            ? String(progress.enum_current_path || progress.enum_current_word || "—")
-            : String(progress.enum_current_word || "—");
+          const isSubRecon =
+            phaseKey === "recon" &&
+            (Number(progress.subdomain_probes_total) > 0 ||
+              (Number(progress.enum_words_total) > 0 &&
+                String(progress.enum_probing || "")
+                  .toLowerCase()
+                  .includes("subdomain")));
+          const hitsLabel = isApiRecon ? "API hits" : isSubRecon ? "Sub hits" : "Enum hits";
+          const wordsLabel = isApiRecon ? "API probes" : isSubRecon ? "Subdomains" : "Enum words";
+          const probingValue =
+            isApiRecon || isSubRecon
+              ? String(progress.enum_current_path || progress.enum_current_word || "—")
+              : String(progress.enum_current_word || "—");
           const wordsHint = isApiRecon
             ? probingLine || "Active API path probes completed / planned"
-            : probingLine || "Words tried from the directory wordlist";
+            : isSubRecon
+              ? probingLine || "Subdomain hosts probed / planned"
+              : probingLine || "Words tried from the directory wordlist";
           const probingHint = isApiRecon
             ? probingLine || "Current API path under test (including during WAF backoff)"
-            : probingLine || "Current folder/file name under test";
+            : isSubRecon
+              ? probingLine || "Current subdomain host under test"
+              : probingLine || "Current folder/file name under test";
           const etaHint =
             phaseKey === "enum"
               ? "Based on enum-phase speed (not whole-job time). Hidden until warm-up."

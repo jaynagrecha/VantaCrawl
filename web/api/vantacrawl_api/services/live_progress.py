@@ -79,6 +79,9 @@ def infer_phase(progress_text: str, *, enum_only: bool = False, previous: str = 
             "protections spotted",
             "checking what protections",
             "looking up old urls",
+            "subdomain enum",
+            "enumerating subdomains",
+            "searching for related subdomains",
         )
     ):
         return "recon"
@@ -143,6 +146,11 @@ def build_live_progress(
     api_hits = _num(snap.get("api_recon_hits"), _num(prev.get("api_recon_hits")))
     api_path = str(snap.get("api_recon_current_path") or prev.get("api_recon_current_path") or "")
     api_probing = str(snap.get("api_recon_probing") or prev.get("api_recon_probing") or "")
+    sub_done = _num(snap.get("subdomain_probes_done"), _num(prev.get("subdomain_probes_done")))
+    sub_total = _num(snap.get("subdomain_probes_total"), _num(prev.get("subdomain_probes_total")))
+    sub_hits = _num(snap.get("subdomain_hits"), _num(prev.get("subdomain_hits")))
+    sub_host = str(snap.get("subdomain_current_host") or prev.get("subdomain_current_host") or "")
+    sub_probing = str(snap.get("subdomain_probing") or prev.get("subdomain_probing") or "")
 
     progress_pct = 0
     if resolved_phase == "enum":
@@ -170,6 +178,18 @@ def build_live_progress(
                 progress_pct = max(1, min(99, int(probe_done * 100 / probe_total)))
         elif prev.get("progress_pct"):
             progress_pct = int(prev["progress_pct"])
+    elif resolved_phase == "recon":
+        probe_total = sub_total or total
+        probe_done = sub_done if sub_total > 0 else done
+        if probe_total > 0:
+            if probe_done <= 0:
+                progress_pct = 0
+            elif probe_done >= probe_total:
+                progress_pct = 100
+            else:
+                progress_pct = max(1, min(99, int(probe_done * 100 / probe_total)))
+        elif prev.get("progress_pct"):
+            progress_pct = int(prev["progress_pct"])
     elif resolved_phase in ("crawl", "download") and estimate > 0:
         progress_pct = min(99, int(pages * 100 / max(estimate, 1)))
     elif total > 0:
@@ -182,7 +202,15 @@ def build_live_progress(
     enum_probing = str(snap.get("enum_probing") or prev.get("enum_probing") or "")
     enum_current_word = str(snap.get("enum_current_word") or prev.get("enum_current_word") or "")
     enum_current_path = str(snap.get("enum_current_path") or prev.get("enum_current_path") or "/")
-    if resolved_phase == "api_recon":
+    if resolved_phase == "recon" and (sub_total > 0 or sub_done > 0 or sub_host or sub_probing):
+        # Reuse cockpit tiles during subdomain recon
+        enum_done = sub_done
+        enum_total = sub_total
+        enum_hits = sub_hits
+        enum_probing = sub_probing or (f"Subdomain: {sub_host}" if sub_host else "")
+        enum_current_path = sub_host or enum_current_path
+        enum_current_word = sub_host.split(".")[0] if sub_host else enum_current_word
+    elif resolved_phase == "api_recon":
         # Reuse cockpit tiles: Enum words / Probing / Enum hits → API probe live state
         if api_total > 0 or api_done > 0 or api_path or api_probing:
             enum_done = api_done
@@ -331,6 +359,11 @@ def build_live_progress(
         "api_recon_hits": api_hits,
         "api_recon_current_path": api_path,
         "api_recon_probing": api_probing or enum_probing,
+        "subdomain_probes_done": sub_done,
+        "subdomain_probes_total": sub_total,
+        "subdomain_hits": sub_hits,
+        "subdomain_current_host": sub_host,
+        "subdomain_probing": sub_probing or (enum_probing if resolved_phase == "recon" else ""),
         "findings": findings,
         "findings_preview": preview,
         "enum_hit_urls": enum_urls,

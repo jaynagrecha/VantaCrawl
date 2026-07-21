@@ -325,6 +325,9 @@ async def run_job(job_id: str) -> None:
                 "protections spotted",
                 "looking up old urls",
                 "checking what protections",
+                "subdomain enum",
+                "enumerating subdomains",
+                "searching for related subdomains",
             )
         ):
             phase = "recon"
@@ -439,6 +442,8 @@ async def run_job(job_id: str) -> None:
                         or getattr(st, "enum_words_tested", 0)
                         or getattr(st, "api_recon_probes_done", 0)
                         or getattr(st, "api_recon_probes_total", 0)
+                        or getattr(st, "subdomain_probes_done", 0)
+                        or getattr(st, "subdomain_probes_total", 0)
                         or len(getattr(st, "findings", []) or [])
                     )
                     if prev.startswith("Progress:") or has_work:

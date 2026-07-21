@@ -272,6 +272,15 @@ def simplify_log_line(message: str) -> str:
         (r"^Loaded (\d+) historical seed URLs\.$", r"Added \1 historical URL(s) to the scan list."),
         (r"^Resumed checkpoint: (\d+) queued, (\d+) visited\.$", r"Resumed previous scan — \1 waiting, \2 already checked."),
         (r"^Enumerating subdomains\.\.\.$", "Searching for related subdomains…"),
+        (
+            r"^Subdomain enum: ([\d,]+) host\(s\) · (\d+) threads$",
+            r"Subdomain scan: \1 host(s) · \2 threads",
+        ),
+        (
+            r"^Subdomain enum done: (\d+) live host\(s\) of ([\d,]+) probed$",
+            r"Subdomain scan complete — \1 live host(s) of \2 probed.",
+        ),
+        (r"^Subdomain found: (.+)$", r"Related subdomain found: \1"),
         (r"^Distributed mode: Redis at (.+)$", r"Multi-machine mode enabled (Redis at \1)."),
         (r"^Pulled (\d+) URL\(s\) from Redis queue$", r"Picked up \1 URL(s) from the shared queue."),
         (

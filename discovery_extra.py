@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
-from typing import List, Set
+from typing import Callable, List, Optional, Set
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -57,8 +58,22 @@ async def fetch_common_crawl_urls(domain: str, limit: int = 200) -> List[str]:
     return [u for u in urls if u]
 
 
-async def enumerate_subdomains(domain: str, wordlist_path: str, client, exists_checker, output_callback, limit: int = 500) -> List[str]:
-    found = []
+async def enumerate_subdomains(
+    domain: str,
+    wordlist_path: str,
+    client,
+    exists_checker,
+    output_callback,
+    limit: int = 500,
+    *,
+    concurrency: int = 20,
+    running: Optional[Callable[[], bool]] = None,
+    update_progress=None,
+    stats=None,
+    probe_timeout: float = 8.0,
+) -> List[str]:
+    """Probe common subdomains concurrently with live progress (no silent stalls)."""
+    found: List[str] = []
     try:
         with open(wordlist_path, encoding="utf-8", errors="ignore") as handle:
             words = [line.strip() for line in handle if line.strip() and not line.startswith("#")]
@@ -66,16 +81,69 @@ async def enumerate_subdomains(domain: str, wordlist_path: str, client, exists_c
         output_callback(f"Subdomain wordlist not found: {wordlist_path}")
         return found
 
-    checked = 0
-    for word in words:
-        if checked >= limit:
-            break
+    targets = words[: max(0, int(limit) or 0)]
+    total = len(targets)
+    if total <= 0:
+        return found
+
+    workers = max(1, min(int(concurrency) or 1, 40))
+    output_callback(f"Subdomain enum: {total:,} host(s) · {workers} threads")
+    if stats is not None and hasattr(stats, "note_subdomain_progress"):
+        stats.note_subdomain_progress(0, total=total, host="")
+    if update_progress:
+        update_progress(total, 0, f"Subdomain enum 0/{total}")
+
+    sem = asyncio.Semaphore(workers)
+    done = 0
+    lock = asyncio.Lock()
+
+    def _publish(done_n: int, host: str = "") -> None:
+        hit_n = len(found)
+        if stats is not None and hasattr(stats, "note_subdomain_progress"):
+            stats.note_subdomain_progress(done_n, total=total, host=host, hits=hit_n)
+        if update_progress and (done_n == 0 or done_n == total or done_n % 10 == 0):
+            label = f"Subdomain enum {done_n}/{total}"
+            if host:
+                label = f"{label} · {host}"
+            if hit_n:
+                label = f"{label} · {hit_n} hit(s)"
+            update_progress(total, done_n, label)
+
+    async def probe(word: str) -> None:
+        nonlocal done
+        if running and not running():
+            return
         host = f"{word}.{domain}"
         test_url = f"https://{host}/"
-        checked += 1
-        if await exists_checker(test_url):
-            found.append(test_url)
-            output_callback(f"Subdomain found: {test_url}")
+        async with sem:
+            if running and not running():
+                return
+            async with lock:
+                if stats is not None and hasattr(stats, "note_subdomain_progress"):
+                    stats.note_subdomain_progress(done, total=total, host=host, hits=len(found))
+            exists = False
+            try:
+                exists = bool(
+                    await asyncio.wait_for(exists_checker(test_url), timeout=max(1.0, float(probe_timeout)))
+                )
+            except (asyncio.TimeoutError, httpx.HTTPError, OSError):
+                exists = False
+            except Exception:
+                exists = False
+        async with lock:
+            done += 1
+            if exists:
+                found.append(test_url)
+                if output_callback:
+                    output_callback(f"Subdomain found: {test_url}")
+            _publish(done, host)
+
+    await asyncio.gather(*(probe(w) for w in targets))
+    if stats is not None and hasattr(stats, "note_subdomain_progress"):
+        stats.note_subdomain_progress(total, total=total, host="", hits=len(found))
+    if update_progress:
+        update_progress(total, total, f"Subdomain enum {total}/{total}")
+    output_callback(f"Subdomain enum done: {len(found)} live host(s) of {total:,} probed")
     return found
 
 

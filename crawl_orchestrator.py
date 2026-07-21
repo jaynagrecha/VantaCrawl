@@ -348,6 +348,11 @@ async def run_full_crawl_async(
                 client,
                 subdomain_exists,
                 output_callback,
+                limit=int(getattr(config, "subdomain_enum_limit", 500) or 500),
+                concurrency=min(int(getattr(config, "enum_concurrency", 20) or 20), 40),
+                running=running,
+                update_progress=update_progress,
+                stats=stats,
             )
             for sub_url in subs:
                 stats.record_url("subdomain", sub_url)
