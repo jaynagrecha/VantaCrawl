@@ -296,6 +296,14 @@ def simplify_log_line(message: str) -> str:
             "Chrome TLS package missing — using httpx HTTP/2 fallback.",
         ),
         (
+            r"^Real Chrome fetch path ready — (.+)\.$",
+            r"Real Chrome fetch path ready — \1.",
+        ),
+        (
+            r"^Synced (\d+) browser cookie\(s\) into HTTP jar for (.+)$",
+            r"Synced \1 browser cookie(s) into HTTP jar for \2.",
+        ),
+        (
             r"^Warming up with a few ordinary-looking page requests…$",
             "Warming up with a few ordinary-looking page requests…",
         ),

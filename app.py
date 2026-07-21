@@ -78,7 +78,13 @@ class CrawlerThread(QThread):
     def run(self):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        use_browser = self.config.selenium_fallback or self.config.deep_mirror or self.config.screenshot_capture
+        use_browser = (
+            self.config.selenium_fallback
+            or self.config.deep_mirror
+            or self.config.screenshot_capture
+            or getattr(self.config, "browser_primary", False)
+            or getattr(self.config, "browser_on_challenge", False)
+        )
         try:
             open(self.config.output_file_path, "w", encoding="utf-8").close()
             for index, url in enumerate(self.target_urls):
@@ -332,8 +338,11 @@ class CrawlerApp(QMainWindow):
             "(same site and common CDNs) and rewrite links for offline viewing."
         )
         self.download_radio.toggled.connect(self._on_download_mode_toggled)
-        self.selenium_fallback_checkbox = QCheckBox("Selenium fallback")
+        self.selenium_fallback_checkbox = QCheckBox("Selenium fallback / Chrome on challenge")
         self.deep_mirror_checkbox = QCheckBox("Deep mirror (render all HTML in Chrome)")
+        self.browser_primary_checkbox = QCheckBox("Chrome-first HTML navigations")
+        self.auto_cookies_checkbox = QCheckBox("Auto-sync browser cookies into HTTP jar")
+        self.auto_cookies_checkbox.setChecked(True)
         depth_row = QHBoxLayout()
         depth_row.addWidget(QLabel("Brute-force depth:"))
         self.depth_spin = QSpinBox()
@@ -355,6 +364,8 @@ class CrawlerApp(QMainWindow):
             self.mirror_assets_cb,
             self.selenium_fallback_checkbox,
             self.deep_mirror_checkbox,
+            self.browser_primary_checkbox,
+            self.auto_cookies_checkbox,
         ):
             crawl_layout.addWidget(w)
         crawl_layout.addLayout(depth_row)
@@ -1054,6 +1065,10 @@ class CrawlerApp(QMainWindow):
             disk_space_guard_mb=self.disk_spin.value(),
             selenium_fallback=self.selenium_fallback_checkbox.isChecked(),
             deep_mirror=self.deep_mirror_checkbox.isChecked(),
+            browser_primary=self.browser_primary_checkbox.isChecked(),
+            browser_on_challenge=self.selenium_fallback_checkbox.isChecked()
+            or self.browser_primary_checkbox.isChecked(),
+            auto_sync_cookies=self.auto_cookies_checkbox.isChecked(),
             crawl_concurrency=self.crawl_concurrency_spin.value(),
             enum_concurrency=self.enum_concurrency_spin.value(),
             download_concurrency=self.download_concurrency_spin.value(),

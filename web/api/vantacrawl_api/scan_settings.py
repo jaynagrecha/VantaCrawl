@@ -166,6 +166,18 @@ _HUMAN = {
     "incremental_mirror": ("Incremental mirror", "Skip unchanged files via ETag / Last-Modified."),
     "selenium_fallback": ("Selenium fallback", "Render pages in Chrome when plain HTTP fails (needs Chrome)."),
     "deep_mirror": ("Deep mirror", "Render all HTML in Chrome for offline fidelity (slow)."),
+    "browser_primary": (
+        "Chrome-first HTML",
+        "Use real headless Chrome for HTML navigations (best TLS/cookies; needs Chrome; slower).",
+    ),
+    "browser_on_challenge": (
+        "Chrome on challenge",
+        "If HTTP/curl_cffi hits a WAF/challenge page, retry that URL in real Chrome and sync cookies.",
+    ),
+    "auto_sync_cookies": (
+        "Auto-sync cookies",
+        "Automatically copy per-host cookies from Chrome into the HTTP jar (like sticky-host UAs).",
+    ),
     "screenshot_capture": ("Screenshot capture", "Capture page screenshots (needs Chrome)."),
     "proxy_url": ("Proxy URL", "Optional HTTP(S) proxy, e.g. http://user:pass@host:8080"),
     "auth_username": ("Basic auth username", "HTTP basic authentication username."),
@@ -466,6 +478,9 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "skip_tracking_downloads",
             "selenium_fallback",
             "deep_mirror",
+            "browser_primary",
+            "browser_on_challenge",
+            "auto_sync_cookies",
             "screenshot_capture",
         ],
     },

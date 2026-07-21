@@ -492,8 +492,35 @@ async def run_job(job_id: str) -> None:
             if config.use_selenium_login:
                 config = apply_selenium_login(config, output=output_callback)
 
-            use_browser = bool(config.selenium_fallback or config.deep_mirror or config.screenshot_capture)
-            fetcher = make_browser_fetcher(config) if use_browser else None
+            use_browser = bool(
+                config.selenium_fallback
+                or config.deep_mirror
+                or config.screenshot_capture
+                or getattr(config, "browser_primary", False)
+                or getattr(config, "browser_on_challenge", False)
+            )
+            fetcher = None
+            if use_browser:
+                try:
+                    fetcher = make_browser_fetcher(config)
+                    output_callback(
+                        "Real Chrome fetch path ready — "
+                        + (
+                            "primary HTML navigations"
+                            if getattr(config, "browser_primary", False) or config.deep_mirror
+                            else "challenge escalation"
+                        )
+                        + (
+                            "; auto cookie sync on"
+                            if getattr(config, "auto_sync_cookies", True)
+                            else ""
+                        )
+                        + "."
+                    )
+                except Exception as exc:
+                    output_callback(f"Chrome fetch path unavailable ({exc}); continuing with HTTP stealth only.")
+                    fetcher = None
+                    use_browser = False
 
             crawl_task = asyncio.create_task(
                 run_full_crawl_async(

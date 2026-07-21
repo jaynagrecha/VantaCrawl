@@ -154,6 +154,10 @@ class CrawlConfig:
 
     selenium_fallback: bool = False
     deep_mirror: bool = False
+    # Real Chrome HTML path (needs Chrome on the worker)
+    browser_primary: bool = False  # Chrome-first for HTML navigations
+    browser_on_challenge: bool = True  # Escalate to Chrome when HTTP hits WAF/challenge
+    auto_sync_cookies: bool = True  # Browser → per-host Cookie jar for httpx/curl_cffi
 
     crawl_concurrency: int = 4
     enum_similarity_threshold: int = 50

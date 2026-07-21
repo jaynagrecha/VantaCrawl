@@ -284,15 +284,31 @@ async def run_full_crawl_async(
         output_callback=output_callback,
     )
     async with client:
+        from session_cookies import SessionCookieStore
+
+        cookie_store = SessionCookieStore()
         if config.cookie_string:
-            client.headers["Cookie"] = config.cookie_string
+            cookie_store.load_cookie_string(config.cookie_string, host=config.start_url)
+            cookie_store.apply_to_client(client, config.start_url)
+        # Browser fetcher may attach its own store; prefer that shared instance when present
+        fetcher_store = getattr(page_html_fetcher, "cookie_store", None) if page_html_fetcher else None
+        if fetcher_store is not None:
+            cookie_store = fetcher_store
+            if config.cookie_string:
+                cookie_store.load_cookie_string(config.cookie_string, host=config.start_url)
+                cookie_store.apply_to_client(client, config.start_url)
+        stats.cookie_store = cookie_store  # type: ignore[attr-defined]
 
         def _apply_live_after_resume():
             sync_evasion_from_crawl_config(evasion, config)
             if config.cookie_string:
-                client.headers["Cookie"] = config.cookie_string
-            elif "Cookie" in client.headers:
-                del client.headers["Cookie"]
+                cookie_store.load_cookie_string(config.cookie_string, host=config.start_url)
+                cookie_store.apply_to_client(client, config.start_url)
+            elif "Cookie" in getattr(client, "headers", {}):
+                try:
+                    del client.headers["Cookie"]
+                except Exception:
+                    client.headers.pop("Cookie", None)
 
         pause_controller.on_resume(_apply_live_after_resume)
 
