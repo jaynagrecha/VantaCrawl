@@ -19,11 +19,14 @@ def write_summary_report(
     log_tail: str = "",
     note: str = "",
 ) -> Tuple[str, str]:
-    """Write *_SEARCH_REPORT.html/txt so the UI always has something to open."""
+    """Write *_SUMMARY_REPORT.html/txt so the UI always has something to open.
+
+    Uses SUMMARY (not SEARCH/ASSESSMENT) so a stub never blocks the full reporter.
+    """
     report_dir.mkdir(parents=True, exist_ok=True)
     base = f"job_{job_id.replace('-', '')[:12]}"
-    html_path = report_dir / f"{base}_SEARCH_REPORT.html"
-    txt_path = report_dir / f"{base}_SEARCH_REPORT.txt"
+    html_path = report_dir / f"{base}_SUMMARY_REPORT.html"
+    txt_path = report_dir / f"{base}_SUMMARY_REPORT.txt"
 
     progress = progress or {}
     pages = progress.get("pages_crawled", 0) or 0

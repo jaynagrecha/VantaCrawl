@@ -21,7 +21,7 @@ def _findings_preview(stats) -> List[Dict[str, str]]:
     try:
         from security_scan import mask_secret_value
 
-        for item in list(getattr(stats, "findings", []) or [])[:40]:
+        for item in list(getattr(stats, "findings", []) or [])[:80]:
             if not isinstance(item, dict):
                 continue
             evidence = str(item.get("evidence") or "")
@@ -266,7 +266,14 @@ def build_live_progress(
         eta_seconds = max(0, int((estimate - pages) / (upm / 60.0)))
 
     enum_urls = list(snap.get("enum_hit_urls") or prev.get("enum_hit_urls") or [])[:80]
-    preview = _findings_preview(stats) or list(prev.get("findings_preview") or [])[:40]
+    preview = _findings_preview(stats) or list(prev.get("findings_preview") or [])[:80]
+    findings_full: List[Dict[str, Any]] = []
+    try:
+        for item in list(getattr(stats, "findings", []) or [])[:2000]:
+            if isinstance(item, dict):
+                findings_full.append(dict(item))
+    except Exception:
+        findings_full = list(prev.get("findings_full") or [])[:2000]
 
     errors = int(snap.get("errors") or prev.get("errors") or 0)
     defense = snap.get("defense") if isinstance(snap.get("defense"), dict) else {}
@@ -383,6 +390,7 @@ def build_live_progress(
         "subdomain_probing": sub_probing or (enum_probing if resolved_phase == "recon" else ""),
         "findings": findings,
         "findings_preview": preview,
+        "findings_full": findings_full,
         "enum_hit_urls": enum_urls,
         "urls_per_minute": upm,
         "eta_seconds": eta_seconds,

@@ -316,6 +316,7 @@ def resume_job(job_id: str, session: SessionDep, user: CurrentUser):
 
 
 def _force_cancel(job: ScanJob, session, *, note: str) -> MessageOut:
+    from reporting import write_partial_full_reports
     from ..services.summary_report import write_summary_report
 
     set_job_command(job.id, "stop")
@@ -323,13 +324,64 @@ def _force_cancel(job: ScanJob, session, *, note: str) -> MessageOut:
     job.finished_at = datetime.utcnow()
     job.updated_at = datetime.utcnow()
     job.error_message = job.error_message or note
-    # Ensure the UI has a report even when the worker never finished writing one
-    if not (job.report_html_path and Path(job.report_html_path).is_file()):
-        report_dir = Path(job.report_dir or "")
-        if not report_dir:
-            settings = get_settings()
-            report_dir = Path(settings.jobs_dir) / job.id / "reports"
-            job.report_dir = str(report_dir)
+
+    report_dir = Path(job.report_dir or "")
+    if not report_dir:
+        settings = get_settings()
+        report_dir = Path(settings.jobs_dir) / job.id / "reports"
+        job.report_dir = str(report_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    html_path = ""
+    txt_path = ""
+    existing = (job.report_html_path or "").strip()
+    if existing and Path(existing).is_file() and "ASSESSMENT_REPORT" in Path(existing).name.upper():
+        html_path = existing
+        txt_path = (job.report_txt_path or "").strip()
+
+    # Prefer full assessment/search reports from findings collected so far
+    if not html_path:
+        try:
+            written = write_partial_full_reports(
+                report_dir=report_dir,
+                start_url=job.start_url or "",
+                title=job.title or "Scan",
+                progress=job.progress_json or {},
+                config=None,
+            )
+            if written:
+                from ..services.report_paths import find_report_file
+
+                html = find_report_file(
+                    job,
+                    ("*_ASSESSMENT_REPORT.html", "*_SEARCH_REPORT.html"),
+                )
+                txt = find_report_file(
+                    job,
+                    ("*_ASSESSMENT_REPORT.txt", "*_SEARCH_REPORT.txt"),
+                )
+                if html:
+                    html_path = str(html)
+                if txt:
+                    txt_path = str(txt)
+                elif written.get("assessment_report_html"):
+                    html_path = written["assessment_report_html"]
+                    txt_path = written.get("assessment_report_txt") or written.get("search_report_txt") or ""
+                elif written.get("search_report_html"):
+                    html_path = written["search_report_html"]
+                    txt_path = written.get("search_report_txt") or ""
+        except Exception:
+            html_path = ""
+            txt_path = ""
+
+    if html_path and "ASSESSMENT_REPORT" in Path(html_path).name.upper():
+        # Full report with explanations is ready — don't leave a scary stub note
+        if job.error_message and "Full crawl report was never produced" in (job.error_message or ""):
+            job.error_message = note
+        elif not job.error_message:
+            job.error_message = note
+
+    if not html_path:
         html_path, txt_path = write_summary_report(
             report_dir,
             job_id=job.id,
@@ -339,10 +391,11 @@ def _force_cancel(job: ScanJob, session, *, note: str) -> MessageOut:
             progress=job.progress_json or {},
             log_tail=job.log_tail or "",
             note=note
-            + " Full crawl report was never produced (often blocked by Cloudflare).",
+            + " Built a summary from live progress; full assessment report was unavailable.",
         )
-        job.report_html_path = html_path
-        job.report_txt_path = txt_path
+
+    job.report_html_path = html_path
+    job.report_txt_path = txt_path
     session.add(job)
     session.commit()
     publish_progress(

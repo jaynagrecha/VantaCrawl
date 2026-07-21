@@ -70,7 +70,7 @@ def _owned_job(session: Session, job_id: str, user: User) -> ScanJob:
 def _html_path(job: ScanJob) -> Path:
     path = find_report_file(
         job,
-        ("*_ASSESSMENT_REPORT.html", "*_SEARCH_REPORT.html"),
+        ("*_ASSESSMENT_REPORT.html", "*_SEARCH_REPORT.html", "*_SUMMARY_REPORT.html"),
         preferred=job.report_html_path or "",
     )
     if path is not None:
@@ -81,7 +81,7 @@ def _html_path(job: ScanJob) -> Path:
 def _txt_path(job: ScanJob) -> Path:
     path = find_report_file(
         job,
-        ("*_ASSESSMENT_REPORT.txt", "*_SEARCH_REPORT.txt"),
+        ("*_ASSESSMENT_REPORT.txt", "*_SEARCH_REPORT.txt", "*_SUMMARY_REPORT.txt"),
         preferred=job.report_txt_path or "",
     )
     if path is not None:

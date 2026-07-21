@@ -85,7 +85,11 @@ def find_report_file(
 
     def sort_key(path: Path) -> Tuple[int, float]:
         name = path.name.upper()
-        rank = 0 if "ASSESSMENT_REPORT" in name else (1 if "SEARCH_REPORT" in name else 2)
+        rank = (
+            0
+            if "ASSESSMENT_REPORT" in name
+            else (1 if "SEARCH_REPORT" in name else (2 if "SUMMARY_REPORT" in name else 3))
+        )
         try:
             mtime = path.stat().st_mtime
         except OSError:
@@ -100,12 +104,12 @@ def heal_job_report_paths(session, job: Any) -> Any:
     """If DB paths are stale but files exist on disk, rewrite absolute paths onto the job row."""
     html = find_report_file(
         job,
-        ("*_ASSESSMENT_REPORT.html", "*_SEARCH_REPORT.html"),
+        ("*_ASSESSMENT_REPORT.html", "*_SEARCH_REPORT.html", "*_SUMMARY_REPORT.html"),
         preferred=getattr(job, "report_html_path", "") or "",
     )
     txt = find_report_file(
         job,
-        ("*_ASSESSMENT_REPORT.txt", "*_SEARCH_REPORT.txt"),
+        ("*_ASSESSMENT_REPORT.txt", "*_SEARCH_REPORT.txt", "*_SUMMARY_REPORT.txt"),
         preferred=getattr(job, "report_txt_path", "") or "",
     )
     changed = False

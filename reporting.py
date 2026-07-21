@@ -387,3 +387,144 @@ def write_stats_reports(
         pass
     cb(f"All reports saved to: {report_dir}")
     return paths
+
+
+FINDINGS_SNAPSHOT_NAME = "findings_snapshot.json"
+
+
+def write_findings_snapshot(report_dir: str | Path, stats: CrawlStats) -> str:
+    """Persist full findings so stop/force-cancel can still build assessment reports."""
+    import json
+    from pathlib import Path as _Path
+
+    root = _Path(report_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / FINDINGS_SNAPSHOT_NAME
+    payload = {
+        "pages_crawled": int(getattr(stats, "pages_crawled", 0) or 0),
+        "enum_hits": int(getattr(stats, "enum_hits", 0) or 0),
+        "enum_hit_urls": list(getattr(stats, "enum_hit_urls", []) or [])[:200],
+        "findings": list(getattr(stats, "findings", []) or []),
+        "technologies": dict(getattr(stats, "technologies", {}) or {}),
+        "sensitive_urls": list(getattr(stats, "sensitive_urls", []) or [])[:100],
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, default=str), encoding="utf-8")
+    return str(path)
+
+
+def load_findings_snapshot(report_dir: str | Path) -> Optional[Dict[str, Any]]:
+    import json
+    from pathlib import Path as _Path
+
+    path = _Path(report_dir) / FINDINGS_SNAPSHOT_NAME
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def crawl_stats_from_partial(
+    *,
+    snapshot: Optional[Dict[str, Any]] = None,
+    progress: Optional[Dict[str, Any]] = None,
+) -> CrawlStats:
+    """Rebuild CrawlStats from a snapshot file and/or live progress JSON."""
+    stats = CrawlStats()
+    snap = snapshot or {}
+    prog = progress or {}
+
+    stats.pages_crawled = int(snap.get("pages_crawled") or prog.get("pages_crawled") or 0)
+    stats.enum_hits = int(snap.get("enum_hits") or prog.get("enum_hits") or 0)
+    urls = list(snap.get("enum_hit_urls") or prog.get("enum_hit_urls") or [])
+    if urls:
+        try:
+            stats.enum_hit_urls = list(urls)[:200]
+        except Exception:
+            pass
+    techs = snap.get("technologies") or {}
+    if isinstance(techs, dict):
+        for k, v in techs.items():
+            try:
+                stats.technologies[str(k)] += int(v)
+            except Exception:
+                pass
+    for u in list(snap.get("sensitive_urls") or [])[:100]:
+        if u and u not in stats.sensitive_urls:
+            stats.sensitive_urls.append(str(u))
+
+    rows = list(snap.get("findings") or [])
+    if not rows:
+        # Fall back to progress preview / full list
+        rows = list(prog.get("findings_full") or prog.get("findings_preview") or [])
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        category = str(item.get("category") or "info")
+        severity = str(item.get("severity") or item.get("severity_label") or "info")
+        url = str(item.get("url") or "")
+        detail = str(item.get("detail") or item.get("title") or "")
+        evidence = item.get("evidence") or item.get("evidence_full") or None
+        if evidence is not None:
+            evidence = str(evidence)
+        if not detail and not evidence:
+            continue
+        try:
+            stats.record_finding(category, severity, url, detail, evidence=evidence or None)
+        except Exception:
+            stats.findings.append(
+                {
+                    "category": category,
+                    "severity": severity,
+                    "url": url,
+                    "detail": detail,
+                    **({"evidence": evidence} if evidence else {}),
+                }
+            )
+    # Prefer authoritative counts from progress when snapshot findings were truncated
+    reported = int(prog.get("findings") or 0)
+    if reported > len(stats.findings):
+        # Keep what we have; count is display-only in reports via len(findings)
+        pass
+    return stats
+
+
+def write_partial_full_reports(
+    *,
+    report_dir: str | Path,
+    start_url: str,
+    title: str = "",
+    progress: Optional[Dict[str, Any]] = None,
+    config=None,
+    stats: Optional[CrawlStats] = None,
+    output_callback=None,
+) -> Dict[str, str]:
+    """Write assessment/search reports from live stats, snapshot, or progress JSON."""
+    from pathlib import Path as _Path
+
+    root = _Path(report_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    if stats is None:
+        snap = load_findings_snapshot(root)
+        stats = crawl_stats_from_partial(snapshot=snap, progress=progress or {})
+    elif not list(getattr(stats, "findings", []) or []):
+        # Merge snapshot findings into empty stats
+        snap = load_findings_snapshot(root)
+        if snap:
+            merged = crawl_stats_from_partial(snapshot=snap, progress=progress or {})
+            if merged.findings:
+                stats = merged
+    if not list(getattr(stats, "findings", []) or []) and int(
+        (progress or {}).get("findings") or 0
+    ) == 0 and int(getattr(stats, "pages_crawled", 0) or 0) == 0:
+        return {}
+    return write_stats_reports(
+        stats,
+        report_dir=str(root.resolve()),
+        start_url=start_url or "",
+        title=title or "",
+        config=config,
+        output_callback=output_callback,
+    )

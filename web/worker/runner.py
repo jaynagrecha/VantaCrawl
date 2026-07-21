@@ -67,8 +67,12 @@ def _absolute_report_paths(report_dir: Path, job_id: str = "") -> tuple[str, str
         uniq = {p.resolve() for p in found}
         return sorted(uniq, key=lambda p: p.stat().st_mtime)[-1]
 
-    html = _newest(("*_ASSESSMENT_REPORT.html",)) or _newest(("*_SEARCH_REPORT.html",))
-    txt = _newest(("*_ASSESSMENT_REPORT.txt",)) or _newest(("*_SEARCH_REPORT.txt",))
+    html = _newest(("*_ASSESSMENT_REPORT.html",)) or _newest(("*_SEARCH_REPORT.html",)) or _newest(
+        ("*_SUMMARY_REPORT.html",)
+    )
+    txt = _newest(("*_ASSESSMENT_REPORT.txt",)) or _newest(("*_SEARCH_REPORT.txt",)) or _newest(
+        ("*_SUMMARY_REPORT.txt",)
+    )
 
     if html is not None and html.parent.resolve() != report_dir:
         report_dir.mkdir(parents=True, exist_ok=True)
@@ -326,6 +330,14 @@ async def run_job(job_id: str) -> None:
         if force_db or (now - last_progress_persist["t"]) >= 0.75:
             last_progress_persist["t"] = now
             _update_job(job_id, progress_json=dict(live_progress_state))
+            # Snapshot findings so force-cancel can still build a full assessment report
+            if stats_obj is not None:
+                try:
+                    from reporting import write_findings_snapshot
+
+                    write_findings_snapshot(report_dir, stats_obj)
+                except Exception:
+                    pass
         publish_progress(
             job_id,
             {
@@ -652,16 +664,15 @@ async def run_job(job_id: str) -> None:
         assessment_matches = (
             sorted(report_dir.glob("*_ASSESSMENT_REPORT.html")) if report_dir.is_dir() else []
         )
-        html_matches = assessment_matches or (
-            sorted(report_dir.glob("*_SEARCH_REPORT.html")) if report_dir.is_dir() else []
-        )
-        # Stop/cancel often skips orchestrator write_all — build full reports from in-memory stats.
-        if not html_matches:
+        # Stop/cancel: always write full assessment/search reports from in-memory stats
+        # when assessment is missing. Do NOT treat SUMMARY stubs (or empty SEARCH) as done.
+        if not assessment_matches:
             cfg = live_config_holder.get("cfg")
             job_snap = _get_job(job_id)
             try:
-                from reporting import write_stats_reports
+                from reporting import write_findings_snapshot, write_stats_reports
 
+                write_findings_snapshot(report_dir, stats)
                 written = write_stats_reports(
                     stats,
                     report_dir=str(Path(report_dir).resolve()),
@@ -731,10 +742,31 @@ async def run_job(job_id: str) -> None:
             "queue_size": getattr(stats, "queue_size", 0),
             "enum_hit_urls": list(getattr(stats, "enum_hit_urls", []) or [])[:80],
             "findings_preview": findings_preview,
+            "findings_full": list(getattr(stats, "findings", []) or [])[:2000],
             "elapsed_seconds": stats.elapsed_seconds() if hasattr(stats, "elapsed_seconds") else None,
             "eta_seconds": 0,
         }
         finished_job = _get_job(job_id)
+        if not html_path:
+            # Last resort: try rebuild from snapshot/progress, then thin summary
+            try:
+                from reporting import write_partial_full_reports
+
+                cfg = live_config_holder.get("cfg")
+                written = write_partial_full_reports(
+                    report_dir=Path(report_dir).resolve(),
+                    start_url=(finished_job.start_url if finished_job else "") or "",
+                    title=(finished_job.title if finished_job else "") or "Scan",
+                    progress=progress,
+                    config=cfg,
+                    stats=stats,
+                    output_callback=output_callback,
+                )
+                html_path, txt_path = _absolute_report_paths(Path(report_dir), job_id=job_id)
+                if written and html_path:
+                    output_callback("Wrote full reports from snapshot/progress.")
+            except Exception:
+                log.exception("Failed snapshot/progress full report for %s", job_id)
         if not html_path:
             from vantacrawl_api.services.summary_report import write_summary_report
 
@@ -758,6 +790,10 @@ async def run_job(job_id: str) -> None:
             html_path, txt_path = _absolute_report_paths(Path(report_dir), job_id=job_id)
             if not html_path:
                 html_path, txt_path = summary_html, summary_txt
+        # Prefer assessment over any earlier summary path already stored on the job
+        resolved = _absolute_report_paths(Path(report_dir), job_id=job_id)
+        if resolved[0]:
+            html_path, txt_path = resolved
         _update_job(
             job_id,
             status=status,
