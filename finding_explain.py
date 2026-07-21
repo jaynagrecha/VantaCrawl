@@ -535,9 +535,22 @@ def group_findings_for_report(findings: List[Dict[str, Any]], *, max_groups: int
                 "what": expl["what"],
                 "attacker": expl["attacker"],
                 "fix": expl["fix"],
+                "impact": item.get("impact") or "",
+                "validation": item.get("validation") or "",
+                "impact_summary": item.get("impact_summary") or "",
+                "role": item.get("role") or "",
             }
         bucket = buckets[key]
         bucket["count"] += 1
+        # Prefer stronger impact labels when merging duplicates
+        if item.get("impact") and (
+            not bucket.get("impact")
+            or str(item.get("impact")) in ("confirmed", "stealable_credential")
+        ):
+            bucket["impact"] = item.get("impact")
+            bucket["validation"] = item.get("validation") or bucket.get("validation")
+            bucket["impact_summary"] = item.get("impact_summary") or bucket.get("impact_summary")
+            bucket["role"] = item.get("role") or bucket.get("role")
         url = item.get("url", "")
         if url and url not in bucket["_url_seen"] and len(bucket["urls"]) < url_cap:
             bucket["_url_seen"].add(url)
@@ -561,7 +574,16 @@ def group_findings_for_report(findings: List[Dict[str, Any]], *, max_groups: int
 
 def format_finding_group_lines(group: Dict[str, Any], *, max_urls: int = 40) -> List[str]:
     """Client-facing lines: title, then exact paths, then accessible secret evidence."""
-    lines = [f"{group.get('title', 'Finding')} ({group.get('severity', 'info')}) — seen {group.get('count', 0)}×"]
+    impact = group.get("impact") or ""
+    validation = group.get("validation") or ""
+    impact_bit = ""
+    if impact:
+        impact_bit = f" [{impact}" + (f"/{validation}" if validation else "") + "]"
+    lines = [
+        f"{group.get('title', 'Finding')} ({group.get('severity', 'info')}){impact_bit} — seen {group.get('count', 0)}×"
+    ]
+    if group.get("impact_summary"):
+        lines.append(f"  Impact: {group.get('impact_summary')}")
     urls = group.get("urls") or []
     if urls:
         for url in urls[:max_urls]:

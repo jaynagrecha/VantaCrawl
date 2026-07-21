@@ -275,6 +275,9 @@ export default function JobPage() {
       url?: string;
       category?: string;
       secret_type?: string;
+      impact?: string;
+      validation?: string;
+      impact_summary?: string;
       evidence_masked?: string;
       evidence_full?: string;
     }[]) || [];
@@ -599,6 +602,15 @@ export default function JobPage() {
                     return (
                       <li key={secretKey}>
                         <strong>{f.severity || "info"}</strong>
+                        {f.impact ? (
+                          <>
+                            {" "}
+                            <span className="secret-type-pill" title={f.impact_summary || ""}>
+                              {f.impact}
+                              {f.validation ? `/${f.validation}` : ""}
+                            </span>
+                          </>
+                        ) : null}
                         {f.secret_type ? (
                           <>
                             {" "}

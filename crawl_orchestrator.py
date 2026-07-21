@@ -1097,53 +1097,116 @@ async def _run_security_checks(
     status_code: int = 200,
     raw_body: bytes | None = None,
 ):
-    def emit(category, severity, target, detail, evidence=None):
-        stats.record_finding(category, severity, target, detail, evidence=evidence)
-        if output_callback and severity in ("critical", "high", "medium"):
-            shown = evidence
-            if evidence and category in ("secrets_exposure", "authentication"):
+    async def emit(category, severity, target, detail, evidence=None, *, skip_impact: bool = False):
+        out_category = category
+        out_severity = severity
+        out_detail = detail
+        out_evidence = evidence
+        impact = role = validation = impact_summary = None
+        if not skip_impact and bool(getattr(config, "finding_impact_check", True)):
+            try:
+                from finding_impact import apply_impact_to_finding, assess_finding
+
+                validate_live = bool(getattr(config, "secret_validate_live", False))
+                # Cap live secret checks
+                if (
+                    validate_live
+                    and category == "secrets_exposure"
+                    and evidence
+                ):
+                    if not hasattr(stats, "_secret_validate_count"):
+                        stats._secret_validate_count = 0
+                        stats._secret_validate_cache = {}
+                    validate_max = int(getattr(config, "secret_validate_max", 25) or 25)
+                    cache_key = (detail[:80], (evidence or "")[:64])
+                    if cache_key in getattr(stats, "_secret_validate_cache", {}):
+                        cached_impact = stats._secret_validate_cache[cache_key]
+                        result = cached_impact
+                    elif stats._secret_validate_count >= validate_max:
+                        validate_live = False
+                        result = await assess_finding(
+                            category=category,
+                            severity=severity,
+                            detail=detail,
+                            evidence=evidence or "",
+                            url=target,
+                            client=client,
+                            validate_secrets_live=False,
+                        )
+                    else:
+                        result = await assess_finding(
+                            category=category,
+                            severity=severity,
+                            detail=detail,
+                            evidence=evidence or "",
+                            url=target,
+                            client=client,
+                            validate_secrets_live=True,
+                        )
+                        stats._secret_validate_cache[cache_key] = result
+                        stats._secret_validate_count += 1
+                else:
+                    result = await assess_finding(
+                        category=category,
+                        severity=severity,
+                        detail=detail,
+                        evidence=evidence or "",
+                        url=target,
+                        client=client,
+                        validate_secrets_live=False,
+                    )
+
+                applied = apply_impact_to_finding(
+                    category, severity, detail, evidence, result
+                )
+                if applied.get("suppress"):
+                    return
+                out_severity = applied["severity"]
+                out_detail = applied["detail"]
+                impact = applied.get("impact")
+                role = applied.get("role")
+                validation = applied.get("validation")
+                impact_summary = applied.get("impact_summary")
+            except Exception:
+                pass
+
+        stats.record_finding(
+            out_category,
+            out_severity,
+            target,
+            out_detail,
+            evidence=out_evidence,
+            impact=impact,
+            role=role,
+            validation=validation,
+            impact_summary=impact_summary,
+        )
+        if output_callback and out_severity in ("critical", "high", "medium"):
+            shown = out_evidence
+            if out_evidence and out_category in ("secrets_exposure", "authentication"):
                 try:
                     from security_scan import mask_secret_value
 
-                    shown = mask_secret_value(evidence)
+                    shown = mask_secret_value(out_evidence)
                 except Exception:
                     shown = "***"
+            impact_bit = f" | impact={impact}/{validation}" if impact else ""
             extra = f" | evidence={shown}" if shown else ""
-            output_callback(f"FINDING [{severity}] {category}: {target} — {detail}{extra}")
+            output_callback(
+                f"FINDING [{out_severity}] {out_category}: {target} — {out_detail}{impact_bit}{extra}"
+            )
 
     content_type = (headers or {}).get("content-type", "")
     body_for_gate = raw_body if raw_body is not None else (body_text or "")
 
     if config.secret_scan:
-        validate_live = bool(getattr(config, "secret_validate_live", False))
-        validate_max = int(getattr(config, "secret_validate_max", 25) or 25)
-        if not hasattr(stats, "_secret_validate_cache"):
-            stats._secret_validate_cache = {}
-            stats._secret_validate_count = 0
-
         for label, severity, detail, evidence in scan_secrets(
             body_text,
             url,
             org_hints=str(getattr(config, "secret_org_hints", "") or ""),
             start_url=str(getattr(config, "start_url", "") or ""),
         ):
-            out_detail = detail
-            if validate_live and evidence and stats._secret_validate_count < validate_max:
-                cache_key = (label, (evidence or "")[:64])
-                cached = stats._secret_validate_cache.get(cache_key)
-                if cached is None:
-                    try:
-                        from secret_validate import format_validation_suffix, validate_secret
-
-                        result = await validate_secret(label, evidence)
-                        cached = format_validation_suffix(result)
-                        stats._secret_validate_cache[cache_key] = cached
-                        stats._secret_validate_count += 1
-                    except Exception:
-                        cached = ""
-                if cached:
-                    out_detail = f"{detail}{cached}"
-            emit("secrets_exposure", severity, url, out_detail, evidence=evidence)
+            await emit("secrets_exposure", severity, url, detail, evidence=evidence)
         try:
             from recon_extract import find_jwt_candidates
             from urllib.parse import urlparse as _urlparse
@@ -1151,7 +1214,7 @@ async def _run_security_checks(
             scheme = (_urlparse(url).scheme or "").lower()
             for source, token in find_jwt_candidates(body_text or "", headers or {}):
                 sev = "high" if scheme == "http" else "info"
-                emit(
+                await emit(
                     "secrets_exposure",
                     sev,
                     url,
@@ -1175,10 +1238,10 @@ async def _run_security_checks(
         if confirmed:
             if url not in stats.sensitive_urls:
                 stats.sensitive_urls.append(url)
-            emit("sensitive_path", "high", url, sensitive, evidence=evidence)
+            await emit("sensitive_path", "high", url, sensitive, evidence=evidence)
     if config.header_audit:
         for cat, severity, detail in audit_security_headers(headers or {}, url):
-            emit(cat, severity, url, detail)
+            await emit(cat, severity, url, detail)
     try:
         from cookie_impact import analyze_response_cookies
 
@@ -1190,7 +1253,7 @@ async def _run_security_checks(
         if cookies:
             stats.record_cookie_inventory(cookies)
         for cat, severity, detail, evidence in cookie_findings:
-            emit(cat, severity, url, detail, evidence=evidence)
+            await emit(cat, severity, url, detail, evidence=evidence)
     except Exception:
         cookies = inventory_cookies(headers or {})
         if cookies:
@@ -1204,19 +1267,19 @@ async def _run_security_checks(
         cors_issue = await check_cors(client, url)
         if cors_issue:
             sev = "high" if "credentials" in cors_issue.lower() else "medium"
-            emit("cors", sev, url, cors_issue)
+            await emit("cors", sev, url, cors_issue)
     # OPTIONS/TRACE once per host
     host = urlparse(url).netloc.lower()
     if host and host not in stats._http_methods_hosts and config.security_scan and config.vuln_scan:
         stats._http_methods_hosts.add(host)
         origin = f"{urlparse(url).scheme}://{urlparse(url).netloc}/"
         for category, severity, detail in await probe_http_methods(client, origin):
-            emit(category, severity, origin, detail)
+            await emit(category, severity, origin, detail)
     if config.security_scan and config.vuln_scan:
         for category, severity, detail in run_passive_vuln_scan(
             url, body_text, forms, headers or {}, content_type
         ):
-            emit(category, severity, url, detail)
+            await emit(category, severity, url, detail)
         if config.vuln_active_probe:
             for category, severity, detail in await run_active_vuln_probes(
                 client,
@@ -1225,7 +1288,7 @@ async def _run_security_checks(
                 max_params=config.active_probe_max_params,
                 max_forms=config.active_probe_max_forms,
             ):
-                emit(category, severity, url, detail)
+                await emit(category, severity, url, detail)
 
 
 async def _probe_form_actions(client, forms, output_callback, stats):

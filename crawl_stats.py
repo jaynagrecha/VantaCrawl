@@ -149,6 +149,10 @@ class CrawlStats:
         detail: str,
         *,
         evidence: Optional[str] = None,
+        impact: Optional[str] = None,
+        role: Optional[str] = None,
+        validation: Optional[str] = None,
+        impact_summary: Optional[str] = None,
     ):
         # Collapse noisy repeats (same header gap on every page of a host)
         host = ""
@@ -180,6 +184,14 @@ class CrawlStats:
         }
         if evidence:
             row["evidence"] = evidence
+        if impact:
+            row["impact"] = impact
+        if role:
+            row["role"] = role
+        if validation:
+            row["validation"] = validation
+        if impact_summary:
+            row["impact_summary"] = impact_summary
         self.findings.append(row)
 
     def is_duplicate_content(self, body: bytes) -> bool:

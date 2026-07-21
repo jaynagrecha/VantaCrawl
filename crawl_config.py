@@ -133,6 +133,8 @@ class CrawlConfig:
     # Opt-in: read-only identity/metadata probes to see if a found key is still active
     secret_validate_live: bool = False
     secret_validate_max: int = 25
+    # Classify each finding's real-world impact (confirmed / possible / no_impact / …)
+    finding_impact_check: bool = True
     # Comma-separated org names/aliases for custom credential labeling
     # e.g. "Western Union, WU, westernunion" — also auto-derived from start URL
     secret_org_hints: str = ""

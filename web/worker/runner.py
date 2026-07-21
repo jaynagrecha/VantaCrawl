@@ -722,6 +722,10 @@ async def run_job(job_id: str) -> None:
                             "url": str(f.get("url") or ""),
                             "category": str(f.get("category") or ""),
                             "secret_type": secret_type,
+                            "impact": str(f.get("impact") or ""),
+                            "validation": str(f.get("validation") or ""),
+                            "impact_summary": str(f.get("impact_summary") or ""),
+                            "role": str(f.get("role") or ""),
                             "evidence_masked": mask_secret_value(evidence) if evidence else "",
                             "evidence_full": evidence,
                         }
