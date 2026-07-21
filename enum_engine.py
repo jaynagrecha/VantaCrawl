@@ -332,7 +332,7 @@ async def probe_candidate(
     client: httpx.AsyncClient,
     url: str,
     *,
-    use_head: bool = True,
+    use_head: bool = False,
     bypass_forbidden: bool = True,
     follow_redirects: bool = True,
     max_redirect_hops: int = 5,

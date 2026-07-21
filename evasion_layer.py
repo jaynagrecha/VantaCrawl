@@ -22,13 +22,13 @@ CHROME_FULL = "146.0.7680.0"
 # Browser impersonation profiles
 # ---------------------------------------------------------------------------
 
+# Avoid Linux desktop UAs on cloud egress — Akamai rule "Request is from Linux Operating System".
 BROWSER_PROFILES: Dict[str, Dict] = {
     "chrome": {
         "user_agents": [
             f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36",
             f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36",
             f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36",
-            f"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36",
         ],
         "sec_ch_ua": f'"Chromium";v="{CHROME_MAJOR}", "Not A(Brand";v="24", "Google Chrome";v="{CHROME_MAJOR}"',
         "sec_ch_ua_full_version_list": (
@@ -53,7 +53,6 @@ BROWSER_PROFILES: Dict[str, Dict] = {
         "user_agents": [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:147.0) Gecko/20100101 Firefox/147.0",
-            "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
         ],
         "sec_ch_ua": "",
         "sec_ch_ua_full_version_list": "",
@@ -242,14 +241,19 @@ class EvasionSession:
 
         profile = BROWSER_PROFILES[profile_name]
         ua = self._select_ua(url, profile)
-        mobile = "?1" if ("iPhone" in ua or "Android" in ua and "Mobile" in ua) else "?0"
+        mobile = "?1" if ("iPhone" in ua or ("Android" in ua and "Mobile" in ua)) else "?0"
         platform = profile.get("sec_ch_ua_platform") or '"Windows"'
+        platform_version = profile.get("sec_ch_ua_platform_version") or '"15.0.0"'
         if "Macintosh" in ua or "Mac OS X" in ua:
             platform = '"macOS"'
-        elif "Linux" in ua or "X11" in ua:
-            platform = '"Linux"'
+            platform_version = '"14.3.0"'
         elif "iPhone" in ua:
             platform = '"iOS"'
+            platform_version = '"17.2.0"'
+        elif "Linux" in ua or "X11" in ua:
+            # Kept only if a custom UA injects Linux; prefer Windows otherwise.
+            platform = '"Linux"'
+            platform_version = '"6.5.0"'
 
         headers: Dict[str, str] = {
             "User-Agent": ua,
@@ -261,7 +265,8 @@ class EvasionSession:
             "Cache-Control": "max-age=0",
         }
 
-        # Full Client Hints bundle (Chrome/Edge) — closes Akamai CH-missing rules
+        # Full Client Hints bundle (Chrome/Edge) — closes Akamai CH-missing rules.
+        # Do not send Accept-CH on requests (that is a server response header).
         if profile.get("sec_ch_ua"):
             headers["Sec-CH-UA"] = profile["sec_ch_ua"]
             headers["Sec-CH-UA-Mobile"] = mobile
@@ -270,21 +275,13 @@ class EvasionSession:
                 headers["Sec-CH-UA-Full-Version-List"] = profile["sec_ch_ua_full_version_list"]
             if profile.get("sec_ch_ua_full_version"):
                 headers["Sec-CH-UA-Full-Version"] = profile["sec_ch_ua_full_version"]
-            if profile.get("sec_ch_ua_platform_version"):
-                headers["Sec-CH-UA-Platform-Version"] = (
-                    '"15.0.0"' if platform == '"Windows"' else profile["sec_ch_ua_platform_version"]
-                )
+            headers["Sec-CH-UA-Platform-Version"] = platform_version
             if profile.get("sec_ch_ua_arch"):
                 headers["Sec-CH-UA-Arch"] = profile["sec_ch_ua_arch"]
             if profile.get("sec_ch_ua_bitness"):
                 headers["Sec-CH-UA-Bitness"] = profile["sec_ch_ua_bitness"]
             if "sec_ch_ua_model" in profile:
                 headers["Sec-CH-UA-Model"] = profile.get("sec_ch_ua_model") or '""'
-            # Ask for client hints on subsequent responses (browser-like)
-            headers["Accept-CH"] = (
-                "Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Platform, Sec-CH-UA-Platform-Version, "
-                "Sec-CH-UA-Full-Version-List, Sec-CH-UA-Arch, Sec-CH-UA-Bitness, Sec-CH-UA-Model"
-            )
 
         # Always emit Sec-Fetch-* when stealth is on (basic included) — closes missing-header gaps
         site = "none"
@@ -348,7 +345,7 @@ class EvasionSession:
         # aggressive — slower, more human-like
         return max(lo, 120), max(hi, 900)
 
-    async def before_request(self, url: str) -> Dict[str, str]:
+    async def before_request(self, url: str, *, is_navigation: bool = True) -> Dict[str, str]:
         self._request_count += 1
         now = time.time()
         if self.config.adaptive_backoff and now < self._backoff_until:
@@ -362,8 +359,7 @@ class EvasionSession:
                 delay += random.uniform(0.8, 2.5)
             await asyncio.sleep(delay)
 
-        headers = self.build_headers(url, is_navigation=True)
-        return headers
+        return self.build_headers(url, is_navigation=is_navigation)
 
     def after_request(self, url: str, status_code: int, body_preview: str = ""):
         self._last_url = url
@@ -494,8 +490,18 @@ def sync_evasion_from_crawl_config(session: EvasionSession, config) -> None:
 
 
 def apply_headers_to_request(request, headers: Dict[str, str]):
+    """Apply headers without leaving case-variant duplicates on the wire."""
+    existing_lower = {str(k).lower() for k in request.headers.keys()}
     for key, value in headers.items():
+        lower = str(key).lower()
+        if lower in existing_lower:
+            # Drop every casing of this name, then set once
+            for old in list(request.headers.keys()):
+                if str(old).lower() == lower:
+                    del request.headers[old]
+            existing_lower.discard(lower)
         request.headers[key] = value
+        existing_lower.add(lower)
 
 
 def make_httpx_hooks(session: Optional[EvasionSession] = None, output_callback=None, defense_tracker=None):
@@ -510,7 +516,14 @@ def make_httpx_hooks(session: Optional[EvasionSession] = None, output_callback=N
             if not session.config.enabled:
                 return
             url = str(request.url)
-            headers = await session.before_request(url)
+            method = str(getattr(request, "method", "GET") or "GET").upper()
+            accept = ""
+            try:
+                accept = (request.headers.get("Accept") or request.headers.get("accept") or "").lower()
+            except Exception:
+                accept = ""
+            is_navigation = method in ("GET", "HEAD") and "application/json" not in accept
+            headers = await session.before_request(url, is_navigation=is_navigation)
             apply_headers_to_request(request, headers)
 
         request_hooks.append(on_request)

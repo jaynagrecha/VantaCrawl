@@ -125,7 +125,7 @@ async def run_api_recon(
             word_limit=limit,
             headers=headers,
             concurrency=min(int(getattr(config, "enum_concurrency", 20) or 20), 40),
-            method=str(getattr(config, "api_recon_method", "HEAD") or "HEAD"),
+            method=str(getattr(config, "api_recon_method", "GET") or "GET"),
             running=running,
             output_callback=output_callback,
             update_progress=update_progress,

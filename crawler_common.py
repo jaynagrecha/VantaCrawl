@@ -804,23 +804,19 @@ def get_sync_baseline(session, base_url):
 
 
 def sync_path_exists(session, url, baseline_length, baseline_status, bypass_forbidden=True):
+    """Existence probe via GET (avoids Akamai 'HTTP HEAD Method Used')."""
     try:
-        response = session.head(url, timeout=5, allow_redirects=False)
-        status = response.status_code
-        if status in (405, 501) or (bypass_forbidden and status in BYPASS_HTTP_CODES):
-            response = session.get(url, timeout=5, allow_redirects=False, stream=True)
-            content = b""
-            for chunk in response.iter_content(chunk_size=8192):
-                content += chunk
-                if len(content) >= 8192:
-                    break
-            response.close()
-            content_length = len(content) or response_length(response)
-            return looks_like_existing_path(
-                response.status_code, content_length, baseline_length, baseline_status, bypass_forbidden
-            )
-        content_length = response_length(response)
-        return looks_like_existing_path(status, content_length, baseline_length, baseline_status, bypass_forbidden)
+        response = session.get(url, timeout=5, allow_redirects=False, stream=True)
+        content = b""
+        for chunk in response.iter_content(chunk_size=8192):
+            content += chunk
+            if len(content) >= 8192:
+                break
+        response.close()
+        content_length = len(content) or response_length(response)
+        return looks_like_existing_path(
+            response.status_code, content_length, baseline_length, baseline_status, bypass_forbidden
+        )
     except requests.RequestException:
         return False
 

@@ -18,10 +18,25 @@ def test_browser_headers_include_sec_fetch_in_stealth():
     assert "User-Agent" in headers
     assert "Chrome" in headers["User-Agent"]
     assert "Chrome/146" in headers["User-Agent"]
+    assert "Linux" not in headers["User-Agent"]
+    assert "Accept-CH" not in headers
     assert headers.get("Sec-Fetch-Mode") == "navigate"
     assert headers.get("Referer") == "https://lab.local/home"
     assert "Sec-CH-UA" in headers
     assert "Sec-CH-UA-Full-Version-List" in headers
+
+
+def test_macos_ua_gets_matching_platform_hints():
+    session = EvasionSession(
+        EvasionConfig(enabled=True, level="stealth", browser_profile="chrome", ua_strategy="sticky_session")
+    )
+    session._session_ua = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+    )
+    headers = session.build_headers("https://lab.local/")
+    assert headers.get("Sec-CH-UA-Platform") == '"macOS"'
+    assert headers.get("Sec-CH-UA-Platform-Version") == '"14.3.0"'
 
 
 def test_sticky_host_keeps_same_ua():
