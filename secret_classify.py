@@ -187,6 +187,48 @@ _STOP_PRODUCTS = {
     "number",
     "object",
     "array",
+    # HTML / DOM tags — never treat as product names ("Input API Key")
+    "html",
+    "head",
+    "body",
+    "div",
+    "span",
+    "input",
+    "form",
+    "label",
+    "button",
+    "select",
+    "option",
+    "textarea",
+    "meta",
+    "link",
+    "script",
+    "style",
+    "title",
+    "table",
+    "thead",
+    "tbody",
+    "tr",
+    "td",
+    "th",
+    "ul",
+    "ol",
+    "li",
+    "img",
+    "iframe",
+    "svg",
+    "path",
+    "section",
+    "article",
+    "nav",
+    "footer",
+    "header",
+    "main",
+    "aside",
+    "widget",
+    "component",
+    "template",
+    "doctype",
 }
 
 _KIND_STOP = {
@@ -501,9 +543,16 @@ def find_assignment_ident(
     return best[1]
 
 
-def collect_related_idents(window: str, *, exclude: Sequence[str] = ()) -> List[str]:
+def collect_related_idents(
+    window: str,
+    *,
+    exclude: Sequence[str] = (),
+    secret_value: str = "",
+) -> List[str]:
     """Harvest nearby identifier names that may describe the product/service."""
     exclude_l = {e.lower() for e in exclude if e}
+    secret_l = (secret_value or "").lower().strip()
+    secret_norm = re.sub(r"[^a-z0-9]+", "", secret_l)
     found: List[str] = []
     seen = set()
     for m in _IDENT_TOKEN_RE.finditer(window or ""):
@@ -514,6 +563,13 @@ def collect_related_idents(window: str, *, exclude: Sequence[str] = ()) -> List[
         if low in _STOP_PRODUCTS or low in _KIND_STOP:
             continue
         if len(ident) < 2 or ident.isdigit():
+            continue
+        # Never treat the secret value itself as a product name.
+        if secret_l and (low == secret_l or ident == secret_value):
+            continue
+        if secret_norm and re.sub(r"[^a-z0-9]+", "", low) == secret_norm:
+            continue
+        if secret_l and _value_matches(secret_l, low):
             continue
         seen.add(low)
         found.append(ident)
@@ -608,7 +664,11 @@ def classify_credential(
     if product:
         product = apply_org_product(product, org_context, assign_ident)
 
-    related = collect_related_idents(window, exclude=[assign_ident] if assign_ident else [])
+    related = collect_related_idents(
+        window,
+        exclude=[assign_ident] if assign_ident else [],
+        secret_value=val,
+    )
     if not product:
         product = infer_product_from_related(window, related, org_context)
     elif not kind:
