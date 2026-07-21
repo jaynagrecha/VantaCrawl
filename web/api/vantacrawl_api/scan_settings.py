@@ -112,6 +112,11 @@ _HUMAN = {
         "Max live secret checks",
         "Cap on how many credentials to probe live per scan (avoids hammering vendor APIs).",
     ),
+    "finding_impact_check": (
+        "Finding impact checkers",
+        "For each finding, classify real-world impact (confirmed / possible / mitigated / no impact) "
+        "and attach validation status — same idea as cookie stealable-credential analysis.",
+    ),
     "secret_org_hints": (
         "Org / brand aliases",
         "Comma-separated names for your org (e.g. Western Union, WU, westernunion). "
@@ -463,6 +468,7 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "secret_scan",
             "secret_validate_live",
             "secret_validate_max",
+            "finding_impact_check",
             "secret_org_hints",
             "header_audit",
             "cors_check",

@@ -42,6 +42,10 @@ def _findings_preview(stats) -> List[Dict[str, str]]:
                     "url": str(item.get("url") or ""),
                     "category": str(item.get("category") or ""),
                     "secret_type": secret_type,
+                    "impact": str(item.get("impact") or ""),
+                    "validation": str(item.get("validation") or ""),
+                    "impact_summary": str(item.get("impact_summary") or ""),
+                    "role": str(item.get("role") or ""),
                     "evidence_masked": mask_secret_value(evidence) if evidence else "",
                     "evidence_full": evidence,
                 }
