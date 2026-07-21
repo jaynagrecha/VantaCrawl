@@ -59,6 +59,12 @@ class CrawlStats:
     api_endpoints: List[Dict[str, Any]] = field(default_factory=list)
     api_docs: List[str] = field(default_factory=list)
     api_graphql_operations: List[Dict[str, str]] = field(default_factory=list)
+    api_recon_probes_done: int = 0
+    api_recon_probes_total: int = 0
+    api_recon_hits: int = 0
+    api_recon_current_path: str = ""
+    api_recon_started_at: Optional[float] = None
+    _api_recon_rate_samples: List[Tuple[float, int]] = field(default_factory=list)
     rss_feed_urls: List[str] = field(default_factory=list)
     s3_buckets: List[str] = field(default_factory=list)
     gcs_buckets: List[str] = field(default_factory=list)
@@ -255,6 +261,68 @@ class CrawlStats:
             probe = f"{path.rstrip('/')}/{word.lstrip('/')}"
         return f"Trying: {probe} · level {int(self.enum_current_depth)}"
 
+    def note_api_recon_progress(
+        self,
+        probes_done: int,
+        *,
+        total: int = 0,
+        path: str = "",
+        hits: Optional[int] = None,
+    ) -> None:
+        """Update API active-enum counters and current probe for the live cockpit."""
+        now = time.time()
+        if self.api_recon_started_at is None:
+            self.api_recon_started_at = now
+        if total > 0:
+            self.api_recon_probes_total = max(self.api_recon_probes_total, int(total))
+        self.api_recon_probes_done = max(0, int(probes_done))
+        if path:
+            self.api_recon_current_path = str(path)
+        if hits is not None:
+            self.api_recon_hits = max(0, int(hits))
+        self._api_recon_rate_samples.append((now, self.api_recon_probes_done))
+        cutoff = now - 30.0
+        self._api_recon_rate_samples = [
+            (t, n) for t, n in self._api_recon_rate_samples if t >= cutoff
+        ][-40:]
+
+    def api_recon_elapsed_seconds(self) -> float:
+        if self.api_recon_started_at is None:
+            return 0.0
+        return max(time.time() - self.api_recon_started_at, 0.0)
+
+    def api_recon_eta_seconds(self) -> Optional[int]:
+        """ETA for active API probes; hide until a short warm-up."""
+        total = int(self.api_recon_probes_total or 0)
+        done = int(self.api_recon_probes_done or 0)
+        if total <= 0 or done <= 0 or done >= total or self.api_recon_started_at is None:
+            return None
+        elapsed = self.api_recon_elapsed_seconds()
+        if done < 25 and elapsed < 8.0:
+            return None
+        phase_rate = done / max(elapsed, 0.001)
+        recent_rate = 0.0
+        samples = self._api_recon_rate_samples
+        if len(samples) >= 2:
+            t0, n0 = samples[0]
+            t1, n1 = samples[-1]
+            if t1 > t0 and n1 > n0:
+                recent_rate = (n1 - n0) / (t1 - t0)
+        rate = (0.55 * recent_rate + 0.45 * phase_rate) if recent_rate > 0 else phase_rate
+        if rate <= 0:
+            return None
+        return max(0, int((total - done) / rate))
+
+    def api_recon_probing_label(self) -> str:
+        path = (self.api_recon_current_path or "").strip()
+        if not path:
+            return ""
+        done = int(self.api_recon_probes_done or 0)
+        total = int(self.api_recon_probes_total or 0)
+        if total > 0:
+            return f"API probe: {path} · {done:,}/{total:,}"
+        return f"API probe: {path}"
+
     def snapshot(self) -> Dict[str, Any]:
         elapsed = max(self.elapsed_seconds(), 0.001)
         evasion = self.evasion_session
@@ -282,6 +350,12 @@ class CrawlStats:
             "enum_current_depth": self.enum_current_depth,
             "enum_probing": self.enum_probing_label(),
             "enum_hit_urls": list(self.enum_hit_urls),
+            "api_recon_probes_done": self.api_recon_probes_done,
+            "api_recon_probes_total": self.api_recon_probes_total,
+            "api_recon_hits": self.api_recon_hits,
+            "api_recon_current_path": self.api_recon_current_path,
+            "api_recon_eta_seconds": self.api_recon_eta_seconds(),
+            "api_recon_probing": self.api_recon_probing_label(),
             "bytes_downloaded": self.bytes_downloaded,
             "errors": self.errors,
             "queue_size": self.queue_size,

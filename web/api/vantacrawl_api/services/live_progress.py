@@ -138,6 +138,12 @@ def build_live_progress(
     elapsed = float(snap.get("elapsed_seconds") or prev.get("elapsed_seconds") or 0)
     upm = float(snap.get("urls_per_minute") or 0)
 
+    api_done = _num(snap.get("api_recon_probes_done"), _num(prev.get("api_recon_probes_done")))
+    api_total = _num(snap.get("api_recon_probes_total"), _num(prev.get("api_recon_probes_total")))
+    api_hits = _num(snap.get("api_recon_hits"), _num(prev.get("api_recon_hits")))
+    api_path = str(snap.get("api_recon_current_path") or prev.get("api_recon_current_path") or "")
+    api_probing = str(snap.get("api_recon_probing") or prev.get("api_recon_probing") or "")
+
     progress_pct = 0
     if resolved_phase == "enum":
         # Do not keep crawl's 100% while wordlist/baseline is still preparing
@@ -151,6 +157,19 @@ def build_live_progress(
                 progress_pct = max(1, min(99, int(enum_done * 100 / enum_total)))
         else:
             progress_pct = 0
+    elif resolved_phase == "api_recon":
+        # Prefer live probe counters; fall back to update_progress(total, done)
+        probe_total = api_total or total
+        probe_done = api_done if api_total > 0 else done
+        if probe_total > 0:
+            if probe_done <= 0:
+                progress_pct = 0
+            elif probe_done >= probe_total:
+                progress_pct = 100
+            else:
+                progress_pct = max(1, min(99, int(probe_done * 100 / probe_total)))
+        elif prev.get("progress_pct"):
+            progress_pct = int(prev["progress_pct"])
     elif resolved_phase in ("crawl", "download") and estimate > 0:
         progress_pct = min(99, int(pages * 100 / max(estimate, 1)))
     elif total > 0:
@@ -161,7 +180,31 @@ def build_live_progress(
     # Enum ETA must use enum-phase clock (not whole-job elapsed — that caused ~112h ghosts)
     eta_seconds: Optional[int] = None
     enum_probing = str(snap.get("enum_probing") or prev.get("enum_probing") or "")
-    if resolved_phase == "enum" and enum_total > enum_done > 0:
+    enum_current_word = str(snap.get("enum_current_word") or prev.get("enum_current_word") or "")
+    enum_current_path = str(snap.get("enum_current_path") or prev.get("enum_current_path") or "/")
+    if resolved_phase == "api_recon":
+        # Reuse cockpit tiles: Enum words / Probing / Enum hits → API probe live state
+        if api_total > 0 or api_done > 0 or api_path or api_probing:
+            enum_done = api_done
+            enum_total = api_total
+            enum_hits = api_hits
+            enum_probing = api_probing or (f"API probe: {api_path}" if api_path else "")
+            enum_current_path = api_path or enum_current_path
+            enum_current_word = api_path.rstrip("/").split("/")[-1] if api_path else enum_current_word
+        if api_total > api_done > 0:
+            if hasattr(stats, "api_recon_eta_seconds"):
+                try:
+                    eta_seconds = stats.api_recon_eta_seconds()
+                except Exception:
+                    eta_seconds = snap.get("api_recon_eta_seconds")
+            else:
+                eta_seconds = snap.get("api_recon_eta_seconds")
+            if eta_seconds is not None:
+                try:
+                    eta_seconds = int(eta_seconds)
+                except (TypeError, ValueError):
+                    eta_seconds = None
+    elif resolved_phase == "enum" and enum_total > enum_done > 0:
         if hasattr(stats, "enum_eta_seconds"):
             try:
                 eta_seconds = stats.enum_eta_seconds()
@@ -280,9 +323,14 @@ def build_live_progress(
         "enum_words_tested": enum_done,
         "enum_words_total": enum_total,
         "enum_probing": enum_probing,
-        "enum_current_word": str(snap.get("enum_current_word") or prev.get("enum_current_word") or ""),
-        "enum_current_path": str(snap.get("enum_current_path") or prev.get("enum_current_path") or "/"),
+        "enum_current_word": enum_current_word,
+        "enum_current_path": enum_current_path,
         "enum_current_depth": int(snap.get("enum_current_depth") or prev.get("enum_current_depth") or 0),
+        "api_recon_probes_done": api_done,
+        "api_recon_probes_total": api_total,
+        "api_recon_hits": api_hits,
+        "api_recon_current_path": api_path,
+        "api_recon_probing": api_probing or enum_probing,
         "findings": findings,
         "findings_preview": preview,
         "enum_hit_urls": enum_urls,

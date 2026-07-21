@@ -1,6 +1,11 @@
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
+
+from api_recon.active import run_active_api_enum
 from api_recon.imports import load_har_file, load_postman_collection
 from api_recon.passive import classify_discovered_urls, extract_from_text
 from api_recon.auth import build_api_headers
+from crawl_stats import CrawlStats
 
 
 def test_passive_extract_from_js():
@@ -83,3 +88,56 @@ def test_har_import(tmp_path):
     eps = load_har_file(str(path))
     assert len(eps) == 1
     assert eps[0].method == "POST"
+
+
+def test_note_api_recon_progress_label():
+    stats = CrawlStats()
+    stats.note_api_recon_progress(10, total=100, path="/api/health", hits=2)
+    assert stats.api_recon_probes_done == 10
+    assert stats.api_recon_probes_total == 100
+    assert stats.api_recon_hits == 2
+    label = stats.api_recon_probing_label()
+    assert "/api/health" in label
+    assert "10" in label and "100" in label
+    snap = stats.snapshot()
+    assert snap["api_recon_current_path"] == "/api/health"
+    assert snap["api_recon_probes_done"] == 10
+
+
+def test_active_enum_updates_stats(tmp_path):
+    wl = tmp_path / "api.txt"
+    wl.write_text("health\nusers\n", encoding="utf-8")
+
+    class _Resp:
+        def __init__(self, code):
+            self.status_code = code
+            self.headers = {"content-type": "application/json"}
+
+    client = MagicMock()
+    client.head = AsyncMock(return_value=_Resp(404))
+    client.get = AsyncMock(return_value=_Resp(404))
+
+    stats = CrawlStats()
+    progress = []
+
+    def on_progress(total, done, text):
+        progress.append((total, done, text))
+
+    hits = asyncio.run(
+        run_active_api_enum(
+            client,
+            "https://example.com/",
+            wordlist_file=str(wl),
+            word_limit=8,
+            headers={},
+            concurrency=2,
+            method="HEAD",
+            update_progress=on_progress,
+            stats=stats,
+        )
+    )
+    assert hits == []
+    assert stats.api_recon_probes_total >= 1
+    assert stats.api_recon_probes_done == stats.api_recon_probes_total
+    assert progress
+    assert any("API recon" in str(p[2]) for p in progress)

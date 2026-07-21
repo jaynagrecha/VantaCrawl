@@ -104,3 +104,41 @@ def test_heartbeat_surfaces_during_backoff():
     )
     assert out["heartbeat"].startswith("Waiting on WAF backoff")
     assert "Waiting on WAF backoff" in out["health_detail"]
+
+
+def test_api_recon_fills_cockpit_probe_tiles():
+    """During API recon, Enum words / Probing / hits tiles show active probe state."""
+    out = build_live_progress(
+        _stats(
+            pages_crawled=11,
+            enum_hits=0,
+            enum_words_tested=0,
+            enum_words_total=0,
+            api_recon_probes_done=272,
+            api_recon_probes_total=800,
+            api_recon_hits=3,
+            api_recon_current_path="/api/v1/users",
+            api_recon_probing="API probe: /api/v1/users · 272/800",
+            api_recon_eta_seconds=120,
+            defense={
+                "caught_by_protection": 2,
+                "completed_without_challenge": 10,
+                "protections_detected": ["akamai"],
+                "block_journal": [],
+                "block_status_counts": {"403": 2},
+                "protection_block_counts": {"akamai": 2},
+            },
+        ),
+        progress_text="API recon 272/800 · /api/v1/users",
+        phase="api_recon",
+    )
+    assert out["phase"] == "api_recon"
+    assert out["progress_pct"] == 34  # 272/800
+    assert out["enum_words_tested"] == 272
+    assert out["enum_words_total"] == 800
+    assert out["enum_hits"] == 3
+    assert out["enum_current_word"] == "users"
+    assert out["enum_current_path"] == "/api/v1/users"
+    assert "API probe:" in out["enum_probing"]
+    assert out["eta_seconds"] == 120
+    assert out["api_recon_probes_done"] == 272

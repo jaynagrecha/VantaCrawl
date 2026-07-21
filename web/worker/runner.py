@@ -301,6 +301,18 @@ async def run_job(job_id: str) -> None:
             live_progress_state["progress_pct"] = 0
         elif "crawling:" in low or "page crawl" in low:
             phase = "crawl"
+        elif any(
+            k in low
+            for k in (
+                "api recon",
+                "api passive",
+                "api docs",
+                "api active",
+                "api import",
+                "graphql introspection",
+            )
+        ):
+            phase = "api_recon"
         elif "security" in low or "vuln" in low or "finding" in low:
             phase = "security"
         elif any(
@@ -425,6 +437,8 @@ async def run_job(job_id: str) -> None:
                     has_work = bool(
                         getattr(st, "pages_crawled", 0)
                         or getattr(st, "enum_words_tested", 0)
+                        or getattr(st, "api_recon_probes_done", 0)
+                        or getattr(st, "api_recon_probes_total", 0)
                         or len(getattr(st, "findings", []) or [])
                     )
                     if prev.startswith("Progress:") or has_work:

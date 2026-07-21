@@ -326,6 +326,25 @@ export default function JobPage() {
             heartbeat ||
             (backoffRem > 0.4 ? `Waiting on WAF backoff… ${Math.ceil(backoffRem)}s` : "");
           const probingLine = String(progress.enum_probing || "");
+          const phaseKey = String(progress.phase || "");
+          const isApiRecon = phaseKey === "api_recon";
+          const hitsLabel = isApiRecon ? "API hits" : "Enum hits";
+          const wordsLabel = isApiRecon ? "API probes" : "Enum words";
+          const probingValue = isApiRecon
+            ? String(progress.enum_current_path || progress.enum_current_word || "—")
+            : String(progress.enum_current_word || "—");
+          const wordsHint = isApiRecon
+            ? probingLine || "Active API path probes completed / planned"
+            : probingLine || "Words tried from the directory wordlist";
+          const probingHint = isApiRecon
+            ? probingLine || "Current API path under test (including during WAF backoff)"
+            : probingLine || "Current folder/file name under test";
+          const etaHint =
+            phaseKey === "enum"
+              ? "Based on enum-phase speed (not whole-job time). Hidden until warm-up."
+              : isApiRecon
+                ? "Based on API probe speed. Hidden until warm-up."
+                : undefined;
           const tiles: { label: string; value: string; hint?: string; tone?: string }[] = [
             { label: "Phase", value: phaseLabel(progress.phase), tone: "phase" },
             { label: "Progress", value: `${pct}%` },
@@ -333,30 +352,27 @@ export default function JobPage() {
               label: "Pages",
               value: pagesEst > 0 ? `${pages}/${pagesEst}` : tileValue(pages),
             },
-            { label: "Enum hits", value: tileValue(progress.enum_hits) },
+            { label: hitsLabel, value: tileValue(progress.enum_hits) },
             { label: "Findings", value: tileValue(progress.findings) },
             { label: "Duration", value: durationLabel },
             { label: "Queue", value: tileValue(progress.queue_size) },
             {
-              label: "Enum words",
+              label: wordsLabel,
               value:
                 wordsTotal > 0
                   ? `${wordsDone.toLocaleString()}/${wordsTotal.toLocaleString()}`
                   : tileValue(wordsDone),
-              hint: probingLine || "Words tried from the directory wordlist",
+              hint: wordsHint,
             },
             {
               label: "ETA",
               value: formatEta(progress.eta_seconds),
-              hint:
-                String(progress.phase || "") === "enum"
-                  ? "Based on enum-phase speed (not whole-job time). Hidden until warm-up."
-                  : undefined,
+              hint: etaHint,
             },
             {
               label: "Probing",
-              value: String(progress.enum_current_word || "—"),
-              hint: probingLine || "Current folder/file name under test",
+              value: probingValue,
+              hint: probingHint,
               tone: "text",
             },
             {
@@ -405,7 +421,14 @@ export default function JobPage() {
                 {progressLine || (active ? "Waiting for first progress update…" : "—")}
               </p>
               {probingLine ? (
-                <p className="progress-probing" title="Current directory/file name being probed">
+                <p
+                  className="progress-probing"
+                  title={
+                    isApiRecon
+                      ? "Current API path being probed"
+                      : "Current directory/file name being probed"
+                  }
+                >
                   {probingLine}
                 </p>
               ) : null}

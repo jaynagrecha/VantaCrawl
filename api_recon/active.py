@@ -17,6 +17,11 @@ DEFAULT_BASES = ("/api/", "/api/v1/", "/api/v2/", "/v1/", "/v2/", "/rest/", "/gr
 _HIT_STATUSES = {200, 201, 204, 401, 403}
 
 
+def _probe_path(url: str) -> str:
+    path = urlparse(url).path or "/"
+    return path if path.startswith("/") else f"/{path}"
+
+
 async def run_active_api_enum(
     client: httpx.AsyncClient,
     start_url: str,
@@ -31,6 +36,7 @@ async def run_active_api_enum(
     update_progress=None,
     follow_redirects: bool = True,
     max_redirect_hops: int = 5,
+    stats=None,
 ) -> List[ApiEndpoint]:
     origin = f"{urlparse(start_url).scheme}://{urlparse(start_url).netloc}"
     words = load_wordlist(wordlist_file, max_words=max(1, int(word_limit) or 3000))
@@ -77,6 +83,8 @@ async def run_active_api_enum(
     total = len(targets)
     if output_callback:
         output_callback(f"API active enum: {total:,} probes · {method} · {concurrency} threads")
+    if stats is not None and hasattr(stats, "note_api_recon_progress"):
+        stats.note_api_recon_progress(0, total=total, path="", hits=0)
     if update_progress and total:
         update_progress(total, 0, f"API recon 0/{total}")
 
@@ -88,6 +96,19 @@ async def run_active_api_enum(
     if verb not in ("GET", "HEAD"):
         verb = "HEAD"
 
+    def _publish(done_n: int, path: str = "") -> None:
+        hit_n = len(hits)
+        if stats is not None and hasattr(stats, "note_api_recon_progress"):
+            stats.note_api_recon_progress(done_n, total=total, path=path, hits=hit_n)
+        # Every probe into stats; UI publish every 5 so progress % moves without spam
+        if update_progress and total and (done_n == 0 or done_n == total or done_n % 5 == 0):
+            label = f"API recon {done_n}/{total}"
+            if path:
+                label = f"{label} · {path}"
+            if hit_n:
+                label = f"{label} · {hit_n} hit(s)"
+            update_progress(total, done_n, label)
+
     async def probe(url: str) -> None:
         nonlocal done
         if running and not running():
@@ -96,7 +117,14 @@ async def run_active_api_enum(
         final_url = url
         hops = 0
         ctype = ""
+        path = _probe_path(url)
         async with sem:
+            if running and not running():
+                return
+            # Show the path while this worker is in-flight (including WAF backoff sleep)
+            async with lock:
+                if stats is not None and hasattr(stats, "note_api_recon_progress"):
+                    stats.note_api_recon_progress(done, total=total, path=path, hits=len(hits))
             try:
                 if verb == "GET":
                     resp = await client.get(url, headers=headers, timeout=10, follow_redirects=False)
@@ -119,11 +147,10 @@ async def run_active_api_enum(
             except httpx.HTTPError:
                 async with lock:
                     done += 1
+                    _publish(done, path)
                 return
         async with lock:
             done += 1
-            if update_progress and total and done % 25 == 0:
-                update_progress(total, done, f"API recon {done}/{total}")
             if status in _HIT_STATUSES:
                 note = "Protected API path" if status in (401, 403) else ""
                 if hops:
@@ -139,8 +166,11 @@ async def run_active_api_enum(
                         note=note,
                     )
                 )
+            _publish(done, path)
 
     await asyncio.gather(*(probe(u) for u in targets))
+    if stats is not None and hasattr(stats, "note_api_recon_progress"):
+        stats.note_api_recon_progress(total, total=total, path="", hits=len(hits))
     if update_progress and total:
         update_progress(total, total, f"API recon {total}/{total}")
     return hits
