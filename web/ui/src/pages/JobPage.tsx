@@ -264,6 +264,7 @@ export default function JobPage() {
       title?: string;
       url?: string;
       category?: string;
+      secret_type?: string;
       evidence_masked?: string;
       evidence_full?: string;
     }[]) || [];
@@ -576,7 +577,15 @@ export default function JobPage() {
                       : f.evidence_masked || (f.evidence_full ? "••••" : "");
                     return (
                       <li key={secretKey}>
-                        <strong>{f.severity || "info"}</strong> — {f.title || "Finding"}
+                        <strong>{f.severity || "info"}</strong>
+                        {f.secret_type ? (
+                          <>
+                            {" "}
+                            <span className="secret-type-pill">{f.secret_type}</span>
+                          </>
+                        ) : null}
+                        {" — "}
+                        {f.title || "Finding"}
                         {f.url ? (
                           <>
                             {" "}

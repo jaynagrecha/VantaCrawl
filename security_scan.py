@@ -8,15 +8,76 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
 SECRET_PATTERNS = [
-    (r"AKIA[0-9A-Z]{16}", "AWS Access Key", "critical"),
-    (r"(?i)aws[_-]?secret[_-]?access[_-]?key['\"]?\s*[:=]\s*['\"][A-Za-z0-9/+=]{40}", "AWS Secret Key", "critical"),
-    (r"ghp_[A-Za-z0-9]{36}", "GitHub PAT", "critical"),
-    (r"sk_live_[0-9a-zA-Z]{24,}", "Stripe Live Key", "critical"),
-    (r"AIza[0-9A-Za-z\-_]{35}", "Google API Key", "high"),
-    (r"(?i)api[_-]?key['\"]?\s*[:=]\s*['\"][A-Za-z0-9_\-]{20,}", "Generic API Key", "high"),
+    # Cloud / infra (specific prefixes first)
+    (r"AKIA[0-9A-Z]{16}", "AWS Access Key ID", "critical"),
+    (r"(?<![A-Za-z0-9])ASIA[0-9A-Z]{16}", "AWS Temporary Access Key ID", "critical"),
+    (r"(?i)aws[_-]?secret[_-]?access[_-]?key['\"]?\s*[:=]\s*['\"][A-Za-z0-9/+=]{40}", "AWS Secret Access Key", "critical"),
+    (r"(?i)aws[_-]?session[_-]?token['\"]?\s*[:=]\s*['\"][A-Za-z0-9/+=]{80,}", "AWS Session Token", "critical"),
+    # Source control / CI
+    (r"ghp_[A-Za-z0-9]{36}", "GitHub Personal Access Token", "critical"),
+    (r"github_pat_[A-Za-z0-9_]{20,}", "GitHub Fine-grained PAT", "critical"),
+    (r"gho_[A-Za-z0-9]{36}", "GitHub OAuth Token", "critical"),
+    (r"ghu_[A-Za-z0-9]{36}", "GitHub User-to-Server Token", "critical"),
+    (r"glpat-[A-Za-z0-9\-_]{20,}", "GitLab Personal Access Token", "critical"),
+    # Payments / SaaS
+    (r"sk_live_[0-9a-zA-Z]{24,}", "Stripe Live Secret Key", "critical"),
+    (r"rk_live_[0-9a-zA-Z]{24,}", "Stripe Restricted Live Key", "critical"),
+    (r"pk_live_[0-9a-zA-Z]{24,}", "Stripe Live Publishable Key", "medium"),
+    (r"sk-(?:proj-)?[A-Za-z0-9_\-]{20,}", "OpenAI API Key", "critical"),
+    (r"AIza[0-9A-Za-z\-_]{35}", "Google Cloud / Maps API Key", "high"),
+    (r"xox[baprs]-[0-9A-Za-z-]{10,48}-[0-9A-Za-z-]{10,48}(?:-[0-9A-Za-z-]{10,48})?", "Slack API Token", "critical"),
+    (r"SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}", "SendGrid API Key", "critical"),
+    (r"key-[0-9a-zA-Z]{32}", "Mailgun API Key", "high"),
+    (r"SK[0-9a-fA-F]{32}", "Twilio API Key SID", "high"),
+    (r"(?i)twilio[_-]?(?:auth[_-]?)?token['\"]?\s*[:=]\s*['\"][0-9a-fA-F]{32}", "Twilio Auth Token", "critical"),
+    (r"shpat_[a-fA-F0-9]{32}", "Shopify Admin API Access Token", "critical"),
+    (r"npm_[A-Za-z0-9]{36}", "npm Access Token", "critical"),
+    (r"dop_v1_[a-f0-9]{64}", "DigitalOcean Personal Access Token", "critical"),
+    (r"hvs\.[A-Za-z0-9_-]{20,}", "HashiCorp Vault Token", "critical"),
+    # Threat intel / security vendors
+    (r"(?i)virus\s*total[_-]?(?:api[_-]?)?key['\"]?\s*[:=]\s*['\"][A-Za-z0-9]{32,}", "VirusTotal API Key", "high"),
+    (r"(?i)vt[_-]?api[_-]?key['\"]?\s*[:=]\s*['\"][A-Fa-f0-9]{64}", "VirusTotal API Key", "high"),
+    (r"(?i)shodan[_-]?(?:api[_-]?)?key['\"]?\s*[:=]\s*['\"][A-Za-z0-9]{32}", "Shodan API Key", "high"),
+    (r"(?i)censys[_-]?(?:api[_-]?)?(?:id|secret|key)['\"]?\s*[:=]\s*['\"][A-Za-z0-9\-_]{16,}", "Censys API Credential", "high"),
+    (r"(?i)abuseipdb[_-]?(?:api[_-]?)?key['\"]?\s*[:=]\s*['\"][A-Za-z0-9]{20,}", "AbuseIPDB API Key", "high"),
+    (r"(?i)alienvault[_-]?(?:api[_-]?)?key['\"]?\s*[:=]\s*['\"][A-Za-z0-9]{20,}", "AlienVault OTX API Key", "high"),
+    (r"(?i)urlscan[_-]?(?:api[_-]?)?key['\"]?\s*[:=]\s*['\"][A-Za-z0-9\-]{20,}", "urlscan.io API Key", "high"),
+    # Private keys / passwords
+    (r"-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----", "Private Key (PEM)", "critical"),
     (r"(?i)password['\"]?\s*[:=]\s*['\"][^'\"\\s]{8,}", "Hardcoded Password", "high"),
-    (r"-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----", "Private Key", "critical"),
-    (r"(?i)(?:client_)?secret['\"]?\s*[:=]\s*['\"][^'\"\\s]{12,}", "Hardcoded Secret", "medium"),
+    (r"(?i)(?:client_)?secret['\"]?\s*[:=]\s*['\"][^'\"\\s]{12,}", "Hardcoded Client Secret", "medium"),
+    # Generic last — refined via nearby variable names when possible
+    (r"(?i)api[_-]?key['\"]?\s*[:=]\s*['\"][A-Za-z0-9_\-]{20,}", "Generic API Key", "high"),
+]
+
+# When a generic pattern matches, upgrade the label from nearby assignment context.
+SECRET_CONTEXT_LABELS = [
+    (r"(?i)virus\s*total|\bvt[_-]?(?:api)?", "VirusTotal API Key"),
+    (r"(?i)\baws\b|amazon[_-]?web|secret[_-]?access[_-]?key", "AWS Credential"),
+    (r"(?i)google|gcp|firebase|maps[_-]?api", "Google API Key"),
+    (r"(?i)openai|chatgpt", "OpenAI API Key"),
+    (r"(?i)anthropic|claude", "Anthropic API Key"),
+    (r"(?i)slack", "Slack API Token"),
+    (r"(?i)stripe", "Stripe API Key"),
+    (r"(?i)twilio", "Twilio API Credential"),
+    (r"(?i)sendgrid", "SendGrid API Key"),
+    (r"(?i)mailgun", "Mailgun API Key"),
+    (r"(?i)shodan", "Shodan API Key"),
+    (r"(?i)github|gh[_-]?token|ghp_", "GitHub Token"),
+    (r"(?i)gitlab|glpat", "GitLab Token"),
+    (r"(?i)azure|microsoft", "Azure / Microsoft API Key"),
+    (r"(?i)cloudflare|cf[_-]?api", "Cloudflare API Token"),
+    (r"(?i)datadog", "Datadog API Key"),
+    (r"(?i)new[_-]?relic", "New Relic License / API Key"),
+    (r"(?i)pagerduty", "PagerDuty API Key"),
+    (r"(?i)sentry", "Sentry Auth / DSN Token"),
+    (r"(?i)heroku", "Heroku API Key"),
+    (r"(?i)digitalocean|do[_-]?token", "DigitalOcean Token"),
+    (r"(?i)npm[_-]?token", "npm Access Token"),
+    (r"(?i)shopify", "Shopify API Token"),
+    (r"(?i)abuseipdb", "AbuseIPDB API Key"),
+    (r"(?i)urlscan", "urlscan.io API Key"),
+    (r"(?i)censys", "Censys API Credential"),
 ]
 
 # Placeholder / documentation values that must not raise secret findings
@@ -76,16 +137,22 @@ def mask_secret_value(raw: str, *, keep_start: int = 4, keep_end: int = 4) -> st
     return f"{value[:keep_start]}…{value[-keep_end:]}"
 
 
-def secret_reveal_html(full: str) -> str:
-    """HTML chip: masked by default, <details> to reveal the full secret."""
+def secret_reveal_html(full: str, *, secret_type: str = "") -> str:
+    """HTML chip: type label + masked value, <details> to reveal the full secret."""
     from html import escape
 
     value = extract_secret_value(full) or (full or "").strip()
     if not value:
         return ""
     masked = mask_secret_value(value)
+    type_html = (
+        f"<span class='secret-type'>{escape(secret_type)}</span> "
+        if (secret_type or "").strip()
+        else ""
+    )
     return (
         "<li class='secret-reveal'>"
+        f"{type_html}"
         f"<code class='secret-masked'>{escape(masked)}</code> "
         "<details class='secret-details'>"
         "<summary>Show full</summary>"
@@ -93,6 +160,18 @@ def secret_reveal_html(full: str) -> str:
         "</details>"
         "</li>"
     )
+
+
+def refine_secret_label(label: str, raw: str, body_text: str, start: int, end: int) -> str:
+    """Upgrade generic labels using nearby assignment / vendor hints."""
+    if label not in ("Generic API Key", "Hardcoded Client Secret", "Hardcoded Password", "Hardcoded Secret"):
+        return label
+    window = body_text[max(0, start - 96) : min(len(body_text), end + 48)]
+    blob = f"{window}\n{raw}"
+    for pattern, refined in SECRET_CONTEXT_LABELS:
+        if re.search(pattern, blob):
+            return refined
+    return label
 
 
 def _secret_looks_real(raw: str) -> bool:
@@ -110,7 +189,11 @@ def _secret_looks_real(raw: str) -> bool:
 
 
 def scan_secrets(body_text: str, url: str) -> List[Tuple[str, str, str, Optional[str]]]:
-    """Return (label, severity, detail, evidence). Evidence is the full accessible value."""
+    """Return (label, severity, detail, evidence).
+
+    ``label`` is the credential type (e.g. AWS Secret Access Key, VirusTotal API Key).
+    Evidence is the full accessible value (UI/reports mask with tap-to-reveal).
+    """
     findings: List[Tuple[str, str, str, Optional[str]]] = []
     if not body_text:
         return findings
@@ -121,12 +204,13 @@ def scan_secrets(body_text: str, url: str) -> List[Tuple[str, str, str, Optional
             if not _secret_looks_real(raw):
                 continue
             value = extract_secret_value(raw)
-            key = (label, value[:80] if value else raw[:80])
+            typed = refine_secret_label(label, raw, body_text, match.start(), match.end())
+            key = (typed, value[:80] if value else raw[:80])
             if key in seen:
                 continue
             seen.add(key)
-            detail = f"Possible {label} in response body"
-            findings.append((label, severity, detail, value or None))
+            detail = f"Exposed {typed} in response body"
+            findings.append((typed, severity, detail, value or None))
     return findings
 
 

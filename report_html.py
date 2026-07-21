@@ -107,6 +107,13 @@ def render_search_report_html(
         urls_block = url_table_html(urls, limit=40, table_id="")
         evidence = group.get("evidence") or []
         if group.get("category") == "secrets_exposure":
+            secret_type = ""
+            title = str(group.get("title") or "")
+            if title.lower().startswith("exposed "):
+                secret_type = title[8:].strip()
+            detail = str(group.get("detail") or "")
+            if not secret_type and detail.lower().startswith("exposed "):
+                secret_type = detail[8:].split(" in response", 1)[0].strip()
             if evidence:
                 try:
                     from security_scan import secret_reveal_html
@@ -115,7 +122,7 @@ def render_search_report_html(
                 if secret_reveal_html:
                     chips = []
                     for e in evidence[:10]:
-                        chip = secret_reveal_html(e)
+                        chip = secret_reveal_html(e, secret_type=secret_type)
                         if chip:
                             chips.append(chip)
                     evidence_html = "<ul class='chip-list secret-list'>" + "".join(chips) + "</ul>"
@@ -125,7 +132,11 @@ def render_search_report_html(
                         + "".join(f"<li><code>{escape(e)}</code></li>" for e in evidence[:10])
                         + "</ul>"
                     )
-                evidence_block = f"<h4>Secret</h4><p class='muted'>Masked by default — expand to reveal the full value.</p>{evidence_html}"
+                type_note = f"<p><strong>Credential type:</strong> {escape(secret_type)}</p>" if secret_type else ""
+                evidence_block = (
+                    f"<h4>Secret</h4>{type_note}"
+                    f"<p class='muted'>Masked by default — expand to reveal the full value.</p>{evidence_html}"
+                )
             else:
                 evidence_block = "<h4>Secret</h4><p class='muted'>Pattern matched; exact value not captured.</p>"
         elif evidence:
@@ -509,6 +520,10 @@ code, .url-link, .mono {{ font-family: "IBM Plex Mono", Consolas, monospace; fon
 .setup th {{ width: 38%; color: var(--muted); }}
 .chip-list {{ padding-left: 1.1rem; }}
 .secret-reveal {{ margin: .35rem 0; }}
+.secret-type {{
+  display: inline-block; font-size: .72rem; font-weight: 700; letter-spacing: .02em;
+  color: var(--accent); margin-right: .35rem; vertical-align: middle;
+}}
 .secret-details {{ display: inline; margin-left: .35rem; }}
 .secret-details summary {{
   cursor: pointer; color: var(--accent); font-size: .78rem; display: inline;

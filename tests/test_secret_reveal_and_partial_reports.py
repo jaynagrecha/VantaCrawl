@@ -34,7 +34,7 @@ def test_write_stats_reports_from_partial_stats(tmp_path):
         "secrets_exposure",
         "high",
         "https://lab.local/app.js",
-        "Google API Key: Possible Google API Key in response body",
+        "Exposed Google Cloud / Maps API Key in response body",
         evidence="AIzaSyD-RealKeyValue0123456789AbCdEfGhI",
     )
     paths = write_stats_reports(

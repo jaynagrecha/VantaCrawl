@@ -694,12 +694,23 @@ async def run_job(job_id: str) -> None:
             for f in list(getattr(stats, "findings", []) or [])[:40]:
                 if isinstance(f, dict):
                     evidence = str(f.get("evidence") or "")
+                    detail = str(f.get("detail") or f.get("title") or "")
+                    secret_type = ""
+                    if str(f.get("category") or "") == "secrets_exposure":
+                        if detail.lower().startswith("exposed "):
+                            secret_type = detail[8:].split(" in response", 1)[0].strip()
+                        elif ":" in detail:
+                            secret_type = detail.split(":", 1)[0].strip()
+                    title = detail[:160]
+                    if secret_type and secret_type.lower() not in title.lower():
+                        title = f"{secret_type}: {title}"[:160]
                     findings_preview.append(
                         {
                             "severity": str(f.get("severity") or f.get("severity_label") or ""),
-                            "title": str(f.get("title") or f.get("detail") or f.get("type") or "")[:160],
+                            "title": title,
                             "url": str(f.get("url") or ""),
                             "category": str(f.get("category") or ""),
+                            "secret_type": secret_type,
                             "evidence_masked": mask_secret_value(evidence) if evidence else "",
                             "evidence_full": evidence,
                         }
