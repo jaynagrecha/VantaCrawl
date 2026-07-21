@@ -1108,6 +1108,16 @@ async def _run_security_checks(
                 from finding_impact import apply_impact_to_finding, assess_finding
 
                 validate_live = bool(getattr(config, "secret_validate_live", False))
+                impact_kwargs = {
+                    "category": category,
+                    "severity": severity,
+                    "detail": detail,
+                    "evidence": evidence or "",
+                    "url": target,
+                    "client": client,
+                    "cookies": list(getattr(stats, "cookie_inventory", []) or []),
+                    "login_surfaces": list(getattr(stats, "login_surfaces", []) or []),
+                }
                 # Cap live secret checks
                 if (
                     validate_live
@@ -1120,39 +1130,22 @@ async def _run_security_checks(
                     validate_max = int(getattr(config, "secret_validate_max", 25) or 25)
                     cache_key = (detail[:80], (evidence or "")[:64])
                     if cache_key in getattr(stats, "_secret_validate_cache", {}):
-                        cached_impact = stats._secret_validate_cache[cache_key]
-                        result = cached_impact
+                        result = stats._secret_validate_cache[cache_key]
                     elif stats._secret_validate_count >= validate_max:
-                        validate_live = False
                         result = await assess_finding(
-                            category=category,
-                            severity=severity,
-                            detail=detail,
-                            evidence=evidence or "",
-                            url=target,
-                            client=client,
+                            **impact_kwargs,
                             validate_secrets_live=False,
                         )
                     else:
                         result = await assess_finding(
-                            category=category,
-                            severity=severity,
-                            detail=detail,
-                            evidence=evidence or "",
-                            url=target,
-                            client=client,
+                            **impact_kwargs,
                             validate_secrets_live=True,
                         )
                         stats._secret_validate_cache[cache_key] = result
                         stats._secret_validate_count += 1
                 else:
                     result = await assess_finding(
-                        category=category,
-                        severity=severity,
-                        detail=detail,
-                        evidence=evidence or "",
-                        url=target,
-                        client=client,
+                        **impact_kwargs,
                         validate_secrets_live=False,
                     )
 
@@ -1251,6 +1244,17 @@ async def _run_security_checks(
             include_request_cookie=True,
         )
         if cookies:
+            try:
+                from urllib.parse import urlparse as _up
+
+                host_l = (_up(url).netloc or "").lower()
+            except Exception:
+                host_l = ""
+            for row in cookies:
+                if isinstance(row, dict):
+                    row.setdefault("page_url", url)
+                    if host_l:
+                        row.setdefault("host", host_l)
             stats.record_cookie_inventory(cookies)
         for cat, severity, detail, evidence in cookie_findings:
             await emit(cat, severity, url, detail, evidence=evidence)
