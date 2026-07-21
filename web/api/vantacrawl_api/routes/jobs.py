@@ -449,7 +449,12 @@ def force_cancel_job(job_id: str, session: SessionDep, user: CurrentUser):
 
 @router.post("/{job_id}/summary-report", response_model=MessageOut)
 def build_summary_report(job_id: str, session: SessionDep, user: CurrentUser):
-    """Build a summary HTML report from logs/progress when the full report never wrote."""
+    """Rebuild the full assessment report from findings collected so far.
+
+    Falls back to a thin summary only when no findings/snapshot are available.
+    """
+    from reporting import write_partial_full_reports
+    from ..services.report_paths import find_report_file, heal_job_report_paths
     from ..services.summary_report import write_summary_report
 
     job = _owned(session.get(ScanJob, job_id), user)
@@ -458,22 +463,69 @@ def build_summary_report(job_id: str, session: SessionDep, user: CurrentUser):
         settings = get_settings()
         report_dir = Path(settings.jobs_dir) / job.id / "reports"
         job.report_dir = str(report_dir)
-    html_path, txt_path = write_summary_report(
-        report_dir,
-        job_id=job.id,
-        title=job.title or "Scan",
-        start_url=job.start_url or "",
-        status=job.status,
-        progress=job.progress_json or {},
-        log_tail=job.log_tail or "",
-        note="Summary report generated on demand (full crawl report was not available).",
-    )
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    html_path = ""
+    txt_path = ""
+    try:
+        written = write_partial_full_reports(
+            report_dir=report_dir,
+            start_url=job.start_url or "",
+            title=job.title or "Scan",
+            progress=job.progress_json or {},
+            config=None,
+        )
+        if written:
+            html = find_report_file(
+                job,
+                ("*_ASSESSMENT_REPORT.html", "*_SEARCH_REPORT.html"),
+            )
+            txt = find_report_file(
+                job,
+                ("*_ASSESSMENT_REPORT.txt", "*_SEARCH_REPORT.txt"),
+            )
+            if html:
+                html_path = str(html)
+            if txt:
+                txt_path = str(txt)
+            elif written.get("assessment_report_html"):
+                html_path = written["assessment_report_html"]
+                txt_path = written.get("assessment_report_txt") or ""
+            elif written.get("search_report_html"):
+                html_path = written["search_report_html"]
+                txt_path = written.get("search_report_txt") or ""
+    except Exception:
+        html_path = ""
+        txt_path = ""
+
+    if not html_path:
+        html_path, txt_path = write_summary_report(
+            report_dir,
+            job_id=job.id,
+            title=job.title or "Scan",
+            start_url=job.start_url or "",
+            status=job.status,
+            progress=job.progress_json or {},
+            log_tail=job.log_tail or "",
+            note="Summary only — no findings snapshot was available to build the full assessment.",
+        )
+        msg = "Summary report ready (no findings available for full assessment)"
+    else:
+        msg = "Full assessment report rebuilt from findings collected so far"
+        # Clear the old stub note if we now have a real assessment
+        if job.error_message and "Full crawl report was never produced" in (job.error_message or ""):
+            job.error_message = (job.error_message or "").replace(
+                " Full crawl report was never produced (often blocked by Cloudflare).",
+                "",
+            ).strip()
+
     job.report_html_path = html_path
     job.report_txt_path = txt_path
     job.updated_at = datetime.utcnow()
     session.add(job)
     session.commit()
-    return MessageOut(message="Summary report ready")
+    heal_job_report_paths(session, job)
+    return MessageOut(message=msg)
 
 
 @router.websocket("/{job_id}/ws")

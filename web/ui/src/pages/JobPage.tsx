@@ -629,7 +629,7 @@ export default function JobPage() {
           <div>
             <p className="muted">
               {jobFinished
-                ? "No HTML report path is linked yet. If the worker wrote reports to disk, refresh — or generate a summary from the log."
+                ? "This job may still be linked to a thin summary. Rebuild the full assessment (explanations + recommendations) from findings collected so far."
                 : "Full assessment report (with explanations) is written on stop/cancel from findings so far."}
             </p>
             {jobFinished ? (
@@ -639,7 +639,7 @@ export default function JobPage() {
                 style={{ marginTop: ".75rem" }}
                 onClick={() => runAction("summary-report")}
               >
-                Generate summary report
+                Rebuild full assessment report
               </button>
             ) : null}
           </div>
@@ -658,9 +658,15 @@ export default function JobPage() {
               <a className="btn" href={zipUrl}>
                 Download all (zip)
               </a>
+              {jobFinished ? (
+                <button className="btn" type="button" onClick={() => runAction("summary-report")}>
+                  Rebuild full assessment
+                </button>
+              ) : null}
             </div>
             <p className="muted" style={{ marginTop: 0, marginBottom: ".85rem" }}>
-              Assessment = executive + engineer dual report. Technical = interactive search/findings appendix.
+              Assessment = executive + engineer dual report with explanations and recommendations.
+              If you only see a thin cancel summary, click <strong>Rebuild full assessment</strong>.
             </p>
             {artifacts.length > 0 ? (
               <table className="table" style={{ marginBottom: "1rem" }}>
