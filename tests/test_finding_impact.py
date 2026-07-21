@@ -63,8 +63,53 @@ def test_cors_credentials_confirmed():
         category="cors",
         severity="high",
         detail="CORS reflects Origin with Access-Control-Allow-Credentials",
+        url="https://example.com/",
     )
     assert result.impact == "confirmed"
+    assert result.severity == "high"
+
+
+def test_cors_with_auth_cookie_is_stealable():
+    result = _assess(
+        category="cors",
+        severity="high",
+        detail="CORS reflects arbitrary Origin (https://evil.example) with credentials — high risk",
+        url="https://app.example.com/dashboard",
+        cookies=[
+            {"name": "sessionid", "role": "auth_session", "impact": "mitigated_credential", "host": "app.example.com"},
+            {"name": "_ga", "role": "analytics", "impact": "no_credential_impact", "host": "app.example.com"},
+        ],
+    )
+    assert result.impact == "stealable_credential"
+    assert "sessionid" in (result.proof or "")
+
+
+def test_cors_tracking_only_on_static_is_limited():
+    result = _assess(
+        category="cors",
+        severity="high",
+        detail="CORS reflects arbitrary Origin with credentials — high risk",
+        url="https://cdn.example.com/assets/app.js",
+        cookies=[
+            {"name": "_ga", "role": "analytics", "impact": "no_credential_impact", "host": "cdn.example.com"},
+            {"name": "lang", "role": "preference", "impact": "no_credential_impact", "host": "cdn.example.com"},
+        ],
+    )
+    assert result.impact == "limited_impact"
+    assert result.severity == "medium"
+
+
+def test_cors_tracking_only_but_login_path_still_high():
+    result = _assess(
+        category="cors",
+        severity="high",
+        detail="CORS reflects arbitrary Origin with credentials — high risk",
+        url="https://www.example.com/account/login",
+        cookies=[
+            {"name": "_ga", "role": "analytics", "impact": "no_credential_impact", "host": "www.example.com"},
+        ],
+    )
+    assert result.impact == "stealable_credential"
     assert result.severity == "high"
 
 

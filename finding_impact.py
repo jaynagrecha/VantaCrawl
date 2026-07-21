@@ -246,22 +246,155 @@ async def assess_secrets_live(
     )
 
 
-def assess_cors(detail: str, severity: str) -> ImpactResult:
+def assess_cors(
+    detail: str,
+    severity: str,
+    *,
+    url: str = "",
+    cookies: Optional[Sequence[Dict[str, Any]]] = None,
+    login_surfaces: Optional[Sequence[str]] = None,
+) -> ImpactResult:
+    """CORS impact considering observed cookies + endpoint nature — not just ACAO/ACAC."""
+    from urllib.parse import urlparse
+
     d = _detail_l(detail)
-    if "credential" in d:
+    creds = "credential" in d
+    if not creds:
         return ImpactResult(
             role="cors",
-            impact="confirmed",
-            severity=severity if severity in ("high", "critical") else "high",
-            summary="CORS allows credentialed cross-origin reads — session theft / data exfil risk.",
+            impact="possible",
+            severity=severity or "medium",
+            summary="CORS configuration may be overly open (no credentials flag observed).",
             validation="confirmed",
         )
+
+    path = (urlparse(url).path or "/").lower()
+    host = (urlparse(url).netloc or "").lower()
+
+    auth_like_path = bool(
+        re.search(
+            r"(?i)/(?:login|signin|sign-in|auth|oauth|account|user|profile|dashboard|"
+            r"portal|member|session|settings|wallet|transfer|send-money|api(?:/|$)|graphql)",
+            path,
+        )
+    )
+    static_like_path = bool(
+        re.search(
+            r"(?i)\.(?:css|js|mjs|map|png|jpe?g|gif|svg|ico|woff2?|ttf|eot|webp|avif)(?:$|\?)",
+            path,
+        )
+    ) or path.startswith(("/static/", "/assets/", "/cdn/", "/_next/static/", "/dist/"))
+
+    auth_cookies: List[str] = []
+    tracking_cookies: List[str] = []
+    other_cookies: List[str] = []
+    for row in cookies or []:
+        if not isinstance(row, dict):
+            continue
+        # Prefer same-host cookies when page_url/host was recorded
+        row_host = str(row.get("host") or "")
+        row_page = str(row.get("page_url") or "")
+        if row_host and host and row_host != host:
+            continue
+        if row_page and host and host not in row_page.lower():
+            continue
+        name = str(row.get("name") or "")
+        role = str(row.get("role") or "")
+        impact = str(row.get("impact") or "")
+        if not role:
+            try:
+                from cookie_impact import classify_cookie
+
+                role = classify_cookie(name, "")
+            except Exception:
+                role = "unknown"
+        if role in ("auth_session", "jwt") or impact in (
+            "stealable_credential",
+            "mitigated_credential",
+            "possible_credential",
+        ):
+            auth_cookies.append(name)
+        elif role in ("analytics", "preference"):
+            tracking_cookies.append(name)
+        else:
+            other_cookies.append(name)
+
+    login_on_host = False
+    for surface in login_surfaces or []:
+        try:
+            if host and host in str(surface).lower():
+                login_on_host = True
+                break
+        except Exception:
+            continue
+
+    issues: List[str] = []
+    if auth_cookies:
+        issues.append(
+            "Observed session/auth cookie(s) on this origin: "
+            + ", ".join(auth_cookies[:8])
+            + ("…" if len(auth_cookies) > 8 else "")
+        )
+    if tracking_cookies and not auth_cookies:
+        issues.append(
+            "So far only tracking/preference cookies observed "
+            f"({', '.join(tracking_cookies[:6])}{'…' if len(tracking_cookies) > 6 else ''}) — "
+            "that does not mean logged-in users lack session cookies"
+        )
+    if auth_like_path:
+        issues.append(f"Endpoint path looks auth-sensitive ({path or '/'})")
+    if login_on_host:
+        issues.append("Login/auth surfaces were discovered on this host")
+    if static_like_path and not auth_cookies and not auth_like_path:
+        issues.append("Path looks like a static asset — credential impact may be lower here")
+
+    # Credentialed CORS is always a real misconfig; severity depends on likely session cookies.
+    if auth_cookies or auth_like_path or login_on_host:
+        summary = (
+            "CORS reflects Origin with credentials, and this origin likely carries session/auth "
+            "cookies (observed auth cookies and/or auth-sensitive endpoint). A malicious site can "
+            "read authenticated responses from a logged-in victim."
+        )
+        return ImpactResult(
+            role="cors",
+            impact="stealable_credential",
+            severity="high",
+            summary=summary,
+            validation="confirmed",
+            issues=issues,
+            proof="; ".join(issues[:4]) if issues else None,
+        )
+
+    if static_like_path and tracking_cookies and not other_cookies:
+        summary = (
+            "CORS allows credentials, but this URL looks like a static/public asset and only "
+            "tracking cookies were observed here. Still risky if the same origin sets session "
+            "cookies elsewhere — verify origin-wide cookie scope."
+        )
+        return ImpactResult(
+            role="cors",
+            impact="limited_impact",
+            severity="medium",
+            summary=summary,
+            validation="confirmed",
+            issues=issues,
+            proof="; ".join(issues[:4]) if issues else None,
+        )
+
+    # Default: credentials + open origin — assume session cookies may exist for real users
+    summary = (
+        "CORS reflects Origin with credentials. Even if the scanner mostly saw tracking cookies, "
+        "browsers will attach any eligible cookies for this origin when a logged-in victim visits "
+        "an attacker's site — treat as high until proven session-free."
+    )
     return ImpactResult(
         role="cors",
-        impact="possible",
-        severity=severity or "medium",
-        summary="CORS configuration may be overly open.",
+        impact="confirmed",
+        severity=severity if severity in ("high", "critical") else "high",
+        summary=summary,
         validation="confirmed",
+        issues=issues,
+        proof="; ".join(issues[:4]) if issues else None,
     )
 
 
@@ -458,6 +591,8 @@ async def assess_finding(
     url: str = "",
     client: Any = None,
     validate_secrets_live: bool = False,
+    cookies: Optional[Sequence[Dict[str, Any]]] = None,
+    login_surfaces: Optional[Sequence[str]] = None,
 ) -> ImpactResult:
     """Route a finding through the matching impact checker."""
     cat = (category or "").strip().lower()
@@ -478,7 +613,13 @@ async def assess_finding(
             )
         return assess_secrets_static(detail, severity, ev)
     if cat == "cors":
-        return assess_cors(detail, severity)
+        return assess_cors(
+            detail,
+            severity,
+            url=url,
+            cookies=cookies,
+            login_surfaces=login_surfaces,
+        )
     if cat == "sensitive_path":
         return assess_sensitive_path(detail, severity, ev)
     if cat == "mixed_content":
@@ -516,6 +657,10 @@ def apply_impact_to_finding(
         out_detail = f"{out_detail}{impact.detail_suffix}"
     if impact.summary and "Impact:" not in out_detail:
         out_detail = f"{out_detail} Impact: {impact.impact}."
+    if impact.issues:
+        note = " Cookie/endpoint context: " + "; ".join(impact.issues[:3]) + "."
+        if note.strip() not in out_detail:
+            out_detail = f"{out_detail}{note}"
     return {
         "category": category,
         "severity": impact.severity or severity,
