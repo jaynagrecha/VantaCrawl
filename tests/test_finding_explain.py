@@ -29,7 +29,7 @@ def test_format_finding_group_includes_paths_and_secret():
             "category": "secrets_exposure",
             "severity": "high",
             "url": "https://lab.local/config.js",
-            "detail": "Google API Key: Possible Google API Key in response body",
+            "detail": "Exposed Google Cloud / Maps API Key in response body",
             "evidence": full,
         },
         {
@@ -45,6 +45,7 @@ def test_format_finding_group_includes_paths_and_secret():
         lines.extend(format_finding_group_lines(g))
     joined = "\n".join(lines)
     assert "Path: https://lab.local/config.js" in joined
+    assert "Secret type: Google Cloud / Maps API Key" in joined or "Exposed Google Cloud / Maps API Key" in joined
     assert "Secret (masked):" in joined
     assert f"Secret (full): {full}" in joined
     assert "Path: https://lab.local/item?id=1" in joined

@@ -53,13 +53,26 @@ def render_assessment_html(doc: Dict[str, Any], *, technical_report_name: str = 
             try:
                 from security_scan import secret_reveal_html
 
+                secret_type = ""
+                title = str(f.get("title") or "")
+                if title.lower().startswith("exposed "):
+                    secret_type = title[8:].strip()
+                detail = str(f.get("detail") or "")
+                if not secret_type and detail.lower().startswith("exposed "):
+                    secret_type = detail[8:].split(" in response", 1)[0].strip()
                 chips = []
                 for e in evidence[:10]:
-                    chip = secret_reveal_html(str(e))
+                    chip = secret_reveal_html(str(e), secret_type=secret_type if f.get("category") == "secrets_exposure" else "")
                     if chip:
                         chips.append(chip)
                 if f.get("category") == "secrets_exposure" and chips:
+                    type_note = (
+                        f"<p><strong>Credential type:</strong> {escape(secret_type)}</p>"
+                        if secret_type
+                        else ""
+                    )
                     ev_html = (
+                        f"{type_note}"
                         "<p class='muted'>Masked by default — expand to reveal the full value.</p>"
                         f"<ul class='chips secret-list'>{''.join(chips)}</ul>"
                     )
@@ -262,6 +275,10 @@ h5 {{ margin: .55rem 0 .25rem; font-size: .9rem; }}
 .chips {{ list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: .35rem; }}
 .chips li {{ border: 1px solid var(--line); border-radius: 8px; padding: .2rem .45rem; background: rgba(0,0,0,.25); }}
 .secret-reveal {{ margin: .25rem 0; max-width: 100%; }}
+.secret-type {{
+  display: inline-block; font-size: .72rem; font-weight: 700;
+  color: var(--accent); margin-right: .35rem;
+}}
 .secret-details {{ display: inline; margin-left: .35rem; }}
 .secret-details summary {{ cursor: pointer; color: var(--accent); font-size: .78rem; display: inline; }}
 .secret-full {{ display: block; margin-top: .35rem; word-break: break-all; }}

@@ -25,12 +25,23 @@ def _findings_preview(stats) -> List[Dict[str, str]]:
             if not isinstance(item, dict):
                 continue
             evidence = str(item.get("evidence") or "")
+            detail = str(item.get("detail") or item.get("title") or "")
+            secret_type = ""
+            if str(item.get("category") or "") == "secrets_exposure":
+                if detail.lower().startswith("exposed "):
+                    secret_type = detail[8:].split(" in response", 1)[0].strip()
+                elif ":" in detail:
+                    secret_type = detail.split(":", 1)[0].strip()
+            title = detail[:160]
+            if secret_type and secret_type.lower() not in title.lower():
+                title = f"{secret_type}: {title}"[:160]
             out.append(
                 {
                     "severity": str(item.get("severity") or item.get("severity_label") or ""),
-                    "title": str(item.get("title") or item.get("detail") or item.get("type") or "")[:160],
+                    "title": title,
                     "url": str(item.get("url") or ""),
                     "category": str(item.get("category") or ""),
+                    "secret_type": secret_type,
                     "evidence_masked": mask_secret_value(evidence) if evidence else "",
                     "evidence_full": evidence,
                 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -366,6 +367,21 @@ def explain_finding(category: str = "", detail: str = "") -> Dict[str, str]:
         "cloud_url": ("cloud_url", "firebase", "supabase", "azure"),
         "file_metadata": ("file_metadata", "gps", "exif", "author"),
     }
+
+    def _secret_type_from_detail(text: str) -> str:
+        """Pull 'VirusTotal API Key' from 'Exposed VirusTotal API Key in response body'."""
+        raw = (text or "").strip()
+        if not raw:
+            return ""
+        m = re.search(r"(?i)^exposed\s+(.+?)\s+in\s+response\b", raw)
+        if m:
+            return m.group(1).strip()
+        if ":" in raw and not raw.lower().startswith("missing "):
+            head = raw.split(":", 1)[0].strip()
+            if 3 <= len(head) <= 80:
+                return head
+        return ""
+
     preferred = category_aliases.get(cat)
     if preferred:
         for keys, payload in EXPLAINERS:
@@ -374,7 +390,15 @@ def explain_finding(category: str = "", detail: str = "") -> Dict[str, str]:
                     return dict(payload)
                 continue
             if any(k in preferred or k == cat for k in keys):
-                return dict(payload)
+                out = dict(payload)
+                if cat == "secrets_exposure":
+                    typed = _secret_type_from_detail(detail)
+                    if typed:
+                        out["title"] = f"Exposed {typed}"
+                        out["what"] = (
+                            f"A credential that looks like a {typed} appeared in a page or API response."
+                        )
+                return out
     for keys, payload in EXPLAINERS:
         # Prefer category token; avoid loose substring matches on short keys like "auth"
         if cat and any(k == cat for k in keys):
@@ -477,11 +501,20 @@ def format_finding_group_lines(group: Dict[str, Any], *, max_urls: int = 40) -> 
         lines.append("  Path: (not recorded)")
     evidence = group.get("evidence") or []
     if group.get("category") == "secrets_exposure":
+        secret_type = ""
+        title = str(group.get("title") or "")
+        if title.lower().startswith("exposed "):
+            secret_type = title[8:].strip()
+        detail = str(group.get("detail") or "")
+        if not secret_type and detail.lower().startswith("exposed "):
+            secret_type = detail[8:].split(" in response", 1)[0].strip()
         if evidence:
             try:
                 from security_scan import mask_secret_value
             except Exception:  # pragma: no cover
                 mask_secret_value = lambda v: (v[:4] + "…" + v[-4:]) if len(v) > 10 else "***"  # noqa: E731
+            if secret_type:
+                lines.append(f"  Secret type: {secret_type}")
             for item in evidence[:10]:
                 full = str(item)
                 lines.append(f"  Secret (masked): {mask_secret_value(full)}")

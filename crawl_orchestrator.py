@@ -1085,7 +1085,7 @@ async def _run_security_checks(
 
     if config.secret_scan:
         for label, severity, detail, evidence in scan_secrets(body_text, url):
-            emit("secrets_exposure", severity, url, f"{label}: {detail}", evidence=evidence)
+            emit("secrets_exposure", severity, url, detail, evidence=evidence)
         try:
             from recon_extract import find_jwt_candidates
             from urllib.parse import urlparse as _urlparse
