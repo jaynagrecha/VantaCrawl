@@ -44,8 +44,21 @@ SECRET_PATTERNS = [
     (r"(?i)urlscan[_-]?(?:api[_-]?)?key['\"]?\s*[:=]\s*['\"][A-Za-z0-9\-]{20,}", "urlscan.io API Key", "high"),
     # Private keys / passwords
     (r"-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----", "Private Key (PEM)", "critical"),
-    (r"(?i)password['\"]?\s*[:=]\s*['\"][^'\"\\s]{8,}", "Hardcoded Password", "high"),
-    (r"(?i)(?:client_)?secret['\"]?\s*[:=]\s*['\"][^'\"\\s]{12,}", "Hardcoded Client Secret", "medium"),
+    (r"(?i)(?:^|[^\w])(?:[A-Za-z][\w]*)[_-]passwords?['\"]?\s*[:=]\s*['\"][^\s'\"]{8,}", "Hardcoded Password", "high"),
+    (r"(?i)password['\"]?\s*[:=]\s*['\"][^\s'\"]{8,}", "Hardcoded Password", "high"),
+    (r"(?i)(?:client_)?secret['\"]?\s*[:=]\s*['\"][^\s'\"]{12,}", "Hardcoded Client Secret", "medium"),
+    # Product-named credentials (paypal_api_key, ACME_ACTIVATION_KEY, …)
+    (
+        r"(?i)(?:^|[^\w])(?:[A-Za-z][A-Za-z0-9]*(?:[_\-][A-Za-z0-9]+){0,8})[_-]"
+        r"(?:api[_-]?keys?|api[_-]?secrets?|api[_-]?tokens?|access[_-]?keys?|secret[_-]?keys?|"
+        r"activation[_-]?keys?|license[_-]?keys?|auth[_-]?tokens?|access[_-]?tokens?|"
+        r"refresh[_-]?tokens?|client[_-]?secrets?|app[_-]?secrets?|app[_-]?keys?|"
+        r"consumer[_-]?secrets?|consumer[_-]?keys?|session[_-]?tokens?|bearer[_-]?tokens?)"
+        r"['\"]?\s*[:=]\s*['\"][^\s'\"]{10,}",
+        "Named Credential",
+        "high",
+    ),
+    (r"(?i)(?:activation|license|product|serial)[_-]?keys?['\"]?\s*[:=]\s*['\"][^\s'\"]{8,}", "Activation / License Key", "high"),
     # Generic last — refined via nearby variable names when possible
     (r"(?i)api[_-]?key['\"]?\s*[:=]\s*['\"][A-Za-z0-9_\-]{20,}", "Generic API Key", "high"),
 ]
@@ -162,16 +175,46 @@ def secret_reveal_html(full: str, *, secret_type: str = "") -> str:
     )
 
 
+_GENERIC_SECRET_LABELS = frozenset(
+    {
+        "Generic API Key",
+        "Hardcoded Client Secret",
+        "Hardcoded Password",
+        "Hardcoded Secret",
+        "Named Credential",
+        "Activation / License Key",
+    }
+)
+
+
 def refine_secret_label(label: str, raw: str, body_text: str, start: int, end: int) -> str:
-    """Upgrade generic labels using nearby assignment / vendor hints."""
-    if label not in ("Generic API Key", "Hardcoded Client Secret", "Hardcoded Password", "Hardcoded Secret"):
+    """Classify WHAT we found: {Product} {Kind} from identifiers, then vendor hints."""
+    from secret_classify import classify_credential
+
+    value = extract_secret_value(raw)
+    classified = classify_credential(
+        base_label=label,
+        raw=raw,
+        body_text=body_text,
+        start=start,
+        end=end,
+        value=value,
+    )
+
+    # Prefix / vendor-specific patterns already name the credential — keep them
+    # unless classification produced a richer product+kind from the variable name.
+    if label not in _GENERIC_SECRET_LABELS:
         return label
+
+    if classified and classified not in _GENERIC_SECRET_LABELS and classified != label:
+        return classified
+
     window = body_text[max(0, start - 96) : min(len(body_text), end + 48)]
     blob = f"{window}\n{raw}"
     for pattern, refined in SECRET_CONTEXT_LABELS:
         if re.search(pattern, blob):
             return refined
-    return label
+    return classified or label
 
 
 def _secret_looks_real(raw: str) -> bool:
@@ -191,9 +234,12 @@ def _secret_looks_real(raw: str) -> bool:
 def scan_secrets(body_text: str, url: str) -> List[Tuple[str, str, str, Optional[str]]]:
     """Return (label, severity, detail, evidence).
 
-    ``label`` is the credential type (e.g. AWS Secret Access Key, VirusTotal API Key).
+    ``label`` is the credential type (e.g. AWS Access Key ID, PayPal API Key,
+    Acme Activation Key, Db ID and Password).
     Evidence is the full accessible value (UI/reports mask with tap-to-reveal).
     """
+    from secret_classify import severity_for_kind
+
     findings: List[Tuple[str, str, str, Optional[str]]] = []
     if not body_text:
         return findings
@@ -210,7 +256,7 @@ def scan_secrets(body_text: str, url: str) -> List[Tuple[str, str, str, Optional
                 continue
             seen.add(key)
             detail = f"Exposed {typed} in response body"
-            findings.append((typed, severity, detail, value or None))
+            findings.append((typed, severity_for_kind(typed, severity), detail, value or None))
     return findings
 
 

@@ -177,6 +177,7 @@ def build_scan_setup(meta: Dict[str, Any] | None) -> Dict[str, Any]:
         ("Vulnerability pattern checks", _yes_no(vuln)),
         ("Active injection probes", _yes_no(active)),
         ("Secret / API key scan", _yes_no(meta.get("secret_scan"))),
+        ("Live secret validation", _yes_no(meta.get("secret_validate_live"))),
         ("Header / CORS / param checks", _yes_no(
             _on(meta.get("header_audit")) or _on(meta.get("cors_check")) or _on(meta.get("param_discovery"))
         )),
@@ -250,6 +251,7 @@ def config_to_report_meta(config) -> Dict[str, Any]:
         "vuln_scan": getattr(config, "vuln_scan", True),
         "vuln_active_probe": getattr(config, "vuln_active_probe", False),
         "secret_scan": getattr(config, "secret_scan", True),
+        "secret_validate_live": getattr(config, "secret_validate_live", False),
         "header_audit": getattr(config, "header_audit", True),
         "cors_check": getattr(config, "cors_check", True),
         "param_discovery": getattr(config, "param_discovery", True),

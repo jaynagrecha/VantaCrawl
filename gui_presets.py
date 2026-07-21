@@ -168,6 +168,7 @@ MODE_PRESETS: Dict[str, Dict[str, Any]] = {
         "evasion_jitter_max_ms": 60,
         "defense_verify": True,
         "vuln_active_probe": True,
+        "secret_validate_live": True,
         "speed": "balanced",
     },
 }
@@ -230,6 +231,8 @@ def apply_mode_preset(app, mode: str):
         "smart_wl_cb": "smart_wordlist_order",
         "auto_prefix_cb": "auto_prefix_enum",
         "security_cb": "security_scan",
+        "secrets_cb": "secret_scan",
+        "secret_validate_cb": "secret_validate_live",
         "vuln_cb": "vuln_scan",
         "enum_auto_vuln_cb": "enum_auto_vuln_scan",
         "wayback_cb": "wayback_seeds",

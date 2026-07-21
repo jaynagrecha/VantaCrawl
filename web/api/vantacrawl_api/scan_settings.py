@@ -104,6 +104,14 @@ _HUMAN = {
     "vuln_scan": ("Vulnerability checks", "Look for common web issues."),
     "vuln_active_probe": ("Active probes", "Send safe injection probes (authorized only)."),
     "secret_scan": ("Secret scan", "Hunt for API keys and credentials in content."),
+    "secret_validate_live": (
+        "Live secret validation",
+        "Opt-in read-only checks (Stripe balance, GitHub /user, VT /users/me, …) to see if a found key is still active.",
+    ),
+    "secret_validate_max": (
+        "Max live secret checks",
+        "Cap on how many credentials to probe live per scan (avoids hammering vendor APIs).",
+    ),
     "header_audit": ("Security headers", "Audit missing security response headers."),
     "cors_check": ("CORS check", "Test Cross-Origin Resource Sharing misconfig."),
     "param_discovery": ("Parameter discovery", "Find query/body parameters for probing."),
@@ -448,6 +456,8 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "vuln_scan",
             "vuln_active_probe",
             "secret_scan",
+            "secret_validate_live",
+            "secret_validate_max",
             "header_audit",
             "cors_check",
             "param_discovery",

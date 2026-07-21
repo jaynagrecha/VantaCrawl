@@ -130,6 +130,9 @@ class CrawlConfig:
     param_discovery: bool = True
     header_audit: bool = True
     secret_scan: bool = True
+    # Opt-in: read-only identity/metadata probes to see if a found key is still active
+    secret_validate_live: bool = False
+    secret_validate_max: int = 25
     cors_check: bool = True
     vuln_scan: bool = True
     vuln_active_probe: bool = True  # safer baseline-compared probes; authorized targets only
