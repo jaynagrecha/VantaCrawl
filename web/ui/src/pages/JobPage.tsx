@@ -258,6 +258,16 @@ export default function JobPage() {
   const canStop = !["completed", "cancelled", "failed"].includes(job.status);
 
   const enumHits = (progress.enum_hit_urls as string[]) || [];
+  const enumHitCount = Number(progress.enum_hits) || 0;
+  const phaseKeyForHits = String(progress.phase || "");
+  const isApiReconHits = phaseKeyForHits === "api_recon";
+  const isSubReconHits =
+    phaseKeyForHits === "recon" &&
+    (Number(progress.subdomain_probes_total) > 0 ||
+      String(progress.enum_probing || "")
+        .toLowerCase()
+        .includes("subdomain"));
+  const hitsListLabel = isApiReconHits ? "API hits" : isSubReconHits ? "Sub hits" : "Enum hits";
   const findings =
     (progress.findings_preview as {
       severity?: string;
@@ -543,14 +553,25 @@ export default function JobPage() {
         </div>
       </section>
 
-      {(enumHits.length > 0 || findings.length > 0) && (
+      {(enumHits.length > 0 || enumHitCount > 0 || findings.length > 0) && (
         <section className="card">
           <h2>Results</h2>
           <div className="grid-2">
             <div>
-              <h3 style={{ marginTop: 0 }}>Enum hits</h3>
+              <h3 style={{ marginTop: 0 }}>
+                {hitsListLabel}
+                {enumHitCount > 0 ? (
+                  <span className="muted" style={{ fontWeight: 400, marginLeft: ".35rem" }}>
+                    ({enumHitCount})
+                  </span>
+                ) : null}
+              </h3>
               {enumHits.length === 0 ? (
-                <p className="muted">None yet</p>
+                <p className="muted">
+                  {enumHitCount > 0
+                    ? `${enumHitCount} recorded — URL list not synced yet (refreshing…)`
+                    : "None yet"}
+                </p>
               ) : (
                 <ul className="mono" style={{ fontSize: ".8rem", maxHeight: 240, overflow: "auto" }}>
                   {enumHits.slice(0, 60).map((url) => (

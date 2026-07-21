@@ -142,3 +142,76 @@ def test_api_recon_fills_cockpit_probe_tiles():
     assert "API probe:" in out["enum_probing"]
     assert out["eta_seconds"] == 120
     assert out["api_recon_probes_done"] == 272
+
+
+def test_crawl_does_not_keep_sticky_api_enum_hits():
+    """Regression: cockpit showed API hit count while Results Enum hits said None yet."""
+    prev = {
+        "phase": "api_recon",
+        "enum_hits": 10,
+        "enum_words_tested": 500,
+        "enum_words_total": 800,
+        "enum_hit_urls": ["https://example.com/api/v1/a"],
+        "enum_probing": "API probe: /api/v1/a",
+        "enum_current_word": "a",
+        "api_recon_hits": 10,
+    }
+    out = build_live_progress(
+        _stats(
+            pages_crawled=92,
+            enum_hits=0,
+            enum_words_tested=0,
+            enum_words_total=0,
+            enum_hit_urls=[],
+            enum_probing="",
+            enum_current_word="",
+            api_recon_hits=10,
+            api_recon_probes_done=800,
+            api_recon_probes_total=800,
+            findings_count=3,
+            findings=[
+                {
+                    "severity": "High",
+                    "detail": "Exposed Boomr API Key in response",
+                    "url": "https://www.westernunion.com/",
+                    "category": "secrets_exposure",
+                    "evidence": "abc",
+                }
+            ],
+            session_total_estimate=1840,
+        ),
+        progress_text="Page 92 of ~1840 · queue 1840",
+        phase="crawl",
+        previous=prev,
+    )
+    assert out["phase"] == "crawl"
+    assert out["enum_hits"] == 0
+    assert out["enum_hit_urls"] == []
+    assert out["enum_words_tested"] == 0
+    assert out["api_recon_hits"] == 10
+    assert out["findings"] == 3
+
+
+def test_api_recon_surfaces_hit_urls_in_enum_hit_urls():
+    stats = _stats(
+        enum_hits=0,
+        api_recon_probes_done=10,
+        api_recon_probes_total=100,
+        api_recon_hits=2,
+        api_recon_current_path="/api/health",
+        api_recon_probing="API probe: /api/health · 10/100",
+    )
+    stats.api_endpoint_urls = [  # type: ignore[attr-defined]
+        "https://lab.example/api/health",
+        "https://lab.example/api/users",
+    ]
+    out = build_live_progress(
+        stats,
+        progress_text="API recon 10/100 · /api/health",
+        phase="api_recon",
+    )
+    assert out["enum_hits"] == 2
+    assert out["enum_hit_urls"] == [
+        "https://lab.example/api/health",
+        "https://lab.example/api/users",
+    ]
