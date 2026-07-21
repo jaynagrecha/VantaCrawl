@@ -104,18 +104,22 @@ class StealthAsyncClient:
         if headers:
             merged.update(dict(headers))
 
-        is_navigation = method.upper() in ("GET", "HEAD") and "application/json" not in (
-            (merged.get("Accept") or "").lower()
-        )
+        method_u = method.upper()
+        # HEAD/OPTIONS/API probes must not claim document navigation — Akamai flags that.
+        accept_l = (merged.get("Accept") or "").lower()
+        is_navigation = method_u == "GET" and "application/json" not in accept_l
         if self.evasion is not None and getattr(self.evasion.config, "enabled", True):
             try:
-                built = await self.evasion.before_request(str(url))
+                built = await self.evasion.before_request(str(url), is_navigation=is_navigation)
                 # Prefer per-request stealth headers; keep explicit caller overrides
                 for key, value in built.items():
                     if not headers or key not in headers:
                         merged[key] = value
             except Exception:
                 log.debug("evasion before_request failed", exc_info=True)
+        # Strip response-only / bot-tells that should never leave on requests
+        for bad in ("Accept-CH", "accept-ch", "X-Requested-With", "x-requested-with"):
+            merged.pop(bad, None)
 
         redirects = follow_redirects if allow_redirects is None else allow_redirects
         timeout_s = float(timeout if not isinstance(timeout, tuple) else timeout[0])

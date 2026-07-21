@@ -22,6 +22,9 @@ def test_browser_headers_include_sec_fetch_in_stealth():
     assert headers.get("Referer") == "https://lab.local/home"
     assert "Sec-CH-UA" in headers
     assert "Sec-CH-UA-Full-Version-List" in headers
+    assert "Accept-CH" not in headers
+    assert "Linux" not in headers["User-Agent"]
+    assert "X11" not in headers["User-Agent"]
 
 
 def test_sticky_host_keeps_same_ua():
@@ -37,6 +40,17 @@ def test_detect_rate_limit_and_cloudflare():
     assert detect_challenge(429, "") == "rate_limit"
     assert detect_challenge(403, "cf-ray cloudflare") == "cloudflare_block"
     assert detect_challenge(503, "checking your browser before access") == "checking your browser"
+
+
+def test_detect_akamai_soft_and_hard():
+    assert detect_challenge(403, "AkamaiGHost access denied") in ("akamai", "akamai_block")
+    soft = detect_challenge(
+        200,
+        "<html>Access Denied</html><!-- AkamaiGHost --> Reference #18.abc",
+    )
+    assert soft == "akamai_soft_deny"
+    # Normal Akamai-fronted 200 must not backoff
+    assert detect_challenge(200, "Welcome to Western Union · powered by edgesuite") == ""
 
 
 def test_backoff_after_challenge():
@@ -58,8 +72,12 @@ def test_waf_403_backoff_milder_than_old_30s_cap():
 
 def test_config_profile_stealth_sets_stealth_evasion():
     cfg = CrawlConfig(start_url="https://lab.local", profile="stealth")
+    cfg.apply_profile()
     assert cfg.evasion_level == "stealth"
     assert cfg.evasion_decoy_requests is False
+    assert cfg.enum_method == "GET"
+    assert cfg.api_recon_method == "GET"
+    assert cfg.evasion_chrome_tls is True
     session = evasion_from_crawl_config(cfg)
     assert session.effective_level() == "stealth"
 

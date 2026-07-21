@@ -24,11 +24,12 @@ CHROME_FULL = "146.0.7680.0"
 
 BROWSER_PROFILES: Dict[str, Dict] = {
     "chrome": {
+        # Windows-only when paired with curl_cffi chrome146 JA3 — Linux UA vs Win TLS
+        # is a classic Akamai Bot Manager fingerprint mismatch.
         "user_agents": [
             f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36",
             f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36",
             f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36",
-            f"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36",
         ],
         "sec_ch_ua": f'"Chromium";v="{CHROME_MAJOR}", "Not A(Brand";v="24", "Google Chrome";v="{CHROME_MAJOR}"',
         "sec_ch_ua_full_version_list": (
@@ -53,7 +54,6 @@ BROWSER_PROFILES: Dict[str, Dict] = {
         "user_agents": [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:147.0) Gecko/20100101 Firefox/147.0",
-            "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
         ],
         "sec_ch_ua": "",
         "sec_ch_ua_full_version_list": "",
@@ -242,14 +242,25 @@ class EvasionSession:
 
         profile = BROWSER_PROFILES[profile_name]
         ua = self._select_ua(url, profile)
-        mobile = "?1" if ("iPhone" in ua or "Android" in ua and "Mobile" in ua) else "?0"
+        # Prefer desktop Windows identity when Chrome TLS impersonation is on —
+        # curl_cffi chrome146 JA3 is a Windows Chrome fingerprint.
+        if self.config.chrome_tls and profile_name in ("chrome", "edge") and (
+            "Linux" in ua or "X11" in ua or "Android" in ua
+        ):
+            ua = profile["user_agents"][0]
+            self._session_ua = ua
+        mobile = "?1" if ("iPhone" in ua or ("Android" in ua and "Mobile" in ua)) else "?0"
         platform = profile.get("sec_ch_ua_platform") or '"Windows"'
+        platform_version = profile.get("sec_ch_ua_platform_version") or '"15.0.0"'
         if "Macintosh" in ua or "Mac OS X" in ua:
             platform = '"macOS"'
+            platform_version = '"14.3.0"'
         elif "Linux" in ua or "X11" in ua:
             platform = '"Linux"'
+            platform_version = '"6.5.0"'
         elif "iPhone" in ua:
             platform = '"iOS"'
+            platform_version = '"17.2.0"'
 
         headers: Dict[str, str] = {
             "User-Agent": ua,
@@ -270,21 +281,14 @@ class EvasionSession:
                 headers["Sec-CH-UA-Full-Version-List"] = profile["sec_ch_ua_full_version_list"]
             if profile.get("sec_ch_ua_full_version"):
                 headers["Sec-CH-UA-Full-Version"] = profile["sec_ch_ua_full_version"]
-            if profile.get("sec_ch_ua_platform_version"):
-                headers["Sec-CH-UA-Platform-Version"] = (
-                    '"15.0.0"' if platform == '"Windows"' else profile["sec_ch_ua_platform_version"]
-                )
+            headers["Sec-CH-UA-Platform-Version"] = platform_version
             if profile.get("sec_ch_ua_arch"):
                 headers["Sec-CH-UA-Arch"] = profile["sec_ch_ua_arch"]
             if profile.get("sec_ch_ua_bitness"):
                 headers["Sec-CH-UA-Bitness"] = profile["sec_ch_ua_bitness"]
             if "sec_ch_ua_model" in profile:
                 headers["Sec-CH-UA-Model"] = profile.get("sec_ch_ua_model") or '""'
-            # Ask for client hints on subsequent responses (browser-like)
-            headers["Accept-CH"] = (
-                "Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Platform, Sec-CH-UA-Platform-Version, "
-                "Sec-CH-UA-Full-Version-List, Sec-CH-UA-Arch, Sec-CH-UA-Bitness, Sec-CH-UA-Model"
-            )
+            # Do NOT send Accept-CH on requests — browsers only receive that header.
 
         # Always emit Sec-Fetch-* when stealth is on (basic included) — closes missing-header gaps
         site = "none"
@@ -301,6 +305,7 @@ class EvasionSession:
             headers["Sec-Fetch-Site"] = site if self._last_url else "same-origin"
             headers["Sec-Fetch-Mode"] = "cors"
             headers["Sec-Fetch-Dest"] = "empty"
+            headers.pop("Upgrade-Insecure-Requests", None)
 
         if self.config.referer_chain and self._last_url and level != "basic":
             if urlparse(self._last_url).netloc == urlparse(url).netloc:
@@ -348,7 +353,7 @@ class EvasionSession:
         # aggressive — slower, more human-like
         return max(lo, 120), max(hi, 900)
 
-    async def before_request(self, url: str) -> Dict[str, str]:
+    async def before_request(self, url: str, *, is_navigation: bool = True) -> Dict[str, str]:
         self._request_count += 1
         now = time.time()
         if self.config.adaptive_backoff and now < self._backoff_until:
@@ -362,7 +367,7 @@ class EvasionSession:
                 delay += random.uniform(0.8, 2.5)
             await asyncio.sleep(delay)
 
-        headers = self.build_headers(url, is_navigation=True)
+        headers = self.build_headers(url, is_navigation=is_navigation)
         return headers
 
     def after_request(self, url: str, status_code: int, body_preview: str = ""):
@@ -413,13 +418,28 @@ class EvasionSession:
 def detect_challenge(status_code: int, body: str) -> str:
     """Detect bot-wall / rate-limit signals that justify adaptive backoff.
 
-    Only challenge/block HTTP statuses are considered. Success responses (200 etc.)
-    must never trigger backoff — CDN headers like cf-ray on a normal page are not
-    a challenge (that false positive used to park the whole crawl).
+    Hard blocks (403/429/503) always count. Soft Akamai/CF interstitial pages that
+    return HTTP 200 with an explicit denial body also count — bare CDN headers on
+    a normal 200 page do not (that false positive used to park the whole crawl).
     """
     body_l = (body or "").lower()[:8000]
     if status_code == 429:
         return "rate_limit"
+
+    soft_denied = (
+        ("access denied" in body_l and ("akamai" in body_l or "edgesuite" in body_l or "reference #" in body_l))
+        or ("errors.edgesuite.net" in body_l)
+        or ("akamaighost" in body_l and "denied" in body_l)
+        or ("attention required" in body_l and "cloudflare" in body_l)
+        or ("checking your browser before accessing" in body_l)
+    )
+    if status_code == 200 and soft_denied:
+        if "akamai" in body_l or "edgesuite" in body_l or "akamaighost" in body_l:
+            return "akamai_soft_deny"
+        if "cloudflare" in body_l:
+            return "cloudflare_soft_deny"
+        return "soft_deny"
+
     if status_code not in CHALLENGE_STATUS:
         return ""
     for marker in CHALLENGE_MARKERS:
@@ -427,6 +447,8 @@ def detect_challenge(status_code: int, body: str) -> str:
             return marker
     if status_code == 403 and ("cloudflare" in body_l or "cf-ray" in body_l):
         return "cloudflare_block"
+    if status_code == 403 and ("akamai" in body_l or "edgesuite" in body_l or "akamaighost" in body_l):
+        return "akamai_block"
     if status_code == 403:
         return "blocked"
     if status_code == 503:

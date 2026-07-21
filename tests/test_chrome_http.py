@@ -27,6 +27,8 @@ def test_evasion_headers_include_full_client_hints_and_sec_fetch():
     assert headers.get("Accept-Language")
     assert headers.get("Accept-Encoding")
     assert headers.get("Connection") == "keep-alive"
+    assert "Accept-CH" not in headers
+    assert "Linux" not in headers["User-Agent"]
 
 
 def test_non_navigation_still_sends_sec_fetch():
@@ -36,6 +38,14 @@ def test_non_navigation_still_sends_sec_fetch():
     assert headers.get("Sec-Fetch-Mode") == "cors"
     assert headers.get("Sec-Fetch-Dest") == "empty"
     assert "Sec-Fetch-Site" in headers
+    assert "Upgrade-Insecure-Requests" not in headers
+
+
+def test_chrome_ua_pool_has_no_linux():
+    from evasion_layer import BROWSER_PROFILES
+
+    for ua in BROWSER_PROFILES["chrome"]["user_agents"]:
+        assert "Linux" not in ua and "X11" not in ua
 
 
 def test_curl_cffi_available_in_ci_or_skips_softly():

@@ -268,18 +268,24 @@ class CrawlConfig:
             self.security_scan = False
             self.form_submit_probe = False
         elif self.profile == "stealth":
-            self.enum_concurrency = min(self.enum_concurrency, 20)
+            self.enum_concurrency = min(self.enum_concurrency, 12)
             self.download_concurrency = min(self.download_concurrency, 2)
             self.crawl_concurrency = min(self.crawl_concurrency, 2)
             self.evasion_enabled = True
             self.evasion_level = "stealth"
+            self.evasion_browser = "chrome"
             self.evasion_ua_strategy = "sticky_host"
-            self.evasion_jitter_min_ms = max(self.evasion_jitter_min_ms, 40)
-            self.evasion_jitter_max_ms = max(self.evasion_jitter_max_ms, 250)
+            self.evasion_jitter_min_ms = max(self.evasion_jitter_min_ms, 80)
+            self.evasion_jitter_max_ms = max(self.evasion_jitter_max_ms, 400)
             self.evasion_referer_chain = True
             self.evasion_adaptive_backoff = True
             self.evasion_challenge_detect = True
             self.evasion_decoy_requests = False
+            self.evasion_chrome_tls = True
+            self.enum_method = "GET"
+            self.api_recon_method = "GET"
+            self.browser_on_challenge = True
+            self.auto_sync_cookies = True
             if not self.enum_word_limit:
                 self.enum_word_limit = 25000
         elif self.profile == "gobuster":
