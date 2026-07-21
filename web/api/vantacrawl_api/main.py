@@ -51,6 +51,8 @@ def health():
         "ok": True,
         "app": settings.app_name,
         "embed_worker": settings.embed_worker,
+        "max_concurrent_scans": settings.max_concurrent_scans,
+        "max_concurrent_scans_per_user": settings.max_concurrent_scans_per_user,
     }
 
 

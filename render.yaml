@@ -1,5 +1,10 @@
-# VantaCrawl — self-hosted SaaS on Render (free-tier friendly)
-# Free plans cannot create Background Workers, so the API embeds the job consumer.
+# VantaCrawl — self-hosted SaaS on Render
+#
+# Free tier: no Background Workers — API embeds a concurrent job pool
+#   (EMBED_WORKER=true, MAX_CONCURRENT_SCANS=3).
+# Paid tier (option 3): deploy the `vantacrawl-worker` service below and set
+#   EMBED_WORKER=false on the web service so only the dedicated worker consumes.
+#
 # Set secret env vars in the Dashboard (do not commit real SMTP/admin secrets).
 
 databases:
@@ -28,6 +33,10 @@ services:
         value: /opt/render/project/src:/opt/render/project/src/web/api
       - key: EMBED_WORKER
         value: "true"
+      - key: MAX_CONCURRENT_SCANS
+        value: "3"
+      - key: MAX_CONCURRENT_SCANS_PER_USER
+        value: "1"
       - key: DATABASE_URL
         fromDatabase:
           name: vantacrawl-db
@@ -63,3 +72,39 @@ services:
         value: /opt/render/project/src/web/data/jobs
       - key: UI_DIST_DIR
         value: /opt/render/project/src/web/ui/dist
+
+  # Paid Render only (Background Workers are not on the free plan).
+  # After creating this service: set vantacrawl-api EMBED_WORKER=false.
+  - type: worker
+    name: vantacrawl-worker
+    runtime: python
+    plan: starter
+    maxShutdownDelaySeconds: 300
+    buildCommand: pip install -r web/requirements-render.txt -r web/api/requirements.txt
+    startCommand: python web/worker/worker.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.11"
+      - key: PYTHONPATH
+        value: /opt/render/project/src:/opt/render/project/src/web/api
+      - key: MAX_CONCURRENT_SCANS
+        value: "3"
+      - key: MAX_CONCURRENT_SCANS_PER_USER
+        value: "1"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: vantacrawl-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: vantacrawl-redis
+          type: keyvalue
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATA_DIR
+        value: /opt/render/project/src/web/data
+      - key: REPORTS_DIR
+        value: /opt/render/project/src/web/data/reports
+      - key: JOBS_DIR
+        value: /opt/render/project/src/web/data/jobs

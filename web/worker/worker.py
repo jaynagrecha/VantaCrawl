@@ -1,8 +1,14 @@
-"""Standalone Redis queue consumer (paid Render Background Worker / Docker)."""
+"""Standalone Redis queue consumer (Render Background Worker / Docker).
+
+Shares the same concurrent worker_loop as the embedded in-API consumer.
+On paid Render: deploy this service and set EMBED_WORKER=false on the web service
+so scans are not double-consumed from the API process.
+"""
 
 from __future__ import annotations
 
 import logging
+import signal
 import sys
 import threading
 from pathlib import Path
@@ -17,11 +23,23 @@ from vantacrawl_api.bootstrap import startup  # noqa: E402
 from vantacrawl_api.services.embedded_worker import worker_loop  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+log = logging.getLogger("vantacrawl.standalone_worker")
 
 
 def main() -> None:
     startup()
     stop = threading.Event()
+
+    def _handle_sigterm(signum, frame) -> None:  # noqa: ARG001
+        log.info("SIGTERM — draining in-flight scans, then exit")
+        stop.set()
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+    try:
+        signal.signal(signal.SIGINT, _handle_sigterm)
+    except Exception:
+        pass
+
     try:
         worker_loop(stop)
     except KeyboardInterrupt:
