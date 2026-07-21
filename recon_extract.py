@@ -210,6 +210,14 @@ def detect_login_surface(
 
 
 def inventory_cookies(headers: dict) -> List[Dict[str, str]]:
+    """Parse Set-Cookie headers into inventory rows (with impact fields when available)."""
+    try:
+        from cookie_impact import analyze_set_cookie_headers
+
+        rows, _ = analyze_set_cookie_headers(headers or {}, page_url="")
+        return rows
+    except Exception:
+        pass
     if not headers:
         return []
     raw_parts: List[str] = []

@@ -838,19 +838,14 @@ def scan_authentication_flaws(url: str, headers: dict, body_text: str = "") -> L
     if AUTH_WEAK_RE.search(url):
         findings.append(("authentication", "critical", "Credentials or tokens appear in URL query string"))
     lowered = {k.lower(): v for k, v in (headers or {}).items()}
-    set_cookie = lowered.get("set-cookie", "")
-    if set_cookie and "session" in set_cookie.lower():
-        if "httponly" not in set_cookie.lower():
-            findings.append(("authentication", "medium", "Session cookie missing HttpOnly flag"))
-        if scheme == "https" and "secure" not in set_cookie.lower():
-            findings.append(("authentication", "medium", "Session cookie missing Secure flag on HTTPS"))
+    # Cookie flag / stealable-credential analysis is handled by cookie_impact
+    # (see crawl_orchestrator) so we do not double-fire crude "session" substring checks.
     if body_text and re.search(r"(?i)(type=['\"]password['\"]|name=['\"]password['\"])", body_text):
         if scheme == "http":
             findings.append(("authentication", "high", "Password form on HTTP connection"))
     www_auth = lowered.get("www-authenticate", "")
     if www_auth and scheme == "http":
         findings.append(("authentication", "medium", f"Basic/digest auth over HTTP ({www_auth[:40]})"))
-    # JWTs are recorded via secret_scan with full evidence + tap-to-reveal (avoid double-fire here)
     return findings
 
 

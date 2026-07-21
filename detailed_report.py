@@ -309,12 +309,29 @@ def render_detailed_text(model: Dict[str, Any]) -> str:
     cookies = model.get("cookies") or []
     lines.append(f"  Cookies inventoried: {len(cookies):,}")
     if cookies:
-        for cookie in cookies[:25]:
+        for cookie in cookies[:40]:
+            impact = cookie.get("impact") or ""
+            role = cookie.get("role") or ""
+            extra = ""
+            if role or impact:
+                extra = f" · role={role or '?'} · impact={impact or '?'}"
             lines.append(
-                f"  • {cookie.get('name', '?')} — flags: {cookie.get('flags', '(none)')}"
+                f"  • {cookie.get('name', '?')} — flags: {cookie.get('flags', '(none)')}{extra}"
             )
-        if len(cookies) > 25:
-            lines.append(f"  • … and {len(cookies) - 25} more")
+            summary = (cookie.get("summary") or "").strip()
+            if summary:
+                lines.append(f"      {summary}")
+            if cookie.get("value_masked"):
+                lines.append(f"      value: {cookie.get('value_masked')}")
+        if len(cookies) > 40:
+            lines.append(f"  • … and {len(cookies) - 40} more")
+        stealable = sum(1 for c in cookies if c.get("impact") == "stealable_credential")
+        mitigated = sum(1 for c in cookies if c.get("impact") == "mitigated_credential")
+        none = sum(1 for c in cookies if c.get("impact") == "no_credential_impact")
+        lines.append(
+            f"  Cookie impact summary: stealable={stealable}, mitigated={mitigated}, "
+            f"no_credential_impact={none}, other={len(cookies) - stealable - mitigated - none}"
+        )
     else:
         lines.append("  (none observed)")
     lines.append(f"  WebSocket endpoints: {len(model.get('websockets') or []):,}")
