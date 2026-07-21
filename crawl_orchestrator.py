@@ -314,6 +314,32 @@ async def run_full_crawl_async(
 
         if defense is not None and running():
             await probe_defense_fingerprint(client, config.start_url, defense, output_callback)
+            # When Akamai/Bot Manager is present, tighten probe shape immediately
+            try:
+                seen = {str(p).lower() for p in (getattr(defense, "protections_seen", None) or set())}
+                if not seen and hasattr(defense, "to_dict"):
+                    seen = {str(p).lower() for p in (defense.to_dict().get("protections_detected") or [])}
+                if "akamai" in seen or "cloudflare" in seen or "aws_waf" in seen:
+                    config.enum_method = "GET"
+                    config.api_recon_method = "GET"
+                    config.evasion_chrome_tls = True
+                    config.evasion_browser = "chrome"
+                    config.evasion_ua_strategy = "sticky_host"
+                    config.browser_on_challenge = True
+                    config.auto_sync_cookies = True
+                    config.enum_concurrency = min(int(config.enum_concurrency or 12), 10)
+                    config.crawl_concurrency = min(int(config.crawl_concurrency or 4), 3)
+                    config.evasion_jitter_min_ms = max(int(config.evasion_jitter_min_ms or 0), 100)
+                    config.evasion_jitter_max_ms = max(int(config.evasion_jitter_max_ms or 0), 450)
+                    sync_evasion_from_crawl_config(evasion, config)
+                    output_callback(
+                        "Bot manager / WAF fingerprint detected ("
+                        + ", ".join(sorted(seen)[:4])
+                        + ") — switching to GET-only probes, Chrome TLS identity, "
+                        "lower concurrency, and cookie sync on challenge."
+                    )
+            except Exception:
+                pass
 
         if evasion.config.enabled and evasion.config.decoy_requests and running():
             await run_decoy_warmup(client, config.start_url, evasion, output_callback)
@@ -647,6 +673,10 @@ async def run_full_crawl_async(
                     )
 
                 if config.broken_link_report and new_links:
+                    prefer_get = (
+                        (getattr(config, "evasion_level", "") or "").lower() in ("stealth", "aggressive")
+                        or (getattr(config, "enum_method", "GET") or "GET").upper() == "GET"
+                    )
                     await _check_broken_links(
                         client,
                         stats,
@@ -654,6 +684,7 @@ async def run_full_crawl_async(
                         base_domain,
                         config.restrict_domain,
                         config.broken_link_sample_size,
+                        prefer_get=prefer_get,
                     )
 
                 if config.download_files and config.download_dir:
@@ -1202,7 +1233,9 @@ async def _probe_form_actions(client, forms, output_callback, stats):
             output_callback(f"Form probe failed: {action} ({error})")
 
 
-async def _check_broken_links(client, stats, links, base_domain, restrict_domain, sample_size=30):
+async def _check_broken_links(
+    client, stats, links, base_domain, restrict_domain, sample_size=30, *, prefer_get: bool = False
+):
     from crawler_common import should_follow_url
 
     if sample_size == 0:
@@ -1215,12 +1248,16 @@ async def _check_broken_links(client, stats, links, base_domain, restrict_domain
     if not candidates:
         return
 
-    sem = asyncio.Semaphore(8)
+    sem = asyncio.Semaphore(4 if prefer_get else 8)
 
     async def _one(link: str):
         async with sem:
             try:
-                response = await client.head(link, timeout=8, follow_redirects=True)
+                # HEAD is a common Akamai bot tell — use GET under stealth/WAF targets
+                if prefer_get:
+                    response = await client.get(link, timeout=10, follow_redirects=True)
+                else:
+                    response = await client.head(link, timeout=8, follow_redirects=True)
                 if response.status_code >= 400:
                     stats.broken_links.append({"url": link, "status": str(response.status_code)})
             except httpx.HTTPError:
