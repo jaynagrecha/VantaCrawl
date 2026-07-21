@@ -605,6 +605,40 @@ async def run_job(job_id: str) -> None:
         txt_matches = (
             sorted(report_dir.glob("*_ASSESSMENT_REPORT.txt")) if report_dir.is_dir() else []
         ) or (sorted(report_dir.glob("*_SEARCH_REPORT.txt")) if report_dir.is_dir() else [])
+
+        # Stop/cancel often skips orchestrator write_all — build full reports from in-memory stats.
+        if not html_matches:
+            cfg = live_config_holder.get("cfg")
+            job_snap = _get_job(job_id)
+            try:
+                from reporting import write_stats_reports
+
+                written = write_stats_reports(
+                    stats,
+                    report_dir=str(report_dir),
+                    start_url=(getattr(cfg, "start_url", None) if cfg else None)
+                    or (job_snap.start_url if job_snap else "")
+                    or "",
+                    title=(getattr(cfg, "report_title", None) if cfg else None)
+                    or (job_snap.title if job_snap else "")
+                    or "",
+                    config=cfg,
+                    output_callback=output_callback,
+                )
+                if written:
+                    output_callback("Wrote full reports from results collected so far.")
+            except Exception:
+                log.exception("Failed to write partial full reports for %s", job_id)
+            assessment_matches = (
+                sorted(report_dir.glob("*_ASSESSMENT_REPORT.html")) if report_dir.is_dir() else []
+            )
+            html_matches = assessment_matches or (
+                sorted(report_dir.glob("*_SEARCH_REPORT.html")) if report_dir.is_dir() else []
+            )
+            txt_matches = (
+                sorted(report_dir.glob("*_ASSESSMENT_REPORT.txt")) if report_dir.is_dir() else []
+            ) or (sorted(report_dir.glob("*_SEARCH_REPORT.txt")) if report_dir.is_dir() else [])
+
         # Honour force-cancel from API while we were winding down
         latest = _get_job(job_id)
         if latest and latest.status == "cancelled":
@@ -613,13 +647,19 @@ async def run_job(job_id: str) -> None:
             status = "cancelled" if stop_flag["stop"] else "completed"
         findings_preview = []
         try:
+            from security_scan import mask_secret_value
+
             for f in list(getattr(stats, "findings", []) or [])[:40]:
                 if isinstance(f, dict):
+                    evidence = str(f.get("evidence") or "")
                     findings_preview.append(
                         {
                             "severity": str(f.get("severity") or f.get("severity_label") or ""),
                             "title": str(f.get("title") or f.get("detail") or f.get("type") or "")[:160],
                             "url": str(f.get("url") or ""),
+                            "category": str(f.get("category") or ""),
+                            "evidence_masked": mask_secret_value(evidence) if evidence else "",
+                            "evidence_full": evidence,
                         }
                     )
         except Exception:
@@ -650,8 +690,8 @@ async def run_job(job_id: str) -> None:
             note = ""
             if status == "cancelled":
                 note = (
-                    "Scan was stopped before the full report was written. "
-                    "Cloudflare challenges often prevent enum/crawl from finishing."
+                    "Scan was stopped before structured reports could be written. "
+                    "This summary uses the live progress snapshot only."
                 )
             html_path, txt_path = write_summary_report(
                 report_dir,
@@ -684,21 +724,52 @@ async def run_job(job_id: str) -> None:
         html_path = ""
         txt_path = ""
         try:
-            from vantacrawl_api.services.summary_report import write_summary_report
-
+            cfg = live_config_holder.get("cfg")
             rdir = Path(failed_job.report_dir) if failed_job and failed_job.report_dir else report_dir
-            html_path, txt_path = write_summary_report(
-                rdir,
-                job_id=job_id,
-                title=(failed_job.title if failed_job else "") or "Scan",
-                start_url=(failed_job.start_url if failed_job else "") or "",
-                status="failed",
-                progress=(failed_job.progress_json if failed_job else {}) or {},
-                log_tail=(failed_job.log_tail if failed_job else "") or "",
-                note=f"Scan failed: {exc}",
+            from reporting import write_stats_reports
+
+            written = write_stats_reports(
+                stats,
+                report_dir=str(rdir),
+                start_url=(getattr(cfg, "start_url", None) if cfg else None)
+                or (failed_job.start_url if failed_job else "")
+                or "",
+                title=(getattr(cfg, "report_title", None) if cfg else None)
+                or (failed_job.title if failed_job else "")
+                or "",
+                config=cfg,
+                output_callback=output_callback,
             )
+            assessment_matches = sorted(rdir.glob("*_ASSESSMENT_REPORT.html")) if rdir.is_dir() else []
+            html_matches = assessment_matches or (
+                sorted(rdir.glob("*_SEARCH_REPORT.html")) if rdir.is_dir() else []
+            )
+            txt_matches = (
+                sorted(rdir.glob("*_ASSESSMENT_REPORT.txt")) if rdir.is_dir() else []
+            ) or (sorted(rdir.glob("*_SEARCH_REPORT.txt")) if rdir.is_dir() else [])
+            html_path = str(html_matches[-1]) if html_matches else ""
+            txt_path = str(txt_matches[-1]) if txt_matches else ""
+            if written and html_path:
+                output_callback("Wrote full reports from results collected before failure.")
         except Exception:
-            log.exception("Failed to write summary report for %s", job_id)
+            log.exception("Failed to write partial full reports for failed job %s", job_id)
+        if not html_path:
+            try:
+                from vantacrawl_api.services.summary_report import write_summary_report
+
+                rdir = Path(failed_job.report_dir) if failed_job and failed_job.report_dir else report_dir
+                html_path, txt_path = write_summary_report(
+                    rdir,
+                    job_id=job_id,
+                    title=(failed_job.title if failed_job else "") or "Scan",
+                    start_url=(failed_job.start_url if failed_job else "") or "",
+                    status="failed",
+                    progress=(failed_job.progress_json if failed_job else {}) or {},
+                    log_tail=(failed_job.log_tail if failed_job else "") or "",
+                    note=f"Scan failed: {exc}",
+                )
+            except Exception:
+                log.exception("Failed to write summary report for %s", job_id)
         _update_job(
             job_id,
             status="failed",

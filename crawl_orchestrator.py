@@ -232,7 +232,7 @@ async def run_full_crawl_async(
         run_decoy_warmup,
         sync_evasion_from_crawl_config,
     )
-    from defense_verify import DefenseTracker, probe_defense_fingerprint, write_defense_reports
+    from defense_verify import DefenseTracker, probe_defense_fingerprint
 
     evasion = evasion_from_crawl_config(config)
     defense = DefenseTracker(start_url=config.start_url) if getattr(config, "defense_verify", True) else None
@@ -815,48 +815,17 @@ async def run_full_crawl_async(
         from distributed_queue import push_urls
         push_urls(config.distributed_redis_url, "crawler:queue", list(discovered))
 
-    output_callback("\nGenerating reports...")
-    from scan_setup_report import config_to_report_meta
+    from reporting import write_stats_reports
 
-    report_meta = config_to_report_meta(config)
-    report_meta.setdefault("mode", getattr(config, "profile", "full"))
-    if getattr(config, "report_title", ""):
-        report_meta["title"] = str(config.report_title)
-    report_paths = reporter.write_all(
+    report_paths = write_stats_reports(
         stats,
-        {
-            "search_conclusion_report": config.search_conclusion_report,
-            "html_report": config.html_report,
-            "json_report": config.json_report,
-            "sqlite_export": config.sqlite_export,
-            "csv_export": config.csv_export,
-            "assessment_report": getattr(config, "assessment_report", True),
-        },
-        config_meta=report_meta,
+        report_dir=config.report_dir(),
+        start_url=config.start_url,
+        title=str(getattr(config, "report_title", "") or ""),
+        config=config,
+        output_callback=output_callback,
     )
-    if stats.defense_tracker is not None:
-        defense_paths = write_defense_reports(
-            stats.defense_tracker, config.report_dir(), reporter.base_name
-        )
-        report_paths.update(defense_paths)
-        output_callback("\n" + stats.defense_tracker.format_plain_report())
-        if defense_paths.get("defense_html"):
-            output_callback(f"Defense report (web page): {defense_paths['defense_html']}")
-        if defense_paths.get("defense_txt"):
-            output_callback(f"Defense report (text): {defense_paths['defense_txt']}")
-
-    if reporter.last_conclusion:
-        output_callback("\n" + reporter.last_conclusion.get("text", ""))
-    if report_paths.get("assessment_report_html"):
-        output_callback(f"\nAssessment report (HTML): {report_paths['assessment_report_html']}")
-    if report_paths.get("assessment_report_txt"):
-        output_callback(f"Assessment report (text): {report_paths['assessment_report_txt']}")
-    if report_paths.get("search_report_html"):
-        output_callback(f"Technical search report (HTML): {report_paths['search_report_html']}")
-    if report_paths.get("search_report_txt"):
-        output_callback(f"Technical search report (text): {report_paths['search_report_txt']}")
-    output_callback(stats.format_friendly_line())
-    output_callback(f"All reports saved to: {config.report_dir()}")
+    conclusion = getattr(stats, "last_report_conclusion", None) or reporter.last_conclusion
 
     host = urlparse(config.start_url).netloc
     export_dir = config.report_dir()
@@ -889,7 +858,7 @@ async def run_full_crawl_async(
             config.nuclei_severity,
         )
 
-    return stats, report_paths, reporter.last_conclusion
+    return stats, report_paths, conclusion
 
 
 def _directory_enum_enabled(config) -> bool:
@@ -1100,7 +1069,15 @@ async def _run_security_checks(
     def emit(category, severity, target, detail, evidence=None):
         stats.record_finding(category, severity, target, detail, evidence=evidence)
         if output_callback and severity in ("critical", "high", "medium"):
-            extra = f" | evidence={evidence}" if evidence else ""
+            shown = evidence
+            if evidence and category == "secrets_exposure":
+                try:
+                    from security_scan import mask_secret_value
+
+                    shown = mask_secret_value(evidence)
+                except Exception:
+                    shown = "***"
+            extra = f" | evidence={shown}" if shown else ""
             output_callback(f"FINDING [{severity}] {category}: {target} — {detail}{extra}")
 
     content_type = (headers or {}).get("content-type", "")
@@ -1109,6 +1086,22 @@ async def _run_security_checks(
     if config.secret_scan:
         for label, severity, detail, evidence in scan_secrets(body_text, url):
             emit("secrets_exposure", severity, url, f"{label}: {detail}", evidence=evidence)
+        try:
+            from recon_extract import find_jwt_candidates
+            from urllib.parse import urlparse as _urlparse
+
+            scheme = (_urlparse(url).scheme or "").lower()
+            for source, token in find_jwt_candidates(body_text or "", headers or {}):
+                sev = "high" if scheme == "http" else "info"
+                emit(
+                    "secrets_exposure",
+                    sev,
+                    url,
+                    f"JWT-shaped token observed in {source}",
+                    evidence=token,
+                )
+        except Exception:
+            pass
     sensitive = scan_sensitive_path(url)
     if sensitive and config.sensitive_file_highlights:
         confirmed = True

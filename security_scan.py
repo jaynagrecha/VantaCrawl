@@ -55,26 +55,51 @@ SECURITY_HEADERS = {
 PARAM_NAME_RE = re.compile(r"[?&]([a-zA-Z_][a-zA-Z0-9_\-\[\]]*)=")
 
 
-def mask_secret_value(raw: str, *, keep_start: int = 4, keep_end: int = 4) -> str:
-    """Show enough of an accessible secret for identification without dumping the full token."""
+def extract_secret_value(raw: str) -> str:
+    """Pull the assigned token/value from a pattern match (or return the raw match)."""
     value = (raw or "").strip()
     if not value:
         return ""
-    # Prefer the assigned value when pattern matched "key = value"
     assign = re.search(r"[:=]\s*['\"]?([^\s'\"]{6,})", value)
     if assign:
-        value = assign.group(1)
+        return assign.group(1)
+    return value
+
+
+def mask_secret_value(raw: str, *, keep_start: int = 4, keep_end: int = 4) -> str:
+    """Display mask for an accessible secret (full value is stored separately for reveal)."""
+    value = extract_secret_value(raw)
+    if not value:
+        return ""
     if len(value) <= keep_start + keep_end + 2:
         return value[:2] + "***" + (value[-1:] if len(value) > 3 else "")
     return f"{value[:keep_start]}…{value[-keep_end:]}"
+
+
+def secret_reveal_html(full: str) -> str:
+    """HTML chip: masked by default, <details> to reveal the full secret."""
+    from html import escape
+
+    value = extract_secret_value(full) or (full or "").strip()
+    if not value:
+        return ""
+    masked = mask_secret_value(value)
+    return (
+        "<li class='secret-reveal'>"
+        f"<code class='secret-masked'>{escape(masked)}</code> "
+        "<details class='secret-details'>"
+        "<summary>Show full</summary>"
+        f"<code class='secret-full'>{escape(value)}</code>"
+        "</details>"
+        "</li>"
+    )
 
 
 def _secret_looks_real(raw: str) -> bool:
     """Filter obvious placeholders / low-entropy demo values."""
     if not raw or SECRET_PLACEHOLDER_RE.search(raw):
         return False
-    assign = re.search(r"[:=]\s*['\"]?([^\s'\"]{6,})", raw)
-    value = assign.group(1) if assign else raw
+    value = extract_secret_value(raw)
     if SECRET_PLACEHOLDER_RE.search(value):
         return False
     # Require some character diversity for generic key/password patterns
@@ -85,7 +110,7 @@ def _secret_looks_real(raw: str) -> bool:
 
 
 def scan_secrets(body_text: str, url: str) -> List[Tuple[str, str, str, Optional[str]]]:
-    """Return (label, severity, detail, evidence). Evidence is a masked snippet only when the value was readable."""
+    """Return (label, severity, detail, evidence). Evidence is the full accessible value."""
     findings: List[Tuple[str, str, str, Optional[str]]] = []
     if not body_text:
         return findings
@@ -95,13 +120,13 @@ def scan_secrets(body_text: str, url: str) -> List[Tuple[str, str, str, Optional
             raw = match.group(0)
             if not _secret_looks_real(raw):
                 continue
-            key = (label, raw[:80])
+            value = extract_secret_value(raw)
+            key = (label, value[:80] if value else raw[:80])
             if key in seen:
                 continue
             seen.add(key)
-            evidence = mask_secret_value(raw)
             detail = f"Possible {label} in response body"
-            findings.append((label, severity, detail, evidence or None))
+            findings.append((label, severity, detail, value or None))
     return findings
 
 
@@ -423,17 +448,7 @@ def scan_authentication_flaws(url: str, headers: dict, body_text: str = "") -> L
     www_auth = lowered.get("www-authenticate", "")
     if www_auth and scheme == "http":
         findings.append(("authentication", "medium", f"Basic/digest auth over HTTP ({www_auth[:40]})"))
-    # JWT inventory (masked) — informational unless over HTTP
-    try:
-        from recon_extract import find_jwt_candidates
-
-        for source, masked in find_jwt_candidates(body_text or "", headers or {}):
-            sev = "high" if scheme == "http" else "info"
-            findings.append(
-                ("authentication", sev, f"JWT-shaped token observed in {source} ({masked})")
-            )
-    except Exception:
-        pass
+    # JWTs are recorded via secret_scan with full evidence + tap-to-reveal (avoid double-fire here)
     return findings
 
 
@@ -528,7 +543,8 @@ def scan_api_leaks(url: str, body_text: str, headers: dict, content_type: str = 
 def scan_secrets_exposure(body_text: str, url: str) -> List[Tuple[str, str, str]]:
     findings = []
     for label, severity, detail, evidence in scan_secrets(body_text, url):
-        suffix = f" [value={evidence}]" if evidence else ""
+        # Detail keeps a mask only — full value lives on the evidence field when emitted via scan_secrets.
+        suffix = f" [value={mask_secret_value(evidence)}]" if evidence else ""
         findings.append(("secrets_exposure", severity, f"{label}: {detail}{suffix}"))
     return findings
 

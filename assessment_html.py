@@ -50,11 +50,31 @@ def render_assessment_html(doc: Dict[str, Any], *, technical_report_name: str = 
         sev_l = _sev_class(str(f.get("severity")))
         evidence = f.get("evidence") or []
         if evidence:
-            ev_html = (
-                "<ul class='chips'>"
-                + "".join(f"<li><code>{escape(str(e))}</code></li>" for e in evidence[:10])
-                + "</ul>"
-            )
+            try:
+                from security_scan import secret_reveal_html
+
+                chips = []
+                for e in evidence[:10]:
+                    chip = secret_reveal_html(str(e))
+                    if chip:
+                        chips.append(chip)
+                if f.get("category") == "secrets_exposure" and chips:
+                    ev_html = (
+                        "<p class='muted'>Masked by default — expand to reveal the full value.</p>"
+                        f"<ul class='chips secret-list'>{''.join(chips)}</ul>"
+                    )
+                else:
+                    ev_html = (
+                        "<ul class='chips'>"
+                        + "".join(f"<li><code>{escape(str(e))}</code></li>" for e in evidence[:10])
+                        + "</ul>"
+                    )
+            except Exception:
+                ev_html = (
+                    "<ul class='chips'>"
+                    + "".join(f"<li><code>{escape(str(e))}</code></li>" for e in evidence[:10])
+                    + "</ul>"
+                )
         else:
             ev_html = "<p class='muted'>No raw evidence snippet stored.</p>"
         finding_blocks.append(
@@ -241,6 +261,10 @@ h5 {{ margin: .55rem 0 .25rem; font-size: .9rem; }}
 .url-list {{ padding-left: 1.1rem; font-family: var(--mono); font-size: .78rem; }}
 .chips {{ list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: .35rem; }}
 .chips li {{ border: 1px solid var(--line); border-radius: 8px; padding: .2rem .45rem; background: rgba(0,0,0,.25); }}
+.secret-reveal {{ margin: .25rem 0; max-width: 100%; }}
+.secret-details {{ display: inline; margin-left: .35rem; }}
+.secret-details summary {{ cursor: pointer; color: var(--accent); font-size: .78rem; display: inline; }}
+.secret-full {{ display: block; margin-top: .35rem; word-break: break-all; }}
 table {{ width: 100%; border-collapse: collapse; font-size: .88rem; }}
 th, td {{ border-bottom: 1px solid var(--line); padding: .55rem .4rem; text-align: left; vertical-align: top; }}
 th {{ color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; }}

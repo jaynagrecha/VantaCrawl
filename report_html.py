@@ -108,12 +108,24 @@ def render_search_report_html(
         evidence = group.get("evidence") or []
         if group.get("category") == "secrets_exposure":
             if evidence:
-                evidence_html = (
-                    "<ul class='chip-list'>"
-                    + "".join(f"<li><code>{escape(e)}</code></li>" for e in evidence[:10])
-                    + "</ul>"
-                )
-                evidence_block = f"<h4>Secret (masked)</h4>{evidence_html}"
+                try:
+                    from security_scan import secret_reveal_html
+                except Exception:  # pragma: no cover
+                    secret_reveal_html = None
+                if secret_reveal_html:
+                    chips = []
+                    for e in evidence[:10]:
+                        chip = secret_reveal_html(e)
+                        if chip:
+                            chips.append(chip)
+                    evidence_html = "<ul class='chip-list secret-list'>" + "".join(chips) + "</ul>"
+                else:
+                    evidence_html = (
+                        "<ul class='chip-list'>"
+                        + "".join(f"<li><code>{escape(e)}</code></li>" for e in evidence[:10])
+                        + "</ul>"
+                    )
+                evidence_block = f"<h4>Secret</h4><p class='muted'>Masked by default — expand to reveal the full value.</p>{evidence_html}"
             else:
                 evidence_block = "<h4>Secret</h4><p class='muted'>Pattern matched; exact value not captured.</p>"
         elif evidence:
@@ -165,6 +177,38 @@ def render_search_report_html(
     key_lines = model.get("key_findings_lines") or conclusion.get("interesting") or []
     key_findings_html_parts = []
     current = None
+
+    def _render_key_kids(kids: list) -> str:
+        parts = []
+        i = 0
+        while i < len(kids):
+            kid = kids[i]
+            if kid.startswith("Secret (masked):") and i + 1 < len(kids) and kids[i + 1].startswith("Secret (full):"):
+                masked = kid.split(":", 1)[-1].strip()
+                full = kids[i + 1].split(":", 1)[-1].strip()
+                try:
+                    from security_scan import secret_reveal_html
+
+                    chip = secret_reveal_html(full) or f"<li><code>{escape(masked)}</code></li>"
+                except Exception:
+                    chip = f"<li><code>{escape(masked)}</code></li>"
+                parts.append(chip)
+                i += 2
+                continue
+            if kid.startswith("Secret (full):"):
+                full = kid.split(":", 1)[-1].strip()
+                try:
+                    from security_scan import secret_reveal_html
+
+                    parts.append(secret_reveal_html(full) or f"<li><code>{escape(full)}</code></li>")
+                except Exception:
+                    parts.append(f"<li><code>{escape(full)}</code></li>")
+                i += 1
+                continue
+            parts.append(f"<li>{escape(kid)}</li>")
+            i += 1
+        return "".join(parts) or "<li>(no path)</li>"
+
     for line in key_lines:
         if line.startswith("  Path:") or line.startswith("  Secret") or line.startswith("  Evidence") or line.startswith("  Detail:"):
             if current is None:
@@ -172,15 +216,13 @@ def render_search_report_html(
             current["kids"].append(line.strip())
         else:
             if current:
-                kids = "".join(f"<li>{escape(k)}</li>" for k in current["kids"]) or "<li>(no path)</li>"
                 key_findings_html_parts.append(
-                    f"<li><strong>{escape(current['title'])}</strong><ul>{kids}</ul></li>"
+                    f"<li><strong>{escape(current['title'])}</strong><ul>{_render_key_kids(current['kids'])}</ul></li>"
                 )
             current = {"title": line, "kids": []}
     if current:
-        kids = "".join(f"<li>{escape(k)}</li>" for k in current["kids"]) or "<li>(no path)</li>"
         key_findings_html_parts.append(
-            f"<li><strong>{escape(current['title'])}</strong><ul>{kids}</ul></li>"
+            f"<li><strong>{escape(current['title'])}</strong><ul>{_render_key_kids(current['kids'])}</ul></li>"
         )
     key_findings_block = "".join(key_findings_html_parts) or "<li>No findings with paths in this run.</li>"
 
@@ -466,6 +508,12 @@ code, .url-link, .mono {{ font-family: "IBM Plex Mono", Consolas, monospace; fon
 .empty {{ color: var(--muted); padding: .5rem 0; }}
 .setup th {{ width: 38%; color: var(--muted); }}
 .chip-list {{ padding-left: 1.1rem; }}
+.secret-reveal {{ margin: .35rem 0; }}
+.secret-details {{ display: inline; margin-left: .35rem; }}
+.secret-details summary {{
+  cursor: pointer; color: var(--accent); font-size: .78rem; display: inline;
+}}
+.secret-full {{ display: block; margin-top: .35rem; word-break: break-all; }}
 .hidden-by-filter {{ display: none !important; }}
 .toast {{
   position: fixed; bottom: 1rem; right: 1rem; background: var(--bg-elev);

@@ -71,7 +71,10 @@ def test_secret_real_key_detected():
     body = 'const key = "AIzaSyD-RealKeyValue0123456789AbCdEfGhI";'
     hits = scan_secrets(body, "https://x.com/a.js")
     assert hits, "expected a real-looking Google API key to be detected"
-    assert hits[0][3]  # masked evidence
+    full = hits[0][3]
+    assert full and full.startswith("AIza")
+    assert "…" not in full
+    assert "…" in mask_secret_value(full)
 
 
 def test_sensitive_path_backup_guide_not_fp():

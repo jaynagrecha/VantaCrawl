@@ -122,6 +122,7 @@ export default function JobPage() {
   const [logExtra, setLogExtra] = useState("");
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [artifacts, setArtifacts] = useState<{ name: string; path: string; size: number; kind: string }[]>([]);
+  const [revealedSecrets, setRevealedSecrets] = useState<Record<string, boolean>>({});
   const logRef = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
   const elapsedSyncedAtRef = useRef(Date.now());
@@ -237,7 +238,7 @@ export default function JobPage() {
   }
 
   const jobFinished = ["completed", "failed", "cancelled"].includes(job.status);
-  const reportReady = Boolean(job.report_html_path) || (jobFinished && job.status === "completed");
+  const reportReady = Boolean(job.report_html_path);
   const tok = encodeURIComponent(getToken() || "");
   const htmlUrl = `/api/reports/${job.id}/html?token=${tok}`;
   const techUrl = `/api/reports/${job.id}/technical.html?token=${tok}`;
@@ -257,7 +258,15 @@ export default function JobPage() {
   const canStop = !["completed", "cancelled", "failed"].includes(job.status);
 
   const enumHits = (progress.enum_hit_urls as string[]) || [];
-  const findings = (progress.findings_preview as { severity?: string; title?: string; url?: string }[]) || [];
+  const findings =
+    (progress.findings_preview as {
+      severity?: string;
+      title?: string;
+      url?: string;
+      category?: string;
+      evidence_masked?: string;
+      evidence_full?: string;
+    }[]) || [];
 
   return (
     <div>
@@ -559,19 +568,45 @@ export default function JobPage() {
                 <p className="muted">None yet</p>
               ) : (
                 <ul style={{ fontSize: ".85rem", maxHeight: 240, overflow: "auto", paddingLeft: "1.1rem" }}>
-                  {findings.map((f, i) => (
-                    <li key={`${f.url}-${i}`}>
-                      <strong>{f.severity || "info"}</strong> — {f.title || "Finding"}
-                      {f.url ? (
-                        <>
-                          {" "}
-                          <a className="mono" href={f.url} target="_blank" rel="noreferrer">
-                            {f.url}
-                          </a>
-                        </>
-                      ) : null}
-                    </li>
-                  ))}
+                  {findings.map((f, i) => {
+                    const secretKey = `${f.url || ""}-${i}`;
+                    const hasSecret = Boolean(f.evidence_full || f.evidence_masked);
+                    const shown = revealedSecrets[secretKey]
+                      ? f.evidence_full || f.evidence_masked || ""
+                      : f.evidence_masked || (f.evidence_full ? "••••" : "");
+                    return (
+                      <li key={secretKey}>
+                        <strong>{f.severity || "info"}</strong> — {f.title || "Finding"}
+                        {f.url ? (
+                          <>
+                            {" "}
+                            <a className="mono" href={f.url} target="_blank" rel="noreferrer">
+                              {f.url}
+                            </a>
+                          </>
+                        ) : null}
+                        {hasSecret ? (
+                          <div className="secret-reveal-row">
+                            <code className="mono">{shown}</code>
+                            {f.evidence_full ? (
+                              <button
+                                className="btn secret-reveal-btn"
+                                type="button"
+                                onClick={() =>
+                                  setRevealedSecrets((prev) => ({
+                                    ...prev,
+                                    [secretKey]: !prev[secretKey],
+                                  }))
+                                }
+                              >
+                                {revealedSecrets[secretKey] ? "Hide" : "Show full"}
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </div>
@@ -585,8 +620,8 @@ export default function JobPage() {
           <div>
             <p className="muted">
               {jobFinished
-                ? "No full HTML report was written (scan stopped early or was blocked). You can generate a summary from the log, or export the log above."
-                : "HTML report appears when the worker finishes (or when a stuck job is force-cancelled)."}
+                ? "No HTML report path is linked yet. If the worker wrote reports to disk, refresh — or generate a summary from the log."
+                : "HTML report appears when the worker finishes (including stop/cancel), or when a stuck job is force-cancelled."}
             </p>
             {jobFinished ? (
               <button

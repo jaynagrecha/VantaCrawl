@@ -244,6 +244,7 @@ def inventory_cookies(headers: dict) -> List[Dict[str, str]]:
 
 
 def find_jwt_candidates(text: str, headers: Optional[dict] = None) -> List[Tuple[str, str]]:
+    """Return (source, full_token) for JWT-shaped strings."""
     hits: List[Tuple[str, str]] = []
     seen = set()
 
@@ -251,8 +252,7 @@ def find_jwt_candidates(text: str, headers: Optional[dict] = None) -> List[Tuple
         if token in seen:
             return
         seen.add(token)
-        masked = token[:12] + "…" + token[-8:] if len(token) > 24 else token[:6] + "…"
-        hits.append((source, masked))
+        hits.append((source, token))
 
     if headers:
         for key, value in headers.items():
