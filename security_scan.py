@@ -186,9 +186,39 @@ _GENERIC_SECRET_LABELS = frozenset(
     }
 )
 
+# Prefix/shape labels that already name the vendor — keep unless variables
+# give a clear product+kind that is at least as specific.
+_PREFIX_LOCKED_LABELS = frozenset(
+    {
+        "AWS Access Key ID",
+        "AWS Temporary Access Key ID",
+        "AWS Secret Access Key",
+        "AWS Session Token",
+        "GitHub Personal Access Token",
+        "GitHub Fine-grained PAT",
+        "GitHub OAuth Token",
+        "GitHub User-to-Server Token",
+        "GitLab Personal Access Token",
+        "Stripe Live Secret Key",
+        "Stripe Restricted Live Key",
+        "Stripe Live Publishable Key",
+        "OpenAI API Key",
+        "Slack API Token",
+        "SendGrid API Key",
+        "Mailgun API Key",
+        "Twilio API Key SID",
+        "Twilio Auth Token",
+        "Shopify Admin API Access Token",
+        "npm Access Token",
+        "DigitalOcean Personal Access Token",
+        "HashiCorp Vault Token",
+        "Private Key (PEM)",
+    }
+)
+
 
 def refine_secret_label(label: str, raw: str, body_text: str, start: int, end: int) -> str:
-    """Classify WHAT we found: {Product} {Kind} from identifiers, then vendor hints."""
+    """Classify WHAT we found from assigned + related variables, then vendor hints."""
     from secret_classify import classify_credential
 
     value = extract_secret_value(raw)
@@ -201,15 +231,20 @@ def refine_secret_label(label: str, raw: str, body_text: str, start: int, end: i
         value=value,
     )
 
-    # Prefix / vendor-specific patterns already name the credential — keep them
-    # unless classification produced a richer product+kind from the variable name.
+    # Always prefer variable-derived product+kind over generic bases
+    if classified and classified not in _GENERIC_SECRET_LABELS and classified != label:
+        # Prefix-locked labels win only when classification didn't add a product
+        # from the assignment (e.g. bare AKIA with no variable stays AWS).
+        if label in _PREFIX_LOCKED_LABELS:
+            # If variables named a different product (unlikely for AKIA), keep prefix
+            # but allow enrichment when classify equals/extends the same vendor.
+            return label
+        return classified
+
     if label not in _GENERIC_SECRET_LABELS:
         return label
 
-    if classified and classified not in _GENERIC_SECRET_LABELS and classified != label:
-        return classified
-
-    window = body_text[max(0, start - 96) : min(len(body_text), end + 48)]
+    window = body_text[max(0, start - 280) : min(len(body_text), end + 160)]
     blob = f"{window}\n{raw}"
     for pattern, refined in SECRET_CONTEXT_LABELS:
         if re.search(pattern, blob):
@@ -234,11 +269,12 @@ def _secret_looks_real(raw: str) -> bool:
 def scan_secrets(body_text: str, url: str) -> List[Tuple[str, str, str, Optional[str]]]:
     """Return (label, severity, detail, evidence).
 
-    ``label`` is the credential type (e.g. AWS Access Key ID, PayPal API Key,
-    Acme Activation Key, Db ID and Password).
+    ``label`` is the credential type derived from the assigned variable and
+    related nearby identifiers when possible (e.g. PayPal API Key, Acme
+    Activation Key, Db ID and Password).
     Evidence is the full accessible value (UI/reports mask with tap-to-reveal).
     """
-    from secret_classify import severity_for_kind
+    from secret_classify import assignment_note, severity_for_kind
 
     findings: List[Tuple[str, str, str, Optional[str]]] = []
     if not body_text:
@@ -255,7 +291,8 @@ def scan_secrets(body_text: str, url: str) -> List[Tuple[str, str, str, Optional
             if key in seen:
                 continue
             seen.add(key)
-            detail = f"Exposed {typed} in response body"
+            note = assignment_note(body_text, match.start(), match.end(), value)
+            detail = f"Exposed {typed} in response body{note}"
             findings.append((typed, severity_for_kind(typed, severity), detail, value or None))
     return findings
 

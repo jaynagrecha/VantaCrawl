@@ -1,16 +1,22 @@
-"""Classify discovered credentials by product + kind from surrounding context.
+"""Classify credentials from assignment targets and related nearby variables.
+
+Priority:
+  1. Variable / property the value is assigned to (LHS)
+  2. Related identifiers in the same object / nearby lines (provider, service, sibling keys)
+  3. Pattern / prefix base label (AKIA → AWS, sk_live_ → Stripe, …)
 
 Examples:
-  paypal_api_key=...     → PayPal API Key
-  ACME_ACTIVATION_KEY=…  → Acme Activation Key
-  db_password=… (+ user) → Db ID and Password
-  AKIA…                  → AWS Access Key ID (prefix wins over context)
+  paypal_api_key = "…"           → PayPal API Key
+  ACME_ACTIVATION_KEY=…          → Acme Activation Key
+  api_key = "…"  // provider paypal → PayPal API Key
+  { service: "sendgrid", key: "…" } → SendGrid Key
+  db_password=… + username=…     → Db ID and Password
 """
 
 from __future__ import annotations
 
 import re
-from typing import Optional, Tuple
+from typing import Iterable, List, Sequence, Tuple
 
 # Ordered: longer / more specific kinds first.
 _KIND_PATTERNS: Tuple[Tuple[str, str], ...] = (
@@ -42,9 +48,31 @@ _KIND_PATTERNS: Tuple[Tuple[str, str], ...] = (
     (r"keys?", "Key"),
 )
 
+# LHS = value patterns: bare ident, quoted key, dotted path, env-style
 _IDENT_ASSIGN_RE = re.compile(
-    r"(?i)(?:[\"'](?P<qident>[A-Za-z][\w.\-]{1,80})[\"']|(?P<ident>[A-Za-z][A-Za-z0-9]*(?:[_\-][A-Za-z0-9]+)*))"
-    r"\s*[:=]\s*[\"']?(?P<value>[^\"'\s]{6,})"
+    r"(?ix)"
+    r"(?:(?:const|let|var|export)\s+)?"
+    r"(?:"
+    r"[\"'](?P<qident>[A-Za-z][\w.\-]{1,100})[\"']"  # "paypal_api_key":
+    r"|(?P<path>[A-Za-z][\w]*(?:\.[A-Za-z][\w]*){1,6})"  # config.paypal.apiKey
+    r"|(?:process\.env\.)?(?P<ident>[A-Za-z][A-Za-z0-9]*(?:[_\-][A-Za-z0-9]+)*)"
+    r")"
+    r"\s*[:=]\s*[\"']?(?P<value>[^\s\"']{6,})"
+)
+
+# Any identifier-looking token (for related-variable harvest)
+_IDENT_TOKEN_RE = re.compile(
+    r"(?ix)\b(?P<ident>[A-Za-z][A-Za-z0-9]*(?:[_\-][A-Za-z0-9]+){0,8})\b"
+)
+
+# provider / service / vendor string literals near the secret
+_PROVIDER_ASSIGN_RE = re.compile(
+    r"(?ix)\b(?:provider|service|vendor|product|platform|integration|source|name|type)\b"
+    r"\s*[:=]\s*[\"'](?P<name>[A-Za-z][\w.\-]{1,40})[\"']"
+)
+
+_USER_NEAR_RE = re.compile(
+    r"(?ix)\b(?:user(?:name)?|login|email|account[_-]?id|user[_-]?id|uid)\b\s*[:=]"
 )
 
 _STOP_PRODUCTS = {
@@ -78,16 +106,81 @@ _STOP_PRODUCTS = {
     "class",
     "async",
     "await",
+    "default",
+    "value",
+    "values",
+    "props",
+    "state",
+    "type",
+    "types",
+    "key",
+    "keys",
+    "secret",
+    "secrets",
+    "token",
+    "tokens",
+    "password",
+    "passwords",
+    "credential",
+    "credentials",
+    "auth",
+    "authorization",
+    "bearer",
+    "basic",
+    "api",
+    "id",
+    "ids",
+    "client",
+    "app",
+    "user",
+    "username",
+    "login",
+    "email",
+    "account",
+    "access",
+    "private",
+    "public",
+    "production",
+    "prod",
+    "staging",
+    "dev",
+    "test",
+    "demo",
+    "sample",
+    "example",
+    "number",
+    "object",
+    "array",
 }
 
-
-def _split_ident(ident: str) -> list[str]:
-    text = (ident or "").replace(".", "_").replace("-", "_")
-    # camelCase / PascalCase → snake
-    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
-    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", text)
-    return [p for p in text.split("_") if p]
-
+_KIND_STOP = {
+    "key",
+    "keys",
+    "secret",
+    "secrets",
+    "token",
+    "tokens",
+    "password",
+    "passwords",
+    "passwd",
+    "passphrase",
+    "credential",
+    "credentials",
+    "api",
+    "auth",
+    "access",
+    "refresh",
+    "bearer",
+    "session",
+    "client",
+    "app",
+    "consumer",
+    "private",
+    "activation",
+    "license",
+    "id",
+    "ids",
+}
 
 _BRAND_TITLES = {
     "paypal": "PayPal",
@@ -112,26 +205,55 @@ _BRAND_TITLES = {
     "alienvault": "AlienVault",
     "mongodb": "MongoDB",
     "postgresql": "PostgreSQL",
+    "postgres": "PostgreSQL",
     "mysql": "MySQL",
     "redis": "Redis",
     "aws": "AWS",
     "gcp": "GCP",
     "azure": "Azure",
     "npm": "npm",
+    "slack": "Slack",
+    "heroku": "Heroku",
+    "sentry": "Sentry",
+    "firebase": "Firebase",
+    "anthropic": "Anthropic",
+    "westernunion": "WesternUnion",
+    "wu": "WU",
 }
+
+_GENERIC_BASES = frozenset(
+    {
+        "Generic API Key",
+        "Hardcoded Password",
+        "Hardcoded Client Secret",
+        "Hardcoded Secret",
+        "Named Credential",
+        "Activation / License Key",
+        "Credential",
+    }
+)
+
+# Widen so sibling keys / provider fields are visible
+_CONTEXT_BEFORE = 280
+_CONTEXT_AFTER = 160
+
+
+def _split_ident(ident: str) -> list[str]:
+    text = (ident or "").replace(".", "_").replace("-", "_")
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", text)
+    return [p for p in text.split("_") if p]
 
 
 def _title_product(parts: list[str]) -> str:
     if not parts:
         return ""
-    # Keep short acronyms upper (AWS, VT, API already stripped as kind)
     out = []
     for p in parts:
         key = p.lower()
         if key in _BRAND_TITLES:
             out.append(_BRAND_TITLES[key])
         elif p.isupper() and 2 <= len(p) <= 3:
-            # Short acronyms (AWS, GCP) — longer ALLCAPS like ACME → title case
             out.append(p.upper())
         elif key in ("id", "ids"):
             out.append("ID")
@@ -141,7 +263,13 @@ def _title_product(parts: list[str]) -> str:
 
 
 def parse_ident_kind(ident: str) -> Tuple[str, str]:
-    """Return (product, kind) from an identifier like paypal_api_key."""
+    """Return (product, kind) from an identifier like paypal_api_key or config.paypal.apiKey."""
+    # Dotted path: keep the most specific trailing segments
+    if "." in (ident or ""):
+        parts = [p for p in ident.split(".") if p]
+        # Prefer last 2–3 segments: paypal.apiKey / stripe.secret_key
+        ident = "_".join(parts[-3:]) if len(parts) >= 2 else (parts[-1] if parts else ident)
+
     parts = _split_ident(ident)
     if not parts:
         return "", ""
@@ -152,11 +280,119 @@ def parse_ident_kind(ident: str) -> Tuple[str, str]:
             continue
         kind_start = m.start(1)
         product_joined = joined[:kind_start].rstrip("_")
-        product_parts = [p for p in product_joined.split("_") if p and p.lower() not in _STOP_PRODUCTS]
+        product_parts = [
+            p for p in product_joined.split("_") if p and p.lower() not in _STOP_PRODUCTS
+        ]
         return _title_product(product_parts), kind
-    # No kind suffix — treat whole ident as product, unknown kind
     filtered = [p for p in parts if p.lower() not in _STOP_PRODUCTS]
     return _title_product(filtered), ""
+
+
+def _value_matches(secret: str, candidate: str) -> bool:
+    if not secret or not candidate:
+        return False
+    if candidate == secret or secret == candidate:
+        return True
+    n = min(16, len(secret), len(candidate))
+    if n < 6:
+        return secret == candidate
+    return secret.startswith(candidate[:n]) or candidate.startswith(secret[:n])
+
+
+def find_assignment_ident(
+    body_text: str,
+    start: int,
+    end: int,
+    value: str,
+) -> str:
+    """Find the variable/property this secret is assigned to."""
+    window_start = max(0, start - _CONTEXT_BEFORE)
+    window = body_text[window_start : min(len(body_text), end + _CONTEXT_AFTER)]
+    val = (value or "").strip()
+    best: Tuple[int, str] = (-1, "")
+
+    for m in _IDENT_ASSIGN_RE.finditer(window):
+        cand = m.group("value") or ""
+        if not _value_matches(val, cand):
+            continue
+        ident = m.group("path") or m.group("ident") or m.group("qident") or ""
+        if not ident:
+            continue
+        abs_pos = window_start + m.start()
+        distance = abs(abs_pos - start)
+        score = 10_000 - distance
+        if score > best[0]:
+            best = (score, ident)
+    return best[1]
+
+
+def collect_related_idents(window: str, *, exclude: Sequence[str] = ()) -> List[str]:
+    """Harvest nearby identifier names that may describe the product/service."""
+    exclude_l = {e.lower() for e in exclude if e}
+    found: List[str] = []
+    seen = set()
+    for m in _IDENT_TOKEN_RE.finditer(window or ""):
+        ident = m.group("ident") or ""
+        low = ident.lower()
+        if low in seen or low in exclude_l:
+            continue
+        if low in _STOP_PRODUCTS or low in _KIND_STOP:
+            continue
+        if len(ident) < 2 or ident.isdigit():
+            continue
+        seen.add(low)
+        found.append(ident)
+    return found
+
+
+def infer_product_from_related(window: str, related: Iterable[str]) -> str:
+    """Infer product name from provider=… literals and related variable stems."""
+    for m in _PROVIDER_ASSIGN_RE.finditer(window or ""):
+        name = m.group("name") or ""
+        product, _ = parse_ident_kind(name)
+        if product:
+            return product
+        titled = _title_product(_split_ident(name))
+        if titled:
+            return titled
+
+    for ident in related:
+        parts = _split_ident(ident)
+        for p in parts:
+            key = p.lower()
+            if key in _BRAND_TITLES:
+                return _BRAND_TITLES[key]
+        product, kind = parse_ident_kind(ident)
+        if product and kind:
+            return product
+        if product and product.lower() not in {x.lower() for x in _KIND_STOP}:
+            if product.lower() not in {"key", "token", "password", "credential"}:
+                return product
+    return ""
+
+
+def _kind_from_base_label(base_label: str) -> str:
+    low = (base_label or "").lower()
+    for _, kind in _KIND_PATTERNS:
+        if kind.lower() in low:
+            return kind
+    if "password" in low:
+        return "Password"
+    if "token" in low:
+        return "Token"
+    if "secret" in low:
+        return "Secret"
+    if "key" in low:
+        return "API Key"
+    return ""
+
+
+def extract_value_fallback(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    m = re.search(r"[:=]\s*['\"]?([^\s'\"]{6,})", text)
+    return m.group(1) if m else text
 
 
 def classify_credential(
@@ -168,52 +404,56 @@ def classify_credential(
     end: int,
     value: str = "",
 ) -> str:
-    """Build a human label: '{Product} {Kind}' when context allows, else base_label."""
-    window = body_text[max(0, start - 120) : min(len(body_text), end + 80)]
-    val = (value or "").strip() or raw
+    """Build a human label from assignment + related variables, else base_label."""
+    window_start = max(0, start - _CONTEXT_BEFORE)
+    window = body_text[window_start : min(len(body_text), end + _CONTEXT_AFTER)]
+    val = (value or "").strip() or extract_value_fallback(raw)
 
-    # Prefer identifier immediately before this assignment
-    product, kind = "", ""
-    for m in _IDENT_ASSIGN_RE.finditer(window):
-        cand = m.group("value") or ""
-        if not cand:
-            continue
-        # Match this secret's value (prefix enough for long tokens)
-        if val.startswith(cand[:12]) or cand.startswith(val[:12]) or cand == val:
-            ident = m.group("ident") or m.group("qident") or ""
-            product, kind = parse_ident_kind(ident)
-            break
+    assign_ident = find_assignment_ident(body_text, start, end, val)
+    product, kind = parse_ident_kind(assign_ident) if assign_ident else ("", "")
 
-    # Nearby username/id for password findings
-    if (kind == "Password" or "password" in (base_label or "").lower()) and re.search(
-        r"(?i)\b(user(name)?|login|email|account[_-]?id|user[_-]?id)\b\s*[:=]",
-        window,
+    related = collect_related_idents(window, exclude=[assign_ident] if assign_ident else [])
+    if not product:
+        product = infer_product_from_related(window, related)
+    elif not kind:
+        for ident in related:
+            _, rel_kind = parse_ident_kind(ident)
+            if rel_kind:
+                kind = rel_kind
+                break
+
+    if not kind:
+        kind = _kind_from_base_label(base_label)
+
+    # Password + nearby user/id → ID and Password
+    if (kind == "Password" or "password" in (base_label or "").lower()) and _USER_NEAR_RE.search(
+        window
     ):
         if product:
             return f"{product} ID and Password"
+        rel_product = infer_product_from_related(window, related)
+        if rel_product:
+            return f"{rel_product} ID and Password"
         return "ID and Password"
-
-    _GENERIC_BASES = {
-        "Generic API Key",
-        "Hardcoded Password",
-        "Hardcoded Client Secret",
-        "Hardcoded Secret",
-        "Named Credential",
-        "Activation / License Key",
-    }
 
     if product and kind:
         return f"{product} {kind}"
     if kind and not product:
-        # e.g. bare api_key=
         return kind if kind != "Key" else (base_label or "API Key")
     if product and not kind:
-        # product-only with a generic base
         if base_label and base_label not in _GENERIC_BASES:
             return base_label
         return f"{product} Credential"
 
     return base_label or "Credential"
+
+
+def assignment_note(body_text: str, start: int, end: int, value: str) -> str:
+    """Short note for finding detail: which variable held the secret."""
+    ident = find_assignment_ident(body_text, start, end, value)
+    if not ident:
+        return ""
+    return f" (assigned to `{ident}`)"
 
 
 def severity_for_kind(label: str, default: str = "high") -> str:

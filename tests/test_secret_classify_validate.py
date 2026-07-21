@@ -51,6 +51,40 @@ def test_scan_id_and_password():
     hits = scan_secrets(body, "https://x/cfg.js")
     assert hits
     assert any(h[0] == "Db ID and Password" for h in hits)
+    assert any("assigned to `db_password`" in h[2] for h in hits)
+
+
+def test_related_provider_variable():
+    """Bare api_key classified via nearby provider/service assignment."""
+    body = (
+        'const creds = {\n'
+        '  provider: "paypal",\n'
+        '  api_key: "abcdefghijklmnopqrstuvwxyz0123456789"\n'
+        '};\n'
+    )
+    hits = scan_secrets(body, "https://x/cfg.js")
+    assert hits
+    assert hits[0][0] == "PayPal API Key"
+    assert "assigned to" in hits[0][2]
+
+
+def test_dotted_path_assignment():
+    body = 'config.sendgrid.apiKey = "SG.' + ("a" * 22) + "." + ("b" * 43) + '";\n'
+    hits = scan_secrets(body, "https://x/cfg.js")
+    assert hits
+    # Prefix lock keeps SendGrid API Key for SG. shape
+    assert hits[0][0] == "SendGrid API Key"
+    assert "config.sendgrid.apiKey" in hits[0][2]
+
+
+def test_sibling_brand_in_related_idents():
+    body = (
+        'const paypalClientId = "AeAAAAclientidvalue012345";\n'
+        'const api_key = "abcdefghijklmnopqrstuvwxyz0123456789";\n'
+    )
+    hits = scan_secrets(body, "https://x/cfg.js")
+    types = {h[0] for h in hits}
+    assert "PayPal API Key" in types
 
 
 def test_refine_shodan_still_works():
