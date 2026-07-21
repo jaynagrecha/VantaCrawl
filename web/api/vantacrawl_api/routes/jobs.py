@@ -244,7 +244,10 @@ def list_jobs(session: SessionDep, user: CurrentUser):
 
 @router.get("/{job_id}", response_model=JobOut)
 def get_job(job_id: str, session: SessionDep, user: CurrentUser):
-    return _to_out(_owned(session.get(ScanJob, job_id), user))
+    from ..services.report_paths import heal_job_report_paths
+
+    job = heal_job_report_paths(session, _owned(session.get(ScanJob, job_id), user))
+    return _to_out(job)
 
 
 @router.patch("/{job_id}/settings", response_model=MessageOut)
