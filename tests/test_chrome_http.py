@@ -9,6 +9,18 @@ from evasion_layer import CHROME_MAJOR, EvasionConfig, EvasionSession
 def test_chrome_impersonate_defaults_to_modern_chrome():
     assert chrome_impersonate_for_profile("chrome") == DEFAULT_IMPERSONATE
     assert "chrome" in DEFAULT_IMPERSONATE
+    # TLS stays Chrome even if UA profile is firefox/safari (avoids mixed JA4 in Akamai)
+    assert chrome_impersonate_for_profile("firefox") == DEFAULT_IMPERSONATE
+    assert chrome_impersonate_for_profile("safari") == DEFAULT_IMPERSONATE
+
+
+def test_expected_ja4_constant_matches_chrome146():
+    from chrome_http import CURL_CFFI_CHROME146_JA4
+
+    # Documented / measured curl_cffi chrome146 JA4 — what Akamai should show
+    # when the scan client (not real Chrome) is the only stack.
+    assert CURL_CFFI_CHROME146_JA4.startswith("t13d1516h2_8daaf6152771_")
+    assert CURL_CFFI_CHROME146_JA4.endswith("d8a2da3f94cd")
 
 
 def test_evasion_headers_include_full_client_hints_and_sec_fetch():
