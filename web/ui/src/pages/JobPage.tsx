@@ -630,7 +630,7 @@ export default function JobPage() {
             <p className="muted">
               {jobFinished
                 ? "No HTML report path is linked yet. If the worker wrote reports to disk, refresh — or generate a summary from the log."
-                : "HTML report appears when the worker finishes (including stop/cancel), or when a stuck job is force-cancelled."}
+                : "Full assessment report (with explanations) is written on stop/cancel from findings so far."}
             </p>
             {jobFinished ? (
               <button
