@@ -569,6 +569,10 @@ class CrawlerApp(QMainWindow):
             "Calls vendor metadata endpoints only (e.g. Stripe balance, GitHub /user). "
             "Never creates or deletes resources. Opt-in; enabled by default in Deep Audit."
         )
+        self.secret_org_hints_input = QLineEdit()
+        self.secret_org_hints_input.setPlaceholderText(
+            "Org aliases: Western Union, WU, westernunion (optional — domain used too)"
+        )
         self.headers_cb = QCheckBox("Security header audit")
         self.headers_cb.setChecked(True)
         self.cors_cb = QCheckBox("CORS misconfiguration check")
@@ -593,6 +597,7 @@ class CrawlerApp(QMainWindow):
             self.sensitive_cb, self.vuln_cb, self.vuln_probe_cb,
         ):
             sec_layout.addWidget(w)
+        sec_layout.addWidget(self.secret_org_hints_input)
         settings_layout.addWidget(security_box)
 
         reporting_box = QGroupBox("Reporting")
@@ -1045,6 +1050,7 @@ class CrawlerApp(QMainWindow):
             security_scan=self.security_cb.isChecked(),
             secret_scan=self.secrets_cb.isChecked(),
             secret_validate_live=self.secret_validate_cb.isChecked(),
+            secret_org_hints=self.secret_org_hints_input.text().strip(),
             vuln_scan=self.vuln_cb.isChecked(),
             vuln_active_probe=self.vuln_probe_cb.isChecked(),
             active_probe_max_params=5,

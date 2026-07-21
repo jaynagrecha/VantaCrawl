@@ -1090,7 +1090,12 @@ async def _run_security_checks(
             stats._secret_validate_cache = {}
             stats._secret_validate_count = 0
 
-        for label, severity, detail, evidence in scan_secrets(body_text, url):
+        for label, severity, detail, evidence in scan_secrets(
+            body_text,
+            url,
+            org_hints=str(getattr(config, "secret_org_hints", "") or ""),
+            start_url=str(getattr(config, "start_url", "") or ""),
+        ):
             out_detail = detail
             if validate_live and evidence and stats._secret_validate_count < validate_max:
                 cache_key = (label, (evidence or "")[:64])

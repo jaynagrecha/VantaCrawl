@@ -87,6 +87,40 @@ def test_sibling_brand_in_related_idents():
     assert "PayPal API Key" in types
 
 
+def test_custom_org_from_hints_and_alias():
+    body = 'wu_api_key = "abcdefghijklmnopqrstuvwxyz0123456789";\n'
+    hits = scan_secrets(
+        body,
+        "https://lab.example/cfg.js",
+        org_hints="Western Union, WU, westernunion",
+    )
+    assert hits
+    assert hits[0][0] == "Western Union API Key"
+
+
+def test_custom_org_from_scan_domain():
+    body = 'westernunion_activation_key = "ACT-9f8e7d6c5b4a3210deadbeef";\n'
+    hits = scan_secrets(
+        body,
+        "https://www.westernunion.com/static/app.js",
+        start_url="https://www.westernunion.com/",
+    )
+    assert hits
+    assert hits[0][0] == "WesternUnion Activation Key"
+
+
+def test_custom_org_company_field():
+    body = (
+        'const cfg = {\n'
+        '  company: "Contoso",\n'
+        '  api_key: "abcdefghijklmnopqrstuvwxyz0123456789"\n'
+        '};\n'
+    )
+    hits = scan_secrets(body, "https://x/cfg.js")
+    assert hits
+    assert hits[0][0] == "Contoso API Key"
+
+
 def test_refine_shodan_still_works():
     label = refine_secret_label(
         "Generic API Key",

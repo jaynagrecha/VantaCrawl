@@ -2,21 +2,24 @@
 
 Priority:
   1. Variable / property the value is assigned to (LHS)
-  2. Related identifiers in the same object / nearby lines (provider, service, sibling keys)
-  3. Pattern / prefix base label (AKIA → AWS, sk_live_ → Stripe, …)
+  2. Related identifiers / org·company·provider fields nearby
+  3. Custom org context (scan target domain + secret_org_hints)
+  4. Pattern / prefix base label (AKIA → AWS, sk_live_ → Stripe, …)
 
 Examples:
-  paypal_api_key = "…"           → PayPal API Key
-  ACME_ACTIVATION_KEY=…          → Acme Activation Key
-  api_key = "…"  // provider paypal → PayPal API Key
-  { service: "sendgrid", key: "…" } → SendGrid Key
-  db_password=… + username=…     → Db ID and Password
+  paypal_api_key = "…"                    → PayPal API Key
+  wu_api_key = "…"  (org=Western Union)   → Western Union API Key
+  ACME_ACTIVATION_KEY=…                   → Acme Activation Key
+  { company: "Contoso", api_key: "…" }    → Contoso API Key
+  db_password=… + username=…              → Db ID and Password
 """
 
 from __future__ import annotations
 
 import re
-from typing import Iterable, List, Sequence, Tuple
+from dataclasses import dataclass, field
+from typing import Iterable, List, Optional, Sequence, Tuple
+from urllib.parse import urlparse
 
 # Ordered: longer / more specific kinds first.
 _KIND_PATTERNS: Tuple[Tuple[str, str], ...] = (
@@ -65,14 +68,47 @@ _IDENT_TOKEN_RE = re.compile(
     r"(?ix)\b(?P<ident>[A-Za-z][A-Za-z0-9]*(?:[_\-][A-Za-z0-9]+){0,8})\b"
 )
 
-# provider / service / vendor string literals near the secret
+# provider / service / org / company string literals near the secret
 _PROVIDER_ASSIGN_RE = re.compile(
-    r"(?ix)\b(?:provider|service|vendor|product|platform|integration|source|name|type)\b"
-    r"\s*[:=]\s*[\"'](?P<name>[A-Za-z][\w.\-]{1,40})[\"']"
+    r"(?ix)\b(?:provider|service|vendor|product|platform|integration|source|"
+    r"org(?:anization)?|company|tenant|brand|customer|client[_-]?name|business)\b"
+    r"\s*[:=]\s*[\"'](?P<name>[A-Za-z][\w.\- ]{1,60})[\"']"
 )
 
 _USER_NEAR_RE = re.compile(
     r"(?ix)\b(?:user(?:name)?|login|email|account[_-]?id|user[_-]?id|uid)\b\s*[:=]"
+)
+
+_GENERIC_TLDS = frozenset(
+    {
+        "com",
+        "net",
+        "org",
+        "io",
+        "co",
+        "app",
+        "dev",
+        "ai",
+        "gov",
+        "edu",
+        "info",
+        "biz",
+        "me",
+        "us",
+        "uk",
+        "au",
+        "ca",
+        "de",
+        "fr",
+        "jp",
+        "in",
+        "cloud",
+        "local",
+        "test",
+        "example",
+        "invalid",
+        "localhost",
+    }
 )
 
 _STOP_PRODUCTS = {
@@ -238,6 +274,145 @@ _CONTEXT_BEFORE = 280
 _CONTEXT_AFTER = 160
 
 
+@dataclass(frozen=True)
+class OrgContext:
+    """Custom organization names/aliases for classifying org-specific secrets."""
+
+    display_name: str = ""
+    aliases: frozenset[str] = field(default_factory=frozenset)
+
+    def __bool__(self) -> bool:
+        return bool(self.display_name and self.aliases)
+
+
+def _norm_alias(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def _aliases_for_label(label: str) -> set[str]:
+    """Build match tokens for an org label (Western Union → westernunion, wu, …)."""
+    raw = (label or "").strip()
+    if not raw:
+        return set()
+    out: set[str] = set()
+    compact = _norm_alias(raw)
+    if compact:
+        out.add(compact)
+    parts = re.split(r"[\s_\-.]+", raw)
+    parts = [p for p in parts if p]
+    if len(parts) >= 2:
+        out.add(_norm_alias("_".join(parts)))
+        initials = "".join(p[0] for p in parts if p)
+        if len(initials) >= 2:
+            out.add(initials.lower())
+    # single-token hyphenated host pieces already covered by compact
+    return {a for a in out if len(a) >= 2}
+
+
+def org_from_host(host: str) -> Tuple[str, set[str]]:
+    """Derive a display name + aliases from a hostname (e.g. api.westernunion.com)."""
+    host = (host or "").lower().split("@")[-1].split(":")[0].strip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    if not host or host in _GENERIC_TLDS:
+        return "", set()
+    labels = [p for p in host.split(".") if p]
+    if not labels:
+        return "", set()
+    # example.co.uk / example.com.au → second-level before country multi-part suffix
+    if (
+        len(labels) >= 3
+        and labels[-1] in _GENERIC_TLDS
+        and labels[-2] in {"co", "com", "net", "org", "ac", "gov"}
+    ):
+        sld = labels[-3]
+    elif len(labels) >= 2 and labels[-1] in _GENERIC_TLDS:
+        sld = labels[-2]
+    else:
+        sld = labels[0]
+    if not sld or sld in _GENERIC_TLDS or len(sld) < 2:
+        return "", set()
+    aliases = _aliases_for_label(sld)
+    if "-" in sld:
+        display = " ".join(p[:1].upper() + p[1:].lower() for p in sld.split("-") if p)
+    elif sld.lower() in _BRAND_TITLES:
+        display = _BRAND_TITLES[sld.lower()]
+    else:
+        display = sld[:1].upper() + sld[1:]
+    return display, aliases
+
+
+def build_org_context(
+    *,
+    hints: str = "",
+    urls: Optional[Sequence[str]] = None,
+) -> OrgContext:
+    """Build org context from optional hints + scan/page URLs.
+
+    hints: comma-separated display names / aliases
+           e.g. \"Western Union, WU, westernunion, wucom\"
+    First hint with a space (or the first hint) becomes the display name.
+    Domain-derived aliases are always merged in.
+    """
+    display = ""
+    aliases: set[str] = set()
+
+    for part in re.split(r"[,;|/]+", hints or ""):
+        token = part.strip()
+        if not token:
+            continue
+        if not display:
+            display = token
+        elif " " in token and " " not in display:
+            # Prefer a multi-word human name as display when listed later
+            display = token
+        aliases |= _aliases_for_label(token)
+        # Keep spaced form as match against company: "Western Union"
+        aliases.add(_norm_alias(token))
+
+    for url in urls or ():
+        try:
+            host = urlparse(url).netloc or urlparse(url).path
+        except Exception:
+            host = ""
+        dname, dals = org_from_host(host)
+        aliases |= dals
+        if dname and not display:
+            display = dname
+        elif dname:
+            # Domain label is also an alias for the hinted display name
+            aliases |= _aliases_for_label(dname)
+
+    aliases = {a for a in aliases if len(a) >= 2}
+    if not display or not aliases:
+        return OrgContext()
+    return OrgContext(display_name=display, aliases=frozenset(aliases))
+
+
+def match_org_in_text(text: str, org: Optional[OrgContext]) -> str:
+    """Return org display name if any alias appears as a token/substring in text."""
+    if not org or not text:
+        return ""
+    compact = _norm_alias(text)
+    parts = {p.lower() for p in _split_ident(text)}
+    # Longer aliases first so westernunion beats wu when both match
+    for alias in sorted(org.aliases, key=len, reverse=True):
+        if alias in parts or (len(alias) >= 3 and alias in compact):
+            return org.display_name
+    return ""
+
+
+def apply_org_product(product: str, org: Optional[OrgContext], *extra_texts: str) -> str:
+    """Upgrade a product stem to the custom org display name when aliases match."""
+    if not org:
+        return product
+    for text in (product, *extra_texts):
+        hit = match_org_in_text(text or "", org)
+        if hit:
+            return hit
+    return product
+
+
 def _split_ident(ident: str) -> list[str]:
     text = (ident or "").replace(".", "_").replace("-", "_")
     text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
@@ -345,29 +520,47 @@ def collect_related_idents(window: str, *, exclude: Sequence[str] = ()) -> List[
     return found
 
 
-def infer_product_from_related(window: str, related: Iterable[str]) -> str:
-    """Infer product name from provider=… literals and related variable stems."""
+def infer_product_from_related(
+    window: str,
+    related: Iterable[str],
+    org: Optional[OrgContext] = None,
+) -> str:
+    """Infer product name from provider/org literals and related variable stems."""
     for m in _PROVIDER_ASSIGN_RE.finditer(window or ""):
-        name = m.group("name") or ""
-        product, _ = parse_ident_kind(name)
+        name = (m.group("name") or "").strip()
+        org_hit = match_org_in_text(name, org)
+        if org_hit:
+            return org_hit
+        # Multi-word company names: "Western Union", "Acme Corp"
+        if " " in name:
+            return " ".join(p[:1].upper() + p[1:].lower() for p in name.split() if p)
+        product, _ = parse_ident_kind(name.replace(" ", "_"))
         if product:
-            return product
+            return apply_org_product(product, org, name)
         titled = _title_product(_split_ident(name))
         if titled:
-            return titled
+            return apply_org_product(titled, org, name)
 
     for ident in related:
+        org_hit = match_org_in_text(ident, org)
+        if org_hit:
+            return org_hit
         parts = _split_ident(ident)
         for p in parts:
             key = p.lower()
             if key in _BRAND_TITLES:
-                return _BRAND_TITLES[key]
+                return apply_org_product(_BRAND_TITLES[key], org, ident)
         product, kind = parse_ident_kind(ident)
         if product and kind:
-            return product
+            return apply_org_product(product, org, ident)
         if product and product.lower() not in {x.lower() for x in _KIND_STOP}:
             if product.lower() not in {"key", "token", "password", "credential"}:
-                return product
+                return apply_org_product(product, org, ident)
+
+    # Org alias anywhere in the window (comment, string, sibling)
+    org_hit = match_org_in_text(window, org)
+    if org_hit:
+        return org_hit
     return ""
 
 
@@ -403,18 +596,21 @@ def classify_credential(
     start: int,
     end: int,
     value: str = "",
+    org_context: Optional[OrgContext] = None,
 ) -> str:
-    """Build a human label from assignment + related variables, else base_label."""
+    """Build a human label from assignment + related variables + org context."""
     window_start = max(0, start - _CONTEXT_BEFORE)
     window = body_text[window_start : min(len(body_text), end + _CONTEXT_AFTER)]
     val = (value or "").strip() or extract_value_fallback(raw)
 
     assign_ident = find_assignment_ident(body_text, start, end, val)
     product, kind = parse_ident_kind(assign_ident) if assign_ident else ("", "")
+    if product:
+        product = apply_org_product(product, org_context, assign_ident)
 
     related = collect_related_idents(window, exclude=[assign_ident] if assign_ident else [])
     if not product:
-        product = infer_product_from_related(window, related)
+        product = infer_product_from_related(window, related, org_context)
     elif not kind:
         for ident in related:
             _, rel_kind = parse_ident_kind(ident)
@@ -431,14 +627,22 @@ def classify_credential(
     ):
         if product:
             return f"{product} ID and Password"
-        rel_product = infer_product_from_related(window, related)
+        rel_product = infer_product_from_related(window, related, org_context)
         if rel_product:
             return f"{rel_product} ID and Password"
+        if org_context and org_context.display_name:
+            return f"{org_context.display_name} ID and Password"
         return "ID and Password"
 
     if product and kind:
         return f"{product} {kind}"
     if kind and not product:
+        # Bare api_key / secret with org signal in window → Org API Key
+        org_hit = match_org_in_text(window, org_context) or match_org_in_text(
+            assign_ident, org_context
+        )
+        if org_hit:
+            return f"{org_hit} {kind if kind != 'Key' else 'API Key'}"
         return kind if kind != "Key" else (base_label or "API Key")
     if product and not kind:
         if base_label and base_label not in _GENERIC_BASES:

@@ -217,8 +217,16 @@ _PREFIX_LOCKED_LABELS = frozenset(
 )
 
 
-def refine_secret_label(label: str, raw: str, body_text: str, start: int, end: int) -> str:
-    """Classify WHAT we found from assigned + related variables, then vendor hints."""
+def refine_secret_label(
+    label: str,
+    raw: str,
+    body_text: str,
+    start: int,
+    end: int,
+    *,
+    org_context=None,
+) -> str:
+    """Classify WHAT we found from assigned + related variables + org context."""
     from secret_classify import classify_credential
 
     value = extract_secret_value(raw)
@@ -229,6 +237,7 @@ def refine_secret_label(label: str, raw: str, body_text: str, start: int, end: i
         start=start,
         end=end,
         value=value,
+        org_context=org_context,
     )
 
     # Always prefer variable-derived product+kind over generic bases
@@ -266,15 +275,28 @@ def _secret_looks_real(raw: str) -> bool:
     return True
 
 
-def scan_secrets(body_text: str, url: str) -> List[Tuple[str, str, str, Optional[str]]]:
+def scan_secrets(
+    body_text: str,
+    url: str,
+    *,
+    org_context=None,
+    org_hints: str = "",
+    start_url: str = "",
+) -> List[Tuple[str, str, str, Optional[str]]]:
     """Return (label, severity, detail, evidence).
 
-    ``label`` is the credential type derived from the assigned variable and
-    related nearby identifiers when possible (e.g. PayPal API Key, Acme
-    Activation Key, Db ID and Password).
+    ``label`` is the credential type derived from the assigned variable,
+    related nearby identifiers, and optional custom org context (scan domain +
+    ``secret_org_hints``).
     Evidence is the full accessible value (UI/reports mask with tap-to-reveal).
     """
-    from secret_classify import assignment_note, severity_for_kind
+    from secret_classify import assignment_note, build_org_context, severity_for_kind
+
+    if org_context is None:
+        org_context = build_org_context(
+            hints=org_hints,
+            urls=[u for u in (start_url, url) if u],
+        )
 
     findings: List[Tuple[str, str, str, Optional[str]]] = []
     if not body_text:
@@ -286,7 +308,14 @@ def scan_secrets(body_text: str, url: str) -> List[Tuple[str, str, str, Optional
             if not _secret_looks_real(raw):
                 continue
             value = extract_secret_value(raw)
-            typed = refine_secret_label(label, raw, body_text, match.start(), match.end())
+            typed = refine_secret_label(
+                label,
+                raw,
+                body_text,
+                match.start(),
+                match.end(),
+                org_context=org_context,
+            )
             key = (typed, value[:80] if value else raw[:80])
             if key in seen:
                 continue

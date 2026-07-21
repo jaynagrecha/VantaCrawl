@@ -112,6 +112,11 @@ _HUMAN = {
         "Max live secret checks",
         "Cap on how many credentials to probe live per scan (avoids hammering vendor APIs).",
     ),
+    "secret_org_hints": (
+        "Org / brand aliases",
+        "Comma-separated names for your org (e.g. Western Union, WU, westernunion). "
+        "Used with the scan domain to label custom org API keys, secrets, and activation keys.",
+    ),
     "header_audit": ("Security headers", "Audit missing security response headers."),
     "cors_check": ("CORS check", "Test Cross-Origin Resource Sharing misconfig."),
     "param_discovery": ("Parameter discovery", "Find query/body parameters for probing."),
@@ -458,6 +463,7 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "secret_scan",
             "secret_validate_live",
             "secret_validate_max",
+            "secret_org_hints",
             "header_audit",
             "cors_check",
             "param_discovery",
