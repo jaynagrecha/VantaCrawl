@@ -28,6 +28,11 @@ services:
     name: vantacrawl-api
     runtime: python
     plan: standard
+    # Keep scan reports across deploys (single instance required with a disk).
+    disk:
+      name: vantacrawl-data
+      mountPath: /opt/render/project/src/web/data
+      sizeGB: 10
     buildCommand: pip install -r web/requirements-render.txt -r web/api/requirements.txt && cd web/ui && npm install && npm run build
     startCommand: uvicorn vantacrawl_api.main:app --host 0.0.0.0 --port $PORT --app-dir web/api
     envVars:

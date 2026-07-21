@@ -15,6 +15,7 @@ from sqlmodel import Session
 from ..database import get_session
 from ..models import ScanJob, User
 from ..security import decode_access_token
+from ..services.report_paths import find_report_file, heal_job_report_paths, job_report_roots
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 optional_bearer = HTTPBearer(auto_error=False)
@@ -63,40 +64,40 @@ def _owned_job(session: Session, job_id: str, user: User) -> ScanJob:
     job = session.get(ScanJob, job_id)
     if not job or (job.user_id != user.id and not user.is_admin):
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    return heal_job_report_paths(session, job)
 
 
 def _html_path(job: ScanJob) -> Path:
-    path = Path(job.report_html_path or "")
-    if path.is_file():
+    path = find_report_file(
+        job,
+        ("*_ASSESSMENT_REPORT.html", "*_SEARCH_REPORT.html"),
+        preferred=job.report_html_path or "",
+    )
+    if path is not None:
         return path
-    report_dir = Path(job.report_dir or "")
-    # Prefer professional assessment deliverable when present
-    for pattern in ("*_ASSESSMENT_REPORT.html", "*_SEARCH_REPORT.html"):
-        matches = sorted(report_dir.glob(pattern)) if report_dir.is_dir() else []
-        if matches:
-            return matches[-1]
     raise HTTPException(status_code=404, detail="HTML report not ready")
 
 
 def _txt_path(job: ScanJob) -> Path:
-    path = Path(job.report_txt_path or "")
-    if path.is_file():
+    path = find_report_file(
+        job,
+        ("*_ASSESSMENT_REPORT.txt", "*_SEARCH_REPORT.txt"),
+        preferred=job.report_txt_path or "",
+    )
+    if path is not None:
         return path
-    report_dir = Path(job.report_dir or "")
-    for pattern in ("*_ASSESSMENT_REPORT.txt", "*_SEARCH_REPORT.txt"):
-        matches = sorted(report_dir.glob(pattern)) if report_dir.is_dir() else []
-        if matches:
-            return matches[-1]
     raise HTTPException(status_code=404, detail="Text report not ready")
 
 
 def _technical_html_path(job: ScanJob) -> Path:
-    report_dir = Path(job.report_dir or "")
-    matches = sorted(report_dir.glob("*_SEARCH_REPORT.html")) if report_dir.is_dir() else []
-    if not matches:
-        raise HTTPException(status_code=404, detail="Technical HTML report not ready")
-    return matches[-1]
+    path = find_report_file(
+        job,
+        ("*_SEARCH_REPORT.html",),
+        preferred="",
+    )
+    if path is not None:
+        return path
+    raise HTTPException(status_code=404, detail="Technical HTML report not ready")
 
 
 def _safe_under(root: Path, candidate: Path) -> Path:
@@ -171,13 +172,22 @@ def report_log(job_id: str, session: SessionDep, user: UserAuth):
 @router.get("/{job_id}/artifacts", response_model=List[ArtifactInfo])
 def list_artifacts(job_id: str, session: SessionDep, user: UserAuth):
     job = _owned_job(session, job_id, user)
-    report_dir = Path(job.report_dir or "")
     items: List[ArtifactInfo] = []
-    if report_dir.is_dir():
+    seen = set()
+    for report_dir in job_report_roots(job):
+        if not report_dir.is_dir():
+            continue
         for path in sorted(report_dir.rglob("*")):
             if not path.is_file():
                 continue
-            rel = str(path.relative_to(report_dir)).replace("\\", "/")
+            try:
+                rel = str(path.relative_to(report_dir)).replace("\\", "/")
+            except ValueError:
+                rel = path.name
+            key = str(path.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
             kind = path.suffix.lower().lstrip(".") or "file"
             items.append(ArtifactInfo(name=rel, path=rel, size=path.stat().st_size, kind=kind))
     return items
@@ -186,26 +196,40 @@ def list_artifacts(job_id: str, session: SessionDep, user: UserAuth):
 @router.get("/{job_id}/artifacts/{artifact_path:path}")
 def download_artifact(job_id: str, artifact_path: str, session: SessionDep, user: UserAuth):
     job = _owned_job(session, job_id, user)
-    report_dir = Path(job.report_dir or "")
-    if not report_dir.is_dir():
-        raise HTTPException(status_code=404, detail="No artifacts")
-    target = _safe_under(report_dir, report_dir / artifact_path)
-    if not target.is_file():
-        raise HTTPException(status_code=404, detail="Artifact not found")
-    return FileResponse(target, filename=target.name)
+    for report_dir in job_report_roots(job):
+        if not report_dir.is_dir():
+            continue
+        try:
+            target = _safe_under(report_dir, report_dir / artifact_path)
+        except HTTPException:
+            continue
+        if target.is_file():
+            return FileResponse(target, filename=target.name)
+    raise HTTPException(status_code=404, detail="Artifact not found")
 
 
 @router.get("/{job_id}/bundle.zip")
 def download_bundle(job_id: str, session: SessionDep, user: UserAuth):
     job = _owned_job(session, job_id, user)
-    report_dir = Path(job.report_dir or "")
-    if not report_dir.is_dir():
+    roots = [r for r in job_report_roots(job) if r.is_dir()]
+    if not roots:
         raise HTTPException(status_code=404, detail="No artifacts")
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for path in report_dir.rglob("*"):
-            if path.is_file():
-                zf.write(path, arcname=str(path.relative_to(report_dir)))
+        seen = set()
+        for report_dir in roots:
+            for path in report_dir.rglob("*"):
+                if not path.is_file():
+                    continue
+                key = str(path.resolve())
+                if key in seen:
+                    continue
+                seen.add(key)
+                try:
+                    arc = str(path.relative_to(report_dir))
+                except ValueError:
+                    arc = path.name
+                zf.write(path, arcname=arc)
         if job.log_tail:
             zf.writestr("live_logs.txt", job.log_tail)
     buf.seek(0)

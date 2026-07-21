@@ -39,6 +39,59 @@ from crawler_common import DownloadManager  # noqa: E402
 log = logging.getLogger("vantacrawl.worker")
 
 
+def _absolute_report_paths(report_dir: Path, job_id: str = "") -> tuple[str, str]:
+    """Pick newest assessment/search reports; copy into report_dir when found elsewhere."""
+    report_dir = Path(report_dir).resolve()
+    roots = [report_dir]
+    try:
+        from crawl_config import BASE_DIR
+
+        roots.append(Path(BASE_DIR) / "Reports")
+    except Exception:
+        pass
+    settings = get_settings()
+    if job_id:
+        roots.append(Path(settings.jobs_dir) / job_id)
+        roots.append(Path(settings.reports_dir) / job_id)
+
+    def _newest(patterns: tuple[str, ...]) -> Optional[Path]:
+        found: list[Path] = []
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for pattern in patterns:
+                found.extend(p for p in root.glob(pattern) if p.is_file())
+                found.extend(p for p in root.rglob(pattern) if p.is_file())
+        if not found:
+            return None
+        uniq = {p.resolve() for p in found}
+        return sorted(uniq, key=lambda p: p.stat().st_mtime)[-1]
+
+    html = _newest(("*_ASSESSMENT_REPORT.html",)) or _newest(("*_SEARCH_REPORT.html",))
+    txt = _newest(("*_ASSESSMENT_REPORT.txt",)) or _newest(("*_SEARCH_REPORT.txt",))
+
+    if html is not None and html.parent.resolve() != report_dir:
+        report_dir.mkdir(parents=True, exist_ok=True)
+        dest = report_dir / html.name
+        try:
+            if not dest.is_file() or dest.stat().st_mtime < html.stat().st_mtime:
+                dest.write_bytes(html.read_bytes())
+            html = dest
+        except Exception:
+            log.exception("Failed to copy HTML report into %s", report_dir)
+    if txt is not None and txt.parent.resolve() != report_dir:
+        report_dir.mkdir(parents=True, exist_ok=True)
+        dest = report_dir / txt.name
+        try:
+            if not dest.is_file() or dest.stat().st_mtime < txt.stat().st_mtime:
+                dest.write_bytes(txt.read_bytes())
+            txt = dest
+        except Exception:
+            log.exception("Failed to copy TXT report into %s", report_dir)
+
+    return (str(html.resolve()) if html else "", str(txt.resolve()) if txt else "")
+
+
 def _update_job(job_id: str, **fields: Any) -> None:
     with Session(engine) as session:
         job = session.get(ScanJob, job_id)
@@ -139,7 +192,7 @@ def _build_crawl_config(job: ScanJob) -> CrawlConfig:
         parts = [p.strip() for p in ext.split(",") if p.strip()]
         cfg.extensions = parts or None
 
-    cfg.report_dir = lambda: str(report_dir)  # type: ignore[method-assign]
+    cfg.report_dir = lambda: str(Path(report_dir).resolve())  # type: ignore[method-assign]
     cfg.report_title = (job.title or "").strip()
     return cfg
 
@@ -602,10 +655,6 @@ async def run_job(job_id: str) -> None:
         html_matches = assessment_matches or (
             sorted(report_dir.glob("*_SEARCH_REPORT.html")) if report_dir.is_dir() else []
         )
-        txt_matches = (
-            sorted(report_dir.glob("*_ASSESSMENT_REPORT.txt")) if report_dir.is_dir() else []
-        ) or (sorted(report_dir.glob("*_SEARCH_REPORT.txt")) if report_dir.is_dir() else [])
-
         # Stop/cancel often skips orchestrator write_all — build full reports from in-memory stats.
         if not html_matches:
             cfg = live_config_holder.get("cfg")
@@ -615,7 +664,7 @@ async def run_job(job_id: str) -> None:
 
                 written = write_stats_reports(
                     stats,
-                    report_dir=str(report_dir),
+                    report_dir=str(Path(report_dir).resolve()),
                     start_url=(getattr(cfg, "start_url", None) if cfg else None)
                     or (job_snap.start_url if job_snap else "")
                     or "",
@@ -629,15 +678,8 @@ async def run_job(job_id: str) -> None:
                     output_callback("Wrote full reports from results collected so far.")
             except Exception:
                 log.exception("Failed to write partial full reports for %s", job_id)
-            assessment_matches = (
-                sorted(report_dir.glob("*_ASSESSMENT_REPORT.html")) if report_dir.is_dir() else []
-            )
-            html_matches = assessment_matches or (
-                sorted(report_dir.glob("*_SEARCH_REPORT.html")) if report_dir.is_dir() else []
-            )
-            txt_matches = (
-                sorted(report_dir.glob("*_ASSESSMENT_REPORT.txt")) if report_dir.is_dir() else []
-            ) or (sorted(report_dir.glob("*_SEARCH_REPORT.txt")) if report_dir.is_dir() else [])
+
+        html_path, txt_path = _absolute_report_paths(Path(report_dir), job_id=job_id)
 
         # Honour force-cancel from API while we were winding down
         latest = _get_job(job_id)
@@ -682,8 +724,6 @@ async def run_job(job_id: str) -> None:
             "eta_seconds": 0,
         }
         finished_job = _get_job(job_id)
-        html_path = str(html_matches[-1]) if html_matches else ""
-        txt_path = str(txt_matches[-1]) if txt_matches else ""
         if not html_path:
             from vantacrawl_api.services.summary_report import write_summary_report
 
@@ -693,8 +733,8 @@ async def run_job(job_id: str) -> None:
                     "Scan was stopped before structured reports could be written. "
                     "This summary uses the live progress snapshot only."
                 )
-            html_path, txt_path = write_summary_report(
-                report_dir,
+            summary_html, summary_txt = write_summary_report(
+                Path(report_dir).resolve(),
                 job_id=job_id,
                 title=(finished_job.title if finished_job else "") or "Scan",
                 start_url=(finished_job.start_url if finished_job else "") or "",
@@ -704,12 +744,16 @@ async def run_job(job_id: str) -> None:
                 note=note,
             )
             output_callback("Wrote summary report (full HTML report was not produced).")
+            html_path, txt_path = _absolute_report_paths(Path(report_dir), job_id=job_id)
+            if not html_path:
+                html_path, txt_path = summary_html, summary_txt
         _update_job(
             job_id,
             status=status,
             finished_at=datetime.utcnow(),
             report_html_path=html_path,
             report_txt_path=txt_path,
+            report_dir=str(Path(report_dir).resolve()),
             progress_json=progress,
         )
         publish_progress(job_id, {"status": status, "message": "Scan finished", "progress": progress})
@@ -730,7 +774,7 @@ async def run_job(job_id: str) -> None:
 
             written = write_stats_reports(
                 stats,
-                report_dir=str(rdir),
+                report_dir=str(Path(rdir).resolve()),
                 start_url=(getattr(cfg, "start_url", None) if cfg else None)
                 or (failed_job.start_url if failed_job else "")
                 or "",
@@ -740,15 +784,7 @@ async def run_job(job_id: str) -> None:
                 config=cfg,
                 output_callback=output_callback,
             )
-            assessment_matches = sorted(rdir.glob("*_ASSESSMENT_REPORT.html")) if rdir.is_dir() else []
-            html_matches = assessment_matches or (
-                sorted(rdir.glob("*_SEARCH_REPORT.html")) if rdir.is_dir() else []
-            )
-            txt_matches = (
-                sorted(rdir.glob("*_ASSESSMENT_REPORT.txt")) if rdir.is_dir() else []
-            ) or (sorted(rdir.glob("*_SEARCH_REPORT.txt")) if rdir.is_dir() else [])
-            html_path = str(html_matches[-1]) if html_matches else ""
-            txt_path = str(txt_matches[-1]) if txt_matches else ""
+            html_path, txt_path = _absolute_report_paths(Path(rdir), job_id=job_id)
             if written and html_path:
                 output_callback("Wrote full reports from results collected before failure.")
         except Exception:
@@ -759,7 +795,7 @@ async def run_job(job_id: str) -> None:
 
                 rdir = Path(failed_job.report_dir) if failed_job and failed_job.report_dir else report_dir
                 html_path, txt_path = write_summary_report(
-                    rdir,
+                    Path(rdir).resolve(),
                     job_id=job_id,
                     title=(failed_job.title if failed_job else "") or "Scan",
                     start_url=(failed_job.start_url if failed_job else "") or "",
@@ -768,6 +804,9 @@ async def run_job(job_id: str) -> None:
                     log_tail=(failed_job.log_tail if failed_job else "") or "",
                     note=f"Scan failed: {exc}",
                 )
+                linked = _absolute_report_paths(Path(rdir), job_id=job_id)
+                if linked[0]:
+                    html_path, txt_path = linked
             except Exception:
                 log.exception("Failed to write summary report for %s", job_id)
         _update_job(
@@ -777,6 +816,7 @@ async def run_job(job_id: str) -> None:
             error_message=str(exc)[:2000],
             report_html_path=html_path,
             report_txt_path=txt_path,
+            report_dir=str(Path(failed_job.report_dir if failed_job and failed_job.report_dir else report_dir).resolve()),
         )
         publish_progress(job_id, {"status": "failed", "message": str(exc)})
     finally:
