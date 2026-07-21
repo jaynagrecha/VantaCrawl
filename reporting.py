@@ -311,3 +311,79 @@ td,th{{border:1px solid #ccc;padding:6px;text-align:left}}</style></head>
     def screenshot_path(self, url: str) -> str:
         safe = urlparse(url).path.replace("/", "_")[:80] or "root"
         return os.path.join(self._screenshot_dir, f"{safe}.png")
+
+
+def write_stats_reports(
+    stats: CrawlStats,
+    *,
+    report_dir: str,
+    start_url: str,
+    title: str = "",
+    config=None,
+    output_callback=None,
+) -> Dict[str, str]:
+    """Write assessment/search/JSON/CSV reports from whatever CrawlStats holds so far.
+
+    Used on normal completion and on stop/cancel/fail so partial results still get a full report.
+    """
+    cb = output_callback or (lambda _msg: None)
+    reporter = ReportWriter(report_dir, start_url, title=title or "")
+    config_meta: Dict[str, Any] = {}
+    try:
+        from scan_setup_report import config_to_report_meta
+
+        if config is not None:
+            config_meta = config_to_report_meta(config)
+            config_meta.setdefault("mode", getattr(config, "profile", "full"))
+            if getattr(config, "report_title", ""):
+                config_meta["title"] = str(config.report_title)
+    except Exception:
+        config_meta = {"title": title or "", "start_url": start_url}
+
+    flags = {
+        "search_conclusion_report": True if config is None else bool(getattr(config, "search_conclusion_report", True)),
+        "html_report": True if config is None else bool(getattr(config, "html_report", True)),
+        "json_report": True if config is None else bool(getattr(config, "json_report", True)),
+        "sqlite_export": True if config is None else bool(getattr(config, "sqlite_export", True)),
+        "csv_export": True if config is None else bool(getattr(config, "csv_export", True)),
+        "assessment_report": True if config is None else bool(getattr(config, "assessment_report", True)),
+    }
+    cb("\nGenerating reports...")
+    paths = reporter.write_all(stats, flags, config_meta=config_meta)
+
+    if getattr(stats, "defense_tracker", None) is not None:
+        try:
+            from defense_verify import write_defense_reports
+
+            defense_paths = write_defense_reports(
+                stats.defense_tracker, report_dir, reporter.base_name
+            )
+            paths.update(defense_paths)
+            cb("\n" + stats.defense_tracker.format_plain_report())
+            if defense_paths.get("defense_html"):
+                cb(f"Defense report (web page): {defense_paths['defense_html']}")
+            if defense_paths.get("defense_txt"):
+                cb(f"Defense report (text): {defense_paths['defense_txt']}")
+        except Exception as exc:
+            cb(f"Defense report skipped: {exc}")
+
+    if reporter.last_conclusion:
+        cb("\n" + (reporter.last_conclusion.get("text") or ""))
+    try:
+        setattr(stats, "last_report_conclusion", reporter.last_conclusion)
+    except Exception:
+        pass
+    if paths.get("assessment_report_html"):
+        cb(f"\nAssessment report (HTML): {paths['assessment_report_html']}")
+    if paths.get("assessment_report_txt"):
+        cb(f"Assessment report (text): {paths['assessment_report_txt']}")
+    if paths.get("search_report_html"):
+        cb(f"Technical search report (HTML): {paths['search_report_html']}")
+    if paths.get("search_report_txt"):
+        cb(f"Technical search report (text): {paths['search_report_txt']}")
+    try:
+        cb(stats.format_friendly_line())
+    except Exception:
+        pass
+    cb(f"All reports saved to: {report_dir}")
+    return paths

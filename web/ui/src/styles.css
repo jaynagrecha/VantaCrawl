@@ -347,3 +347,7 @@ h2 { margin: 0 0 .75rem; font-size: 1.15rem; }
   font-size: 0.8rem;
   color: #9aa7b8;
 }
+
+.secret-reveal-row { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; margin-top: .25rem; }
+.secret-reveal-btn { padding: .15rem .55rem; font-size: .75rem; min-height: 0; }
+.secret-reveal-row code { word-break: break-all; font-size: .78rem; }

@@ -23,13 +23,14 @@ def test_group_collapses_same_header():
 
 
 def test_format_finding_group_includes_paths_and_secret():
+    full = "AIzaSyD-RealKeyValue0123456789AbCdEfGhI"
     findings = [
         {
             "category": "secrets_exposure",
             "severity": "high",
             "url": "https://lab.local/config.js",
             "detail": "Google API Key: Possible Google API Key in response body",
-            "evidence": "AIza…wxyz",
+            "evidence": full,
         },
         {
             "category": "sql_injection",
@@ -44,7 +45,8 @@ def test_format_finding_group_includes_paths_and_secret():
         lines.extend(format_finding_group_lines(g))
     joined = "\n".join(lines)
     assert "Path: https://lab.local/config.js" in joined
-    assert "Secret (accessible, masked): AIza…wxyz" in joined
+    assert "Secret (masked):" in joined
+    assert f"Secret (full): {full}" in joined
     assert "Path: https://lab.local/item?id=1" in joined
 
 
@@ -55,7 +57,9 @@ def test_mask_secret_value():
     body = 'const key = "AIzaSyD-RealKeyValue0123456789AbCdEfGhI";'  # AIza + 35 chars
     hits = scan_secrets(body, "https://x.test/a.js")
     assert hits, "expected a real-looking Google API key to be detected"
-    assert hits[0][3]  # evidence present when accessible
+    full = hits[0][3]
+    assert full and "…" not in full  # evidence stores the full accessible value
+    assert "…" in mask_secret_value(full)
 
 
 def test_record_finding_dedupes_headers_per_host():

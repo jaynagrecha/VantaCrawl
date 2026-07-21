@@ -19,14 +19,20 @@ _HITS_RE = re.compile(r"·\s*(\d+)\s+found so far", re.IGNORECASE)
 def _findings_preview(stats) -> List[Dict[str, str]]:
     out: List[Dict[str, str]] = []
     try:
+        from security_scan import mask_secret_value
+
         for item in list(getattr(stats, "findings", []) or [])[:40]:
             if not isinstance(item, dict):
                 continue
+            evidence = str(item.get("evidence") or "")
             out.append(
                 {
                     "severity": str(item.get("severity") or item.get("severity_label") or ""),
                     "title": str(item.get("title") or item.get("detail") or item.get("type") or "")[:160],
                     "url": str(item.get("url") or ""),
+                    "category": str(item.get("category") or ""),
+                    "evidence_masked": mask_secret_value(evidence) if evidence else "",
+                    "evidence_full": evidence,
                 }
             )
     except Exception:

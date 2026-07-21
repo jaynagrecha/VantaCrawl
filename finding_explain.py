@@ -478,8 +478,14 @@ def format_finding_group_lines(group: Dict[str, Any], *, max_urls: int = 40) -> 
     evidence = group.get("evidence") or []
     if group.get("category") == "secrets_exposure":
         if evidence:
+            try:
+                from security_scan import mask_secret_value
+            except Exception:  # pragma: no cover
+                mask_secret_value = lambda v: (v[:4] + "…" + v[-4:]) if len(v) > 10 else "***"  # noqa: E731
             for item in evidence[:10]:
-                lines.append(f"  Secret (accessible, masked): {item}")
+                full = str(item)
+                lines.append(f"  Secret (masked): {mask_secret_value(full)}")
+                lines.append(f"  Secret (full): {full}")
         else:
             lines.append("  Secret: pattern matched but exact value was not captured")
     elif evidence:
