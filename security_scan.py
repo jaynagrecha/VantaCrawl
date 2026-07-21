@@ -44,8 +44,21 @@ SECRET_PATTERNS = [
     (r"(?i)urlscan[_-]?(?:api[_-]?)?key['\"]?\s*[:=]\s*['\"][A-Za-z0-9\-]{20,}", "urlscan.io API Key", "high"),
     # Private keys / passwords
     (r"-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----", "Private Key (PEM)", "critical"),
-    (r"(?i)password['\"]?\s*[:=]\s*['\"][^'\"\\s]{8,}", "Hardcoded Password", "high"),
-    (r"(?i)(?:client_)?secret['\"]?\s*[:=]\s*['\"][^'\"\\s]{12,}", "Hardcoded Client Secret", "medium"),
+    (r"(?i)(?:^|[^\w])(?:[A-Za-z][\w]*)[_-]passwords?['\"]?\s*[:=]\s*['\"][^\s'\"]{8,}", "Hardcoded Password", "high"),
+    (r"(?i)password['\"]?\s*[:=]\s*['\"][^\s'\"]{8,}", "Hardcoded Password", "high"),
+    (r"(?i)(?:client_)?secret['\"]?\s*[:=]\s*['\"][^\s'\"]{12,}", "Hardcoded Client Secret", "medium"),
+    # Product-named credentials (paypal_api_key, ACME_ACTIVATION_KEY, …)
+    (
+        r"(?i)(?:^|[^\w])(?:[A-Za-z][A-Za-z0-9]*(?:[_\-][A-Za-z0-9]+){0,8})[_-]"
+        r"(?:api[_-]?keys?|api[_-]?secrets?|api[_-]?tokens?|access[_-]?keys?|secret[_-]?keys?|"
+        r"activation[_-]?keys?|license[_-]?keys?|auth[_-]?tokens?|access[_-]?tokens?|"
+        r"refresh[_-]?tokens?|client[_-]?secrets?|app[_-]?secrets?|app[_-]?keys?|"
+        r"consumer[_-]?secrets?|consumer[_-]?keys?|session[_-]?tokens?|bearer[_-]?tokens?)"
+        r"['\"]?\s*[:=]\s*['\"][^\s'\"]{10,}",
+        "Named Credential",
+        "high",
+    ),
+    (r"(?i)(?:activation|license|product|serial)[_-]?keys?['\"]?\s*[:=]\s*['\"][^\s'\"]{8,}", "Activation / License Key", "high"),
     # Generic last — refined via nearby variable names when possible
     (r"(?i)api[_-]?key['\"]?\s*[:=]\s*['\"][A-Za-z0-9_\-]{20,}", "Generic API Key", "high"),
 ]
@@ -162,16 +175,90 @@ def secret_reveal_html(full: str, *, secret_type: str = "") -> str:
     )
 
 
-def refine_secret_label(label: str, raw: str, body_text: str, start: int, end: int) -> str:
-    """Upgrade generic labels using nearby assignment / vendor hints."""
-    if label not in ("Generic API Key", "Hardcoded Client Secret", "Hardcoded Password", "Hardcoded Secret"):
+_GENERIC_SECRET_LABELS = frozenset(
+    {
+        "Generic API Key",
+        "Hardcoded Client Secret",
+        "Hardcoded Password",
+        "Hardcoded Secret",
+        "Named Credential",
+        "Activation / License Key",
+    }
+)
+
+# Prefix/shape labels that already name the vendor — keep unless variables
+# give a clear product+kind that is at least as specific.
+_PREFIX_LOCKED_LABELS = frozenset(
+    {
+        "AWS Access Key ID",
+        "AWS Temporary Access Key ID",
+        "AWS Secret Access Key",
+        "AWS Session Token",
+        "GitHub Personal Access Token",
+        "GitHub Fine-grained PAT",
+        "GitHub OAuth Token",
+        "GitHub User-to-Server Token",
+        "GitLab Personal Access Token",
+        "Stripe Live Secret Key",
+        "Stripe Restricted Live Key",
+        "Stripe Live Publishable Key",
+        "OpenAI API Key",
+        "Slack API Token",
+        "SendGrid API Key",
+        "Mailgun API Key",
+        "Twilio API Key SID",
+        "Twilio Auth Token",
+        "Shopify Admin API Access Token",
+        "npm Access Token",
+        "DigitalOcean Personal Access Token",
+        "HashiCorp Vault Token",
+        "Private Key (PEM)",
+    }
+)
+
+
+def refine_secret_label(
+    label: str,
+    raw: str,
+    body_text: str,
+    start: int,
+    end: int,
+    *,
+    org_context=None,
+) -> str:
+    """Classify WHAT we found from assigned + related variables + org context."""
+    from secret_classify import classify_credential
+
+    value = extract_secret_value(raw)
+    classified = classify_credential(
+        base_label=label,
+        raw=raw,
+        body_text=body_text,
+        start=start,
+        end=end,
+        value=value,
+        org_context=org_context,
+    )
+
+    # Always prefer variable-derived product+kind over generic bases
+    if classified and classified not in _GENERIC_SECRET_LABELS and classified != label:
+        # Prefix-locked labels win only when classification didn't add a product
+        # from the assignment (e.g. bare AKIA with no variable stays AWS).
+        if label in _PREFIX_LOCKED_LABELS:
+            # If variables named a different product (unlikely for AKIA), keep prefix
+            # but allow enrichment when classify equals/extends the same vendor.
+            return label
+        return classified
+
+    if label not in _GENERIC_SECRET_LABELS:
         return label
-    window = body_text[max(0, start - 96) : min(len(body_text), end + 48)]
+
+    window = body_text[max(0, start - 280) : min(len(body_text), end + 160)]
     blob = f"{window}\n{raw}"
     for pattern, refined in SECRET_CONTEXT_LABELS:
         if re.search(pattern, blob):
             return refined
-    return label
+    return classified or label
 
 
 def _secret_looks_real(raw: str) -> bool:
@@ -188,12 +275,29 @@ def _secret_looks_real(raw: str) -> bool:
     return True
 
 
-def scan_secrets(body_text: str, url: str) -> List[Tuple[str, str, str, Optional[str]]]:
+def scan_secrets(
+    body_text: str,
+    url: str,
+    *,
+    org_context=None,
+    org_hints: str = "",
+    start_url: str = "",
+) -> List[Tuple[str, str, str, Optional[str]]]:
     """Return (label, severity, detail, evidence).
 
-    ``label`` is the credential type (e.g. AWS Secret Access Key, VirusTotal API Key).
+    ``label`` is the credential type derived from the assigned variable,
+    related nearby identifiers, and optional custom org context (scan domain +
+    ``secret_org_hints``).
     Evidence is the full accessible value (UI/reports mask with tap-to-reveal).
     """
+    from secret_classify import assignment_note, build_org_context, severity_for_kind
+
+    if org_context is None:
+        org_context = build_org_context(
+            hints=org_hints,
+            urls=[u for u in (start_url, url) if u],
+        )
+
     findings: List[Tuple[str, str, str, Optional[str]]] = []
     if not body_text:
         return findings
@@ -204,13 +308,21 @@ def scan_secrets(body_text: str, url: str) -> List[Tuple[str, str, str, Optional
             if not _secret_looks_real(raw):
                 continue
             value = extract_secret_value(raw)
-            typed = refine_secret_label(label, raw, body_text, match.start(), match.end())
+            typed = refine_secret_label(
+                label,
+                raw,
+                body_text,
+                match.start(),
+                match.end(),
+                org_context=org_context,
+            )
             key = (typed, value[:80] if value else raw[:80])
             if key in seen:
                 continue
             seen.add(key)
-            detail = f"Exposed {typed} in response body"
-            findings.append((typed, severity, detail, value or None))
+            note = assignment_note(body_text, match.start(), match.end(), value)
+            detail = f"Exposed {typed} in response body{note}"
+            findings.append((typed, severity_for_kind(typed, severity), detail, value or None))
     return findings
 
 

@@ -561,6 +561,18 @@ class CrawlerApp(QMainWindow):
         self.security_cb.setChecked(True)
         self.secrets_cb = QCheckBox("Secret / API key pattern scan")
         self.secrets_cb.setChecked(True)
+        self.secret_validate_cb = QCheckBox(
+            "Live secret validation (read-only identity checks — is the key still active?)"
+        )
+        self.secret_validate_cb.setChecked(False)
+        self.secret_validate_cb.setToolTip(
+            "Calls vendor metadata endpoints only (e.g. Stripe balance, GitHub /user). "
+            "Never creates or deletes resources. Opt-in; enabled by default in Deep Audit."
+        )
+        self.secret_org_hints_input = QLineEdit()
+        self.secret_org_hints_input.setPlaceholderText(
+            "Org aliases: Western Union, WU, westernunion (optional — domain used too)"
+        )
         self.headers_cb = QCheckBox("Security header audit")
         self.headers_cb.setChecked(True)
         self.cors_cb = QCheckBox("CORS misconfiguration check")
@@ -581,10 +593,11 @@ class CrawlerApp(QMainWindow):
             "Sends small safe payloads and compares against a baseline response to reduce false positives."
         )
         for w in (
-            self.security_cb, self.secrets_cb, self.headers_cb, self.cors_cb, self.params_cb,
+            self.security_cb, self.secrets_cb, self.secret_validate_cb, self.headers_cb, self.cors_cb, self.params_cb,
             self.sensitive_cb, self.vuln_cb, self.vuln_probe_cb,
         ):
             sec_layout.addWidget(w)
+        sec_layout.addWidget(self.secret_org_hints_input)
         settings_layout.addWidget(security_box)
 
         reporting_box = QGroupBox("Reporting")
@@ -1036,6 +1049,8 @@ class CrawlerApp(QMainWindow):
             mutation_max_candidates=self.mutation_max_spin.value(),
             security_scan=self.security_cb.isChecked(),
             secret_scan=self.secrets_cb.isChecked(),
+            secret_validate_live=self.secret_validate_cb.isChecked(),
+            secret_org_hints=self.secret_org_hints_input.text().strip(),
             vuln_scan=self.vuln_cb.isChecked(),
             vuln_active_probe=self.vuln_probe_cb.isChecked(),
             active_probe_max_params=5,

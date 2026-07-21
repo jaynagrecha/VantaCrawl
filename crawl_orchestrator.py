@@ -1084,8 +1084,35 @@ async def _run_security_checks(
     body_for_gate = raw_body if raw_body is not None else (body_text or "")
 
     if config.secret_scan:
-        for label, severity, detail, evidence in scan_secrets(body_text, url):
-            emit("secrets_exposure", severity, url, detail, evidence=evidence)
+        validate_live = bool(getattr(config, "secret_validate_live", False))
+        validate_max = int(getattr(config, "secret_validate_max", 25) or 25)
+        if not hasattr(stats, "_secret_validate_cache"):
+            stats._secret_validate_cache = {}
+            stats._secret_validate_count = 0
+
+        for label, severity, detail, evidence in scan_secrets(
+            body_text,
+            url,
+            org_hints=str(getattr(config, "secret_org_hints", "") or ""),
+            start_url=str(getattr(config, "start_url", "") or ""),
+        ):
+            out_detail = detail
+            if validate_live and evidence and stats._secret_validate_count < validate_max:
+                cache_key = (label, (evidence or "")[:64])
+                cached = stats._secret_validate_cache.get(cache_key)
+                if cached is None:
+                    try:
+                        from secret_validate import format_validation_suffix, validate_secret
+
+                        result = await validate_secret(label, evidence)
+                        cached = format_validation_suffix(result)
+                        stats._secret_validate_cache[cache_key] = cached
+                        stats._secret_validate_count += 1
+                    except Exception:
+                        cached = ""
+                if cached:
+                    out_detail = f"{detail}{cached}"
+            emit("secrets_exposure", severity, url, out_detail, evidence=evidence)
         try:
             from recon_extract import find_jwt_candidates
             from urllib.parse import urlparse as _urlparse
