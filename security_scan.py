@@ -96,8 +96,109 @@ SECRET_CONTEXT_LABELS = [
 # Placeholder / documentation values that must not raise secret findings
 SECRET_PLACEHOLDER_RE = re.compile(
     r"(?i)(your[_-]?api[_-]?key|example[_-]?key|sample[_-]?key|\bdummy\b|"
-    r"placeholder|changeme|\bxxx{2,}\b|test[_-]?key|not[_-]?a[_-]?real|"
-    r"replace[_-]?me|password123|sk_test_|pk_test_|akiaiosfodnn7example)"
+    r"\bplaceholder\b|changeme|\bxxx{2,}\b|\btest[_-]?key\b|not[_-]?a[_-]?real|"
+    r"replace[_-]?me|\bpassword123\b|sk_test_|pk_test_|akiaiosfodnn7example|"
+    r"enter\s+(?:your\s+)?(?:api\s*)?key|enter\s+(?:your\s+)?password)"
+)
+
+# Form / UI field keywords — often appear as both the LHS and the echoed value
+# (password:"password", apiKey:"apiKey") or as HTML control labels. Not secrets.
+_FORM_FIELD_KEYWORDS = frozenset(
+    {
+        "password",
+        "passwd",
+        "pwd",
+        "pass",
+        "secret",
+        "secrets",
+        "token",
+        "tokens",
+        "api_key",
+        "api-key",
+        "apikey",
+        "api_keys",
+        "access_token",
+        "accesstoken",
+        "access-token",
+        "refresh_token",
+        "refreshtoken",
+        "client_secret",
+        "clientsecret",
+        "client_id",
+        "clientid",
+        "username",
+        "user",
+        "userid",
+        "user_id",
+        "email",
+        "login",
+        "auth",
+        "authorization",
+        "bearer",
+        "key",
+        "keys",
+        "private_key",
+        "privatekey",
+        "public_key",
+        "publickey",
+        "csrf",
+        "csrftoken",
+        "csrf_token",
+        "session",
+        "sessionid",
+        "session_id",
+        "otp",
+        "pin",
+        "ssn",
+        "cvv",
+        "cvc",
+        "card",
+        "cardnumber",
+        "card_number",
+        "activation_key",
+        "activationkey",
+        "license_key",
+        "licensekey",
+        "new_password",
+        "newpassword",
+        "current_password",
+        "currentpassword",
+        "confirm_password",
+        "confirmpassword",
+        "old_password",
+        "oldpassword",
+    }
+)
+
+_FORM_CONTROL_TAGS = (
+    "input",
+    "textarea",
+    "select",
+    "option",
+    "button",
+    "label",
+    "fieldset",
+    "legend",
+    "datalist",
+    "output",
+    "form",
+)
+
+# Generic assignment patterns are noisy in HTML/UI; prefix-shaped vendor keys stay allowed.
+_GENERIC_SECRET_LABELS_FOR_FP = frozenset(
+    {
+        "Generic API Key",
+        "Hardcoded Client Secret",
+        "Hardcoded Password",
+        "Hardcoded Secret",
+        "Named Credential",
+        "Activation / License Key",
+    }
+)
+
+_IDENT_LIKE_VALUE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_\-]{2,47}$")
+_LHS_ASSIGN_RE = re.compile(
+    r"(?i)(?P<lhs>[A-Za-z_][\w.\-]*?)\s*['\"]?\s*[:=]\s*['\"]?(?P<rhs>[^\s'\"]{3,})\s*$"
 )
 
 # Exact sensitive segments / known filenames — avoid matching prose paths like backup-restore-policy
@@ -261,18 +362,114 @@ def refine_secret_label(
     return classified or label
 
 
+def _normalize_field_token(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+
+
+def _lhs_from_raw(raw: str) -> str:
+    m = _LHS_ASSIGN_RE.search((raw or "").strip())
+    return (m.group("lhs") if m else "") or ""
+
+
+def _in_html_form_control_tag(body_text: str, start: int) -> bool:
+    """True when the match sits inside an open <input|textarea|…> tag."""
+    if start <= 0 or not body_text:
+        return False
+    lt = body_text.rfind("<", max(0, start - 600), start)
+    if lt < 0:
+        return False
+    gt = body_text.find(">", lt)
+    if gt != -1 and gt < start:
+        return False
+    head = body_text[lt : min(len(body_text), lt + 48)]
+    return bool(
+        re.match(
+            rf"(?is)<(?:{'|'.join(_FORM_CONTROL_TAGS)})\b",
+            head,
+        )
+    )
+
+
+def _value_is_form_field_noise(value: str, raw: str = "") -> bool:
+    """True for echoed form keywords / self-describing UI field values."""
+    val = (value or "").strip()
+    if not val:
+        return True
+    low = val.lower()
+    norm = _normalize_field_token(val)
+    keyword_norms = {_normalize_field_token(k) for k in _FORM_FIELD_KEYWORDS}
+    if low in _FORM_FIELD_KEYWORDS or norm in keyword_norms:
+        return True
+
+    lhs = _lhs_from_raw(raw)
+    lhs_tail = ""
+    if lhs:
+        lhs_low = lhs.lower().rsplit(".", 1)[-1]
+        lhs_tail = lhs_low
+        if low == lhs_low or norm == _normalize_field_token(lhs_low):
+            return True
+        if lhs_low.startswith("data-") or lhs_low.startswith("aria-"):
+            attr_tail = lhs_low.split("-", 1)[-1]
+            if norm == _normalize_field_token(attr_tail) or low in _FORM_FIELD_KEYWORDS:
+                return True
+        # Bare password/secret/token/api_key LHS with a word-like value → form/schema noise
+        lhs_norm = _normalize_field_token(lhs_low)
+        if lhs_norm in keyword_norms and _IDENT_LIKE_VALUE_RE.match(val):
+            letters = sum(1 for ch in val if ch.isalpha())
+            if letters >= max(6, int(len(val) * 0.7)) and len(set(val.lower())) <= 12:
+                return True
+
+    # Identifier-shaped values with no digits (password, formFieldKeyword, SERIALNUMBER)
+    # are almost always UI/schema noise for generic assignment patterns.
+    if _IDENT_LIKE_VALUE_RE.match(val) and not re.search(r"\d", val):
+        if any(ch.isupper() for ch in val[1:]) or "_" in val or "-" in val:
+            return True
+        if low in _FORM_FIELD_KEYWORDS or len(val) <= 16:
+            return True
+    return False
+
+
 def _secret_looks_real(raw: str) -> bool:
     """Filter obvious placeholders / low-entropy demo values."""
     if not raw or SECRET_PLACEHOLDER_RE.search(raw):
         return False
     value = extract_secret_value(raw)
-    if SECRET_PLACEHOLDER_RE.search(value):
+    if not value or SECRET_PLACEHOLDER_RE.search(value):
+        return False
+    if _value_is_form_field_noise(value, raw):
         return False
     # Require some character diversity for generic key/password patterns
     charset = len(set(value))
     if len(value) >= 12 and charset < 5:
         return False
     return True
+
+
+def _should_skip_secret_match(
+    *,
+    label: str,
+    raw: str,
+    body_text: str,
+    start: int,
+    end: int,
+    value: str,
+) -> bool:
+    """Drop form-control / UI-schema false positives for generic assignment patterns."""
+    if label not in _GENERIC_SECRET_LABELS_FOR_FP:
+        return False
+    if _value_is_form_field_noise(value, raw):
+        return True
+    # Assignments living inside <input|textarea|select|label|…> are form markup, not secrets.
+    if _in_html_form_control_tag(body_text, start):
+        return True
+    # name=/id=/placeholder=/autocomplete= values are field metadata, not credentials.
+    before = body_text[max(0, start - 96) : start]
+    if re.search(
+        r"(?i)\b(?:name|id|for|placeholder|autocomplete|aria-[\w-]+|data-testid|data-cy)\s*=\s*['\"][^'\"]*$",
+        before,
+    ):
+        return True
+    return False
 
 
 def scan_secrets(
@@ -308,6 +505,15 @@ def scan_secrets(
             if not _secret_looks_real(raw):
                 continue
             value = extract_secret_value(raw)
+            if _should_skip_secret_match(
+                label=label,
+                raw=raw,
+                body_text=body_text,
+                start=match.start(),
+                end=match.end(),
+                value=value,
+            ):
+                continue
             typed = refine_secret_label(
                 label,
                 raw,
