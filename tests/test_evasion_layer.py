@@ -17,9 +17,11 @@ def test_browser_headers_include_sec_fetch_in_stealth():
     headers = session.build_headers("https://lab.local/admin")
     assert "User-Agent" in headers
     assert "Chrome" in headers["User-Agent"]
+    assert "Chrome/146" in headers["User-Agent"]
     assert headers.get("Sec-Fetch-Mode") == "navigate"
     assert headers.get("Referer") == "https://lab.local/home"
     assert "Sec-CH-UA" in headers
+    assert "Sec-CH-UA-Full-Version-List" in headers
 
 
 def test_sticky_host_keeps_same_ua():

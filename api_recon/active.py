@@ -30,7 +30,7 @@ async def run_active_api_enum(
     word_limit: int = 3000,
     headers: dict,
     concurrency: int = 20,
-    method: str = "HEAD",
+    method: str = "GET",
     running: Optional[Callable[[], bool]] = None,
     output_callback: Optional[Callable[[str], None]] = None,
     update_progress=None,

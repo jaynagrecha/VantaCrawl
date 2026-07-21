@@ -835,17 +835,13 @@ async def get_async_baseline(client, base_url):
 
 
 async def async_path_exists(client, url, baseline_length, baseline_status, bypass_forbidden=True):
+    """Existence probe via GET (browser-like; avoids Akamai 'HTTP HEAD Method Used')."""
     try:
-        response = await client.head(url, timeout=5, follow_redirects=False)
-        status = response.status_code
-        if status in (405, 501) or (bypass_forbidden and status in BYPASS_HTTP_CODES):
-            response = await client.get(url, timeout=5, follow_redirects=False)
-            content_length = len(response.content) if response.content else response_length(response)
-            return looks_like_existing_path(
-                response.status_code, content_length, baseline_length, baseline_status, bypass_forbidden
-            )
-        content_length = response_length(response)
-        return looks_like_existing_path(status, content_length, baseline_length, baseline_status, bypass_forbidden)
+        response = await client.get(url, timeout=5, follow_redirects=False)
+        content_length = len(response.content) if response.content else response_length(response)
+        return looks_like_existing_path(
+            response.status_code, content_length, baseline_length, baseline_status, bypass_forbidden
+        )
     except httpx.HTTPError:
         return False
 

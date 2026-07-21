@@ -60,7 +60,7 @@ class CrawlConfig:
     api_recon_graphql: bool = True
     api_recon_word_limit: int = 3000
     api_recon_wordlist: str = ""
-    api_recon_method: str = "HEAD"
+    api_recon_method: str = "GET"
     api_auth_header_name: str = "Authorization"
     api_auth_header_value: str = ""
     api_postman_file: str = ""
@@ -100,7 +100,7 @@ class CrawlConfig:
     smart_wordlist_order: bool = True
     enum_prefixes: str = ""
     auto_prefix_enum: bool = True
-    enum_method: str = "HEAD"
+    enum_method: str = "GET"
     vhost_enum: bool = False
     vhost_wordlist: str = ""
     s3_enum: bool = False
@@ -190,6 +190,8 @@ class CrawlConfig:
     evasion_challenge_detect: bool = True
     evasion_decoy_requests: bool = False
     evasion_http2: bool = True
+    # Prefer curl_cffi Chrome JA3/HTTP2 impersonation when the package is installed
+    evasion_chrome_tls: bool = True
 
     # Defense verification (catch vs unchallenged — not CAPTCHA solving)
     defense_verify: bool = True

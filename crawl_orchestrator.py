@@ -225,6 +225,7 @@ async def run_full_crawl_async(
         # Re-read each time so Pause → change settings → Resume can take effect
         return normalize_extensions(config.extensions)
 
+    from chrome_http import open_scan_client
     from evasion_layer import (
         evasion_from_crawl_config,
         make_httpx_hooks,
@@ -238,11 +239,8 @@ async def run_full_crawl_async(
     stats.defense_tracker = defense
     stats.evasion_session = evasion
     headers = config.merged_headers(evasion.base_client_headers() if evasion.config.enabled else get_request_headers())
-    proxy = config.httpx_proxy()
-    auth = config.httpx_auth()
-    # Pass session always so hooks stay wired if stealth is re-enabled on resume
+    # Pass session always so httpx fallback hooks stay wired if stealth is re-enabled on resume
     event_hooks = make_httpx_hooks(evasion, output_callback, defense_tracker=defense)
-    use_http2 = bool(getattr(config, "evasion_http2", True))
 
     extra_seeds = await gather_extra_seeds(config, output_callback) if running() else []
     for seed in extra_seeds:
@@ -277,15 +275,15 @@ async def run_full_crawl_async(
             f"browser look-alike headers and pacing for your lab target."
         )
 
-    async with httpx.AsyncClient(
-        http2=use_http2,
-        headers=headers,
-        follow_redirects=True,
-        proxy=proxy,
-        auth=auth,
+    client = await open_scan_client(
+        config=config,
+        evasion=evasion,
+        default_headers=headers,
         event_hooks=event_hooks,
-        limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
-    ) as client:
+        defense_tracker=defense,
+        output_callback=output_callback,
+    )
+    async with client:
         if config.cookie_string:
             client.headers["Cookie"] = config.cookie_string
 

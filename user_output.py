@@ -288,6 +288,14 @@ def simplify_log_line(message: str) -> str:
             r"Request stealth is on (\1): using browser-like headers and pacing.",
         ),
         (
+            r"^Chrome TLS impersonation on \((.+)\) — .+$",
+            r"Chrome TLS impersonation on (\1): matching real-browser JA3/HTTP2.",
+        ),
+        (
+            r"^Chrome TLS impersonation unavailable .+ falling back to httpx HTTP/2\.$",
+            "Chrome TLS package missing — using httpx HTTP/2 fallback.",
+        ),
+        (
             r"^Warming up with a few ordinary-looking page requests…$",
             "Warming up with a few ordinary-looking page requests…",
         ),

@@ -85,7 +85,14 @@ _HUMAN = {
         "Resolve same-host 301/302 chains and score the final page (avoids HTTP→HTTPS→404 false hits).",
     ),
     "enum_redirect_max_hops": ("Redirect max hops", "Max same-host redirects to follow while scoring."),
-    "enum_method": ("Enum HTTP method", "HEAD is faster; GET is needed when HEAD is blocked."),
+    "enum_method": (
+        "Enum HTTP method",
+        "GET is browser-like (recommended). HEAD is lighter but often flagged by bot managers.",
+    ),
+    "api_recon_method": (
+        "API recon HTTP method",
+        "GET is recommended for active API probes (avoids HEAD bot rules).",
+    ),
     "enum_auto_crawl_hits": ("Auto-crawl enum hits", "Enqueue discovered directories/files into the crawl."),
     "enum_auto_vuln_scan": ("Auto-scan enum hits", "Run security checks on enum hits."),
     "vhost_enum": ("Virtual host enum", "Probe Host-header vhosts."),
@@ -163,7 +170,16 @@ _HUMAN = {
     "proxy_url": ("Proxy URL", "Optional HTTP(S) proxy, e.g. http://user:pass@host:8080"),
     "auth_username": ("Basic auth username", "HTTP basic authentication username."),
     "auth_password": ("Basic auth password", "HTTP basic authentication password."),
-    "cookie_string": ("Cookie string", "Raw Cookie header value for authenticated crawling."),
+    "cookie_string": (
+        "Cookie string",
+        "Paste a raw Cookie header from your browser so probes look logged-in. "
+        "Chrome: DevTools → Application → Cookies → copy name=value pairs joined with '; '. "
+        "Or DevTools → Network → any request → Request Headers → Cookie.",
+    ),
+    "evasion_chrome_tls": (
+        "Chrome TLS impersonation",
+        "Use curl_cffi to match real Chrome JA3/HTTP2 (falls back to httpx if unavailable).",
+    ),
     "use_selenium_login": ("Browser login first", "Open a browser login flow before crawling (needs Chrome)."),
     "login_url": ("Login URL", "Page where the login form lives."),
     "login_username": ("Login username", "Username / email for the login form."),
@@ -185,8 +201,8 @@ _UA_STRATEGIES = (
 )
 
 _ENUM_METHODS = (
-    ("HEAD", "HEAD - faster probes"),
-    ("GET", "GET - when HEAD is blocked or unreliable"),
+    ("GET", "GET - browser-like (recommended; avoids HEAD bot rules)"),
+    ("HEAD", "HEAD - lighter probes (often flagged by bot managers)"),
 )
 
 _EXTENSION_PRESETS = (
@@ -247,6 +263,11 @@ def setting_fields() -> Dict[str, Dict[str, Any]]:
         ),
         "enum_method": _field(
             "enum_method",
+            control="select",
+            options=[{"value": value, "label": label} for value, label in _ENUM_METHODS],
+        ),
+        "api_recon_method": _field(
+            "api_recon_method",
             control="select",
             options=[{"value": value, "label": label} for value, label in _ENUM_METHODS],
         ),
@@ -355,6 +376,7 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "api_recon",
             "api_recon_active",
             "api_recon_graphql",
+            "api_recon_method",
             "api_recon_word_limit",
             "api_auth_header_name",
             "api_auth_header_value",
@@ -488,6 +510,7 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "evasion_challenge_detect",
             "evasion_decoy_requests",
             "evasion_http2",
+            "evasion_chrome_tls",
         ],
     },
     {

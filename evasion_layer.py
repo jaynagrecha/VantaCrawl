@@ -2,35 +2,47 @@
 
 For systems you own or have explicit permission to test.
 Does not solve CAPTCHAs or bypass managed bot challenges — it detects them and backs off.
+Pairs with chrome_http.curl_cffi TLS impersonation for JA3/HTTP2 alignment.
 """
 
 from __future__ import annotations
 
 import asyncio
 import random
-import re
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+# Keep major version aligned with chrome_http.DEFAULT_IMPERSONATE (chrome146).
+CHROME_MAJOR = "146"
+CHROME_FULL = "146.0.7680.0"
+
 # ---------------------------------------------------------------------------
-# Browser impersonation profiles (Option A + aggressive variants for Option B)
+# Browser impersonation profiles
 # ---------------------------------------------------------------------------
 
 BROWSER_PROFILES: Dict[str, Dict] = {
     "chrome": {
         "user_agents": [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36",
+            f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36",
+            f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36",
+            f"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36",
         ],
-        "sec_ch_ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+        "sec_ch_ua": f'"Chromium";v="{CHROME_MAJOR}", "Not A(Brand";v="24", "Google Chrome";v="{CHROME_MAJOR}"',
+        "sec_ch_ua_full_version_list": (
+            f'"Chromium";v="{CHROME_FULL}", "Not A(Brand";v="10.0.0.0", "Google Chrome";v="{CHROME_FULL}"'
+        ),
+        "sec_ch_ua_full_version": f'"{CHROME_FULL}"',
         "sec_ch_ua_platform": '"Windows"',
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "sec_ch_ua_platform_version": '"15.0.0"',
+        "sec_ch_ua_arch": '"x86"',
+        "sec_ch_ua_bitness": '"64"',
+        "sec_ch_ua_model": '""',
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         "accept_language": ["en-US,en;q=0.9", "en-GB,en;q=0.9", "en-US,en;q=0.8,es;q=0.6"],
-        "accept_encoding": "gzip, deflate, br",
+        "accept_encoding": "gzip, deflate, br, zstd",
         "sec_fetch_site": "none",
         "sec_fetch_mode": "navigate",
         "sec_fetch_user": "?1",
@@ -39,15 +51,21 @@ BROWSER_PROFILES: Dict[str, Dict] = {
     },
     "firefox": {
         "user_agents": [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0",
-            "Mozilla/5.0 (X11; Linux x86_64; rv:122.0) Gecko/20100101 Firefox/122.0",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:147.0) Gecko/20100101 Firefox/147.0",
+            "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
         ],
         "sec_ch_ua": "",
+        "sec_ch_ua_full_version_list": "",
+        "sec_ch_ua_full_version": "",
         "sec_ch_ua_platform": "",
+        "sec_ch_ua_platform_version": "",
+        "sec_ch_ua_arch": "",
+        "sec_ch_ua_bitness": "",
+        "sec_ch_ua_model": "",
         "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "accept_language": ["en-US,en;q=0.5", "en-GB,en;q=0.7,en;q=0.3"],
-        "accept_encoding": "gzip, deflate, br",
+        "accept_encoding": "gzip, deflate, br, zstd",
         "sec_fetch_site": "none",
         "sec_fetch_mode": "navigate",
         "sec_fetch_user": "?1",
@@ -60,7 +78,13 @@ BROWSER_PROFILES: Dict[str, Dict] = {
             "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
         ],
         "sec_ch_ua": "",
+        "sec_ch_ua_full_version_list": "",
+        "sec_ch_ua_full_version": "",
         "sec_ch_ua_platform": "",
+        "sec_ch_ua_platform_version": "",
+        "sec_ch_ua_arch": "",
+        "sec_ch_ua_bitness": "",
+        "sec_ch_ua_model": "",
         "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "accept_language": ["en-US,en;q=0.9", "en-AU,en;q=0.8"],
         "accept_encoding": "gzip, deflate, br",
@@ -72,14 +96,22 @@ BROWSER_PROFILES: Dict[str, Dict] = {
     },
     "edge": {
         "user_agents": [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0",
+            f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36 Edg/{CHROME_MAJOR}.0.0.0",
+            f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36 Edg/{CHROME_MAJOR}.0.0.0",
         ],
-        "sec_ch_ua": '"Microsoft Edge";v="122", "Chromium";v="122", "Not(A:Brand";v="24"',
+        "sec_ch_ua": f'"Microsoft Edge";v="{CHROME_MAJOR}", "Chromium";v="{CHROME_MAJOR}", "Not A(Brand";v="24"',
+        "sec_ch_ua_full_version_list": (
+            f'"Microsoft Edge";v="{CHROME_FULL}", "Chromium";v="{CHROME_FULL}", "Not A(Brand";v="10.0.0.0"'
+        ),
+        "sec_ch_ua_full_version": f'"{CHROME_FULL}"',
         "sec_ch_ua_platform": '"Windows"',
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+        "sec_ch_ua_platform_version": '"15.0.0"',
+        "sec_ch_ua_arch": '"x86"',
+        "sec_ch_ua_bitness": '"64"',
+        "sec_ch_ua_model": '""',
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         "accept_language": ["en-US,en;q=0.9"],
-        "accept_encoding": "gzip, deflate, br",
+        "accept_encoding": "gzip, deflate, br, zstd",
         "sec_fetch_site": "none",
         "sec_fetch_mode": "navigate",
         "sec_fetch_user": "?1",
@@ -134,6 +166,7 @@ class EvasionConfig:
     challenge_detect: bool = True
     decoy_requests: bool = False
     http2: bool = True
+    chrome_tls: bool = True
     strip_python_hints: bool = True
 
 
@@ -192,9 +225,14 @@ class EvasionSession:
         if level == "off":
             return {
                 "User-Agent": self._session_ua
-                or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                "Accept-Encoding": "gzip, deflate",
+                or (
+                    f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    f"(KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
             }
 
         profile_name = self._session_profile
@@ -204,6 +242,14 @@ class EvasionSession:
 
         profile = BROWSER_PROFILES[profile_name]
         ua = self._select_ua(url, profile)
+        mobile = "?1" if ("iPhone" in ua or "Android" in ua and "Mobile" in ua) else "?0"
+        platform = profile.get("sec_ch_ua_platform") or '"Windows"'
+        if "Macintosh" in ua or "Mac OS X" in ua:
+            platform = '"macOS"'
+        elif "Linux" in ua or "X11" in ua:
+            platform = '"Linux"'
+        elif "iPhone" in ua:
+            platform = '"iOS"'
 
         headers: Dict[str, str] = {
             "User-Agent": ua,
@@ -212,30 +258,55 @@ class EvasionSession:
             "Accept-Encoding": profile["accept_encoding"],
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": profile["upgrade_insecure_requests"],
+            "Cache-Control": "max-age=0",
         }
 
+        # Full Client Hints bundle (Chrome/Edge) — closes Akamai CH-missing rules
         if profile.get("sec_ch_ua"):
             headers["Sec-CH-UA"] = profile["sec_ch_ua"]
-            headers["Sec-CH-UA-Mobile"] = "?0" if "iPhone" not in ua else "?1"
-            headers["Sec-CH-UA-Platform"] = profile["sec_ch_ua_platform"] or '"Windows"'
+            headers["Sec-CH-UA-Mobile"] = mobile
+            headers["Sec-CH-UA-Platform"] = platform
+            if profile.get("sec_ch_ua_full_version_list"):
+                headers["Sec-CH-UA-Full-Version-List"] = profile["sec_ch_ua_full_version_list"]
+            if profile.get("sec_ch_ua_full_version"):
+                headers["Sec-CH-UA-Full-Version"] = profile["sec_ch_ua_full_version"]
+            if profile.get("sec_ch_ua_platform_version"):
+                headers["Sec-CH-UA-Platform-Version"] = (
+                    '"15.0.0"' if platform == '"Windows"' else profile["sec_ch_ua_platform_version"]
+                )
+            if profile.get("sec_ch_ua_arch"):
+                headers["Sec-CH-UA-Arch"] = profile["sec_ch_ua_arch"]
+            if profile.get("sec_ch_ua_bitness"):
+                headers["Sec-CH-UA-Bitness"] = profile["sec_ch_ua_bitness"]
+            if "sec_ch_ua_model" in profile:
+                headers["Sec-CH-UA-Model"] = profile.get("sec_ch_ua_model") or '""'
+            # Ask for client hints on subsequent responses (browser-like)
+            headers["Accept-CH"] = (
+                "Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Platform, Sec-CH-UA-Platform-Version, "
+                "Sec-CH-UA-Full-Version-List, Sec-CH-UA-Arch, Sec-CH-UA-Bitness, Sec-CH-UA-Model"
+            )
 
-        if is_navigation and level in ("stealth", "aggressive"):
-            site = "none"
-            if self._last_url:
-                prev = urlparse(self._last_url).netloc
-                curr = urlparse(url).netloc
-                site = "same-origin" if prev == curr else ("same-site" if _same_site(prev, curr) else "cross-site")
-            headers["Sec-Fetch-Site"] = site
-            headers["Sec-Fetch-Mode"] = profile["sec_fetch_mode"]
-            headers["Sec-Fetch-User"] = profile["sec_fetch_user"]
-            headers["Sec-Fetch-Dest"] = profile["sec_fetch_dest"]
+        # Always emit Sec-Fetch-* when stealth is on (basic included) — closes missing-header gaps
+        site = "none"
+        if self._last_url:
+            prev = urlparse(self._last_url).netloc
+            curr = urlparse(url).netloc
+            site = "same-origin" if prev == curr else ("same-site" if _same_site(prev, curr) else "cross-site")
+        if is_navigation:
+            headers["Sec-Fetch-Site"] = site if self._last_url else "none"
+            headers["Sec-Fetch-Mode"] = "navigate"
+            headers["Sec-Fetch-User"] = "?1"
+            headers["Sec-Fetch-Dest"] = "document"
+        else:
+            headers["Sec-Fetch-Site"] = site if self._last_url else "same-origin"
+            headers["Sec-Fetch-Mode"] = "cors"
+            headers["Sec-Fetch-Dest"] = "empty"
 
         if self.config.referer_chain and self._last_url and level != "basic":
             if urlparse(self._last_url).netloc == urlparse(url).netloc:
                 headers["Referer"] = self._last_url
 
         if level == "aggressive":
-            # Occasional Cache-Control variance looks less like a fixed scanner fingerprint
             if random.random() < 0.15:
                 headers["Cache-Control"] = random.choice(["max-age=0", "no-cache"])
             if random.random() < 0.1:
@@ -291,7 +362,7 @@ class EvasionSession:
                 delay += random.uniform(0.8, 2.5)
             await asyncio.sleep(delay)
 
-        headers = self.build_headers(url)
+        headers = self.build_headers(url, is_navigation=True)
         return headers
 
     def after_request(self, url: str, status_code: int, body_preview: str = ""):
@@ -334,7 +405,8 @@ class EvasionSession:
     def summary(self) -> str:
         return (
             f"Stealth: level={self.effective_level()}, browser={self._session_profile}, "
-            f"ua={self.config.ua_strategy}, challenges_seen={self._challenge_hits}"
+            f"ua={self.config.ua_strategy}, challenges_seen={self._challenge_hits}, "
+            f"chrome_tls={self.config.chrome_tls}"
         )
 
 
@@ -390,6 +462,7 @@ def _evasion_config_from_crawl(config) -> EvasionConfig:
         challenge_detect=bool(getattr(config, "evasion_challenge_detect", True)),
         decoy_requests=bool(getattr(config, "evasion_decoy_requests", False)),
         http2=bool(getattr(config, "evasion_http2", True)),
+        chrome_tls=bool(getattr(config, "evasion_chrome_tls", True)),
         strip_python_hints=True,
     )
     if econf.level == "basic":
