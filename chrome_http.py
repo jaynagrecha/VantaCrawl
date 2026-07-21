@@ -181,14 +181,19 @@ class StealthAsyncClient:
 
 
 def chrome_impersonate_for_profile(browser_profile: str = "chrome") -> str:
-    name = (browser_profile or "chrome").lower()
-    if name == "firefox":
-        return "firefox147"
-    if name == "safari":
-        return "safari260"
-    if name == "edge":
-        return DEFAULT_IMPERSONATE  # closest Chromium TLS
+    """TLS impersonation target.
+
+    When Chrome TLS mode is on we always pin ``chrome146`` so Akamai sees one
+    JA4/H2 stack. Mapping UA to firefox/safari TLS created mixed fingerprints
+    (Safari JA4 ``t13d2014h2_a09f3c656075_…`` showed up beside Chrome).
+    """
+    _ = browser_profile  # UA profile is separate; TLS stays Chrome
     return DEFAULT_IMPERSONATE
+
+
+# Stable JA4 for curl_cffi chrome146 (verified via tls.browserleaks.com)
+CURL_CFFI_CHROME146_JA4 = "t13d1516h2_8daaf6152771_d8a2da3f94cd"
+CURL_CFFI_CHROME146_AKAMAI_H2 = "52d84b11737d980aef856699f885ca86"
 
 
 async def open_scan_client(
@@ -203,6 +208,8 @@ async def open_scan_client(
     """Open the best available scan client (Chrome TLS → httpx fallback)."""
     use_chrome_tls = bool(getattr(config, "evasion_chrome_tls", True))
     use_http2 = bool(getattr(config, "evasion_http2", True))
+    level = (getattr(config, "evasion_level", "") or "").lower()
+    require_chrome_tls = use_chrome_tls and level in ("stealth", "aggressive", "basic")
     proxy = config.httpx_proxy() if hasattr(config, "httpx_proxy") else None
     auth = config.httpx_auth() if hasattr(config, "httpx_auth") else None
     cookie = (getattr(config, "cookie_string", "") or "").strip()
@@ -221,7 +228,9 @@ async def open_scan_client(
         )
         if output_callback and getattr(evasion.config, "enabled", True):
             output_callback(
-                f"Chrome TLS impersonation on ({impersonate}) — matching real-browser JA3/HTTP2 for lab scans."
+                f"Chrome TLS pinned ({impersonate}) — expect Akamai JA4 "
+                f"{CURL_CFFI_CHROME146_JA4} / H2 hash {CURL_CFFI_CHROME146_AKAMAI_H2}. "
+                "Disable Chrome-first HTML if you need a single fingerprint (real Chrome adds another JA4)."
             )
         return StealthAsyncClient(
             session,
@@ -234,8 +243,16 @@ async def open_scan_client(
 
     if use_chrome_tls and output_callback:
         output_callback(
-            "Chrome TLS impersonation unavailable (install curl_cffi) — falling back to httpx HTTP/2."
+            "Chrome TLS impersonation unavailable (install curl_cffi) — falling back to httpx "
+            "(Akamai will see a non-browser JA4; install curl_cffi on the worker)."
         )
+    if require_chrome_tls and not HAS_CURL_CFFI:
+        # Stealth against Bot Manager without curl_cffi just advertises Python TLS.
+        if output_callback:
+            output_callback(
+                "WARNING: stealth/basic/aggressive requested Chrome TLS but curl_cffi is missing. "
+                "Traffic will not match Chrome JA4."
+            )
 
     return httpx.AsyncClient(
         http2=use_http2,

@@ -156,7 +156,7 @@ MODE_PRESETS: Dict[str, Dict[str, Any]] = {
         "evasion_enabled": True,
         "evasion_level": "basic",
         "evasion_decoy_requests": False,
-        "browser_primary": True,
+        "browser_primary": False,
         "browser_on_challenge": True,
         "auto_sync_cookies": True,
         "enum_word_limit": 15000,
