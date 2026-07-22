@@ -22,8 +22,24 @@ type Meta = {
   wordlists?: WordlistItem[];
 };
 
+const GROUP_BLURBS: Record<string, string> = {
+  core: "Crawl depth, concurrency, and basic scope rules.",
+  discovery: "Subdomains, APIs, JS bundles, forms, and archive seeds.",
+  enum: "Directory / file name probing — usually the heaviest phase.",
+  security: "Vulnerability probes, secrets, headers, and impact checks.",
+  download: "Offline mirror, assets, and file save behavior.",
+  connection: "Cookies, proxies, TLS, and auth headers.",
+  operations: "Checkpoints, limits, and run-control knobs.",
+  stealth: "Browser identity, pacing, and WAF-friendly traffic shaping.",
+  reports: "HTML/text exports and assessment packaging.",
+};
+
 function humanize(key: string) {
   return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function isToggleField(value: unknown, meta?: FieldMeta) {
+  return typeof value === "boolean" || meta?.control === "checkbox";
 }
 
 function SettingControl({
@@ -31,11 +47,13 @@ function SettingControl({
   value,
   meta,
   onChange,
+  dense,
 }: {
   fieldKey: string;
   value: unknown;
   meta?: FieldMeta;
   onChange: (key: string, value: unknown) => void;
+  dense?: boolean;
 }) {
   const label = meta?.label || humanize(fieldKey);
   const help = meta?.help || "";
@@ -43,7 +61,7 @@ function SettingControl({
   const options = meta?.options || [];
   const presets = meta?.presets || [];
 
-  const isBool = typeof value === "boolean" || control === "checkbox";
+  const isBool = isToggleField(value, meta);
   const isNumber = typeof value === "number" || control === "number";
   const isSelect = control === "select" && options.length > 0;
   const isPresetText = control === "text_with_presets";
@@ -51,19 +69,17 @@ function SettingControl({
 
   if (isBool) {
     return (
-      <div className="setting-item" key={fieldKey}>
-        <label>
-          <input
-            type="checkbox"
-            checked={Boolean(value)}
-            onChange={(e) => onChange(fieldKey, e.target.checked)}
-          />
-          <span>
-            <span className="setting-label">{label}</span>
-            {help ? <span className="setting-help">{help}</span> : null}
-          </span>
-        </label>
-      </div>
+      <label className={`expert-toggle ${dense ? "dense" : ""}`}>
+        <input
+          type="checkbox"
+          checked={Boolean(value)}
+          onChange={(e) => onChange(fieldKey, e.target.checked)}
+        />
+        <span className="expert-toggle-copy">
+          <span className="setting-label">{label}</span>
+          {help ? <span className="setting-help">{help}</span> : null}
+        </span>
+      </label>
     );
   }
 
@@ -71,7 +87,7 @@ function SettingControl({
     const current = value == null ? "" : String(value);
     const known = options.some((o) => o.value === current);
     return (
-      <div className="field setting-field" key={fieldKey}>
+      <div className="field setting-field">
         <label>{label}</label>
         {help ? <p className="setting-help-inline">{help}</p> : null}
         <select value={known ? current : current} onChange={(e) => onChange(fieldKey, e.target.value)}>
@@ -90,7 +106,7 @@ function SettingControl({
     const text = value == null ? "" : String(value);
     const matched = presets.find((p) => p.value === text);
     return (
-      <div className="field setting-field setting-field-wide" key={fieldKey}>
+      <div className="field setting-field setting-field-wide">
         <label>{label}</label>
         {help ? <p className="setting-help-inline">{help}</p> : null}
         <select
@@ -118,7 +134,7 @@ function SettingControl({
 
   if (isNumber) {
     return (
-      <div className="field setting-field" key={fieldKey}>
+      <div className="field setting-field">
         <label>{label}</label>
         {help ? <p className="setting-help-inline">{help}</p> : null}
         <input
@@ -131,7 +147,7 @@ function SettingControl({
   }
 
   return (
-    <div className="field setting-field" key={fieldKey}>
+    <div className="field setting-field">
       <label>{label}</label>
       {help ? <p className="setting-help-inline">{help}</p> : null}
       <input
@@ -154,6 +170,8 @@ export default function NewScanPage() {
   const [authorized, setAuthorized] = useState(false);
   const [settings, setSettings] = useState<Record<string, unknown>>({});
   const [tab, setTab] = useState("core");
+  const [expertOpen, setExpertOpen] = useState(false);
+  const [expertQuery, setExpertQuery] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [targetsText, setTargetsText] = useState("");
@@ -163,6 +181,12 @@ export default function NewScanPage() {
   const [postmanFile, setPostmanFile] = useState<File | null>(null);
   const [harFile, setHarFile] = useState<File | null>(null);
   const [wordlistId, setWordlistId] = useState("");
+
+  const baseline = useMemo(() => {
+    if (!meta) return {} as Record<string, unknown>;
+    const preset = meta.modes[mode]?.preset || {};
+    return { ...meta.default_settings, ...preset };
+  }, [meta, mode]);
 
   useEffect(() => {
     api
@@ -183,20 +207,73 @@ export default function NewScanPage() {
   useEffect(() => {
     if (!meta) return;
     const preset = meta.modes[mode]?.preset || {};
-    // Mode switch replaces settings from defaults + preset (do not keep stale discovery toggles).
     setSettings({ ...meta.default_settings, ...preset });
     if (preset.speed) setSpeed(String(preset.speed));
   }, [mode, meta]);
 
   const groups = meta?.setting_groups || [];
   const fields = meta?.setting_fields || {};
-  const activeKeys = useMemo(
-    () => groups.find((g) => g.id === tab)?.keys || [],
-    [groups, tab]
-  );
+
+  const changedKeys = useMemo(() => {
+    const out: string[] = [];
+    for (const [key, value] of Object.entries(settings)) {
+      if (!(key in baseline)) continue;
+      if (JSON.stringify(baseline[key]) !== JSON.stringify(value)) out.push(key);
+    }
+    return out;
+  }, [settings, baseline]);
+
+  const changedSet = useMemo(() => new Set(changedKeys), [changedKeys]);
+
+  const query = expertQuery.trim().toLowerCase();
+  const searching = query.length > 0;
+
+  const activeGroup = groups.find((g) => g.id === tab) || groups[0];
+
+  const visibleKeys = useMemo(() => {
+    if (searching) {
+      const hits: string[] = [];
+      for (const g of groups) {
+        for (const key of g.keys) {
+          const metaField = fields[key];
+          const hay = [
+            key,
+            metaField?.label || "",
+            metaField?.help || "",
+            humanize(key),
+            g.title,
+          ]
+            .join(" ")
+            .toLowerCase();
+          if (hay.includes(query)) hits.push(key);
+        }
+      }
+      return hits;
+    }
+    return activeGroup?.keys || [];
+  }, [searching, query, groups, fields, activeGroup]);
+
+  const toggleKeys = visibleKeys.filter((k) => isToggleField(settings[k], fields[k]));
+  const valueKeys = visibleKeys.filter((k) => !isToggleField(settings[k], fields[k]));
 
   function setSetting(key: string, value: unknown) {
     setSettings((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function resetExpertToModeDefaults() {
+    setSettings({ ...baseline });
+    setExpertQuery("");
+  }
+
+  function resetActiveGroup() {
+    if (!activeGroup || searching) return;
+    setSettings((prev) => {
+      const next = { ...prev };
+      for (const key of activeGroup.keys) {
+        if (key in baseline) next[key] = baseline[key];
+      }
+      return next;
+    });
   }
 
   async function submit(e: FormEvent) {
@@ -230,6 +307,8 @@ export default function NewScanPage() {
   if (!meta) {
     return <div className="card muted">Loading scan catalog…</div>;
   }
+
+  const groupChangedCount = (keys: string[]) => keys.filter((k) => changedSet.has(k)).length;
 
   return (
     <form onSubmit={submit}>
@@ -402,34 +481,180 @@ export default function NewScanPage() {
         </div>
       </section>
 
-      <section className="card">
-        <h2>Expert settings</h2>
-        <p className="lead" style={{ marginBottom: "0.85rem" }}>
-          Plain-language labels with guided choices for enums. Presets cover common extension and status filters.
-        </p>
-        <div className="tabs">
-          {groups.map((g) => (
+      <section className={`card expert-card ${expertOpen ? "open" : "collapsed"}`}>
+        <header className="expert-head">
+          <div className="expert-head-copy">
+            <h2>Expert settings</h2>
+            <p className="lead expert-lead">
+              Optional fine-tuning. Most scans only need the basics above — open this when you need
+              stealth, enum filters, or report knobs.
+            </p>
+          </div>
+          <div className="expert-head-actions">
+            {changedKeys.length > 0 ? (
+              <span className="expert-changed-pill" title="Settings changed from the mode defaults">
+                {changedKeys.length} customized
+              </span>
+            ) : (
+              <span className="expert-default-pill">Using mode defaults</span>
+            )}
             <button
-              key={g.id}
               type="button"
-              className={`tab ${tab === g.id ? "active" : ""}`}
-              onClick={() => setTab(g.id)}
+              className="btn primary"
+              onClick={() => setExpertOpen((v) => !v)}
+              aria-expanded={expertOpen}
             >
-              {g.title}
+              {expertOpen ? "Hide expert settings" : "Show expert settings"}
             </button>
-          ))}
-        </div>
-        <div className="settings-grid">
-          {activeKeys.map((key) => (
-            <SettingControl
-              key={key}
-              fieldKey={key}
-              value={settings[key]}
-              meta={fields[key]}
-              onChange={setSetting}
-            />
-          ))}
-        </div>
+          </div>
+        </header>
+
+        {expertOpen ? (
+          <div className="expert-body">
+            <div className="expert-toolbar">
+              <div className="expert-search">
+                <input
+                  type="search"
+                  value={expertQuery}
+                  onChange={(e) => setExpertQuery(e.target.value)}
+                  placeholder="Search settings (e.g. stealth, graphql, wordlist)…"
+                  aria-label="Search expert settings"
+                />
+              </div>
+              <div className="expert-toolbar-actions">
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={resetActiveGroup}
+                  disabled={searching || !activeGroup}
+                  title="Reset only the active category to mode defaults"
+                >
+                  Reset category
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={resetExpertToModeDefaults}
+                  disabled={changedKeys.length === 0}
+                  title="Reset every expert setting to the current mode defaults"
+                >
+                  Reset all
+                </button>
+              </div>
+            </div>
+
+            <div className="expert-layout">
+              <aside className="expert-nav" aria-label="Setting categories">
+                <label className="expert-nav-mobile">
+                  <span>Category</span>
+                  <select
+                    value={tab}
+                    onChange={(e) => {
+                      setTab(e.target.value);
+                      setExpertQuery("");
+                    }}
+                    disabled={searching}
+                  >
+                    {groups.map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.title}
+                        {groupChangedCount(g.keys) ? ` (${groupChangedCount(g.keys)} changed)` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <nav className="expert-nav-list">
+                  {groups.map((g) => {
+                    const changed = groupChangedCount(g.keys);
+                    return (
+                      <button
+                        key={g.id}
+                        type="button"
+                        className={`expert-nav-item ${!searching && tab === g.id ? "active" : ""}`}
+                        onClick={() => {
+                          setTab(g.id);
+                          setExpertQuery("");
+                        }}
+                      >
+                        <span className="expert-nav-title">{g.title}</span>
+                        <span className="expert-nav-meta">
+                          <span className="expert-nav-count">{g.keys.length}</span>
+                          {changed > 0 ? <span className="expert-nav-dot" title={`${changed} changed`} /> : null}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </nav>
+              </aside>
+
+              <div className="expert-panel">
+                <div className="expert-panel-head">
+                  <div>
+                    <h3>
+                      {searching
+                        ? `Search results`
+                        : activeGroup?.title || "Settings"}
+                    </h3>
+                    <p className="muted">
+                      {searching
+                        ? `${visibleKeys.length} match${visibleKeys.length === 1 ? "" : "es"} for “${expertQuery.trim()}”`
+                        : GROUP_BLURBS[activeGroup?.id || ""] || "Tune this category for the current scan."}
+                    </p>
+                  </div>
+                  {!searching && activeGroup ? (
+                    <span className="expert-panel-count">
+                      {activeGroup.keys.length} settings
+                      {groupChangedCount(activeGroup.keys)
+                        ? ` · ${groupChangedCount(activeGroup.keys)} changed`
+                        : ""}
+                    </span>
+                  ) : null}
+                </div>
+
+                {visibleKeys.length === 0 ? (
+                  <p className="expert-empty muted">No settings match that search.</p>
+                ) : (
+                  <>
+                    {toggleKeys.length > 0 ? (
+                      <div className="expert-section">
+                        <h4>Switches</h4>
+                        <div className="expert-toggles">
+                          {toggleKeys.map((key) => (
+                            <SettingControl
+                              key={key}
+                              fieldKey={key}
+                              value={settings[key]}
+                              meta={fields[key]}
+                              onChange={setSetting}
+                              dense
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {valueKeys.length > 0 ? (
+                      <div className="expert-section">
+                        <h4>Values</h4>
+                        <div className="settings-grid expert-values">
+                          {valueKeys.map((key) => (
+                            <SettingControl
+                              key={key}
+                              fieldKey={key}
+                              value={settings[key]}
+                              meta={fields[key]}
+                              onChange={setSetting}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : null}
       </section>
     </form>
   );
