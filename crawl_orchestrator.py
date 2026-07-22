@@ -93,7 +93,11 @@ ENUM_EXTENSIONS = (".php", ".asp", ".aspx", ".bak", ".old", ".txt", ".zip", ".sq
 
 
 def _to_priority_queue(queue):
-    """Convert deque/list of URLs into a heapq-compatible list."""
+    """Convert deque/list of URLs into a heapq-compatible list.
+
+    Entries are ``(html_pri, template_load, seq, url)`` so fair-frontier
+    deprioritizes over-sampled locale/route templates.
+    """
     from collections import deque
 
     items = list(queue) if isinstance(queue, deque) else list(queue)
@@ -102,13 +106,18 @@ def _to_priority_queue(queue):
     for item in items:
         if isinstance(item, (list, tuple)) and len(item) >= 2 and isinstance(item[0], int):
             url = item[-1]
-            heapq.heappush(priority_queue, (item[0], counter, url))
+            html_pri = int(item[0])
+            template_load = int(item[1]) if len(item) >= 4 else 0
+            heapq.heappush(priority_queue, (html_pri, template_load, counter, url))
         else:
             url = item
             if not isinstance(url, str) or not is_valid_url(url):
                 counter += 1
                 continue
-            heapq.heappush(priority_queue, (0 if is_html_url(url) else 1, counter, url))
+            heapq.heappush(
+                priority_queue,
+                (0 if is_html_url(url) else 1, 0, counter, url),
+            )
         counter += 1
     return priority_queue
 
@@ -611,6 +620,20 @@ async def run_full_crawl_async(
                     status_code_t = 0
                 if status_code_t:
                     stats.record_status(status_code_t, enum=False)
+                    try:
+                        stats.record_request(
+                            phase="crawl",
+                            source="page",
+                            url=current_url,
+                            depth=current_depth,
+                            status=status_code_t,
+                            final_url=current_url,
+                            response_type=(content_type or "")[:80],
+                            bytes_=len(body) if body else 0,
+                            outcome="ok" if status_code_t < 400 else "http_error",
+                        )
+                    except Exception:
+                        pass
                 if body:
                     stats.bytes_downloaded += len(body)
 
@@ -847,6 +870,62 @@ async def run_full_crawl_async(
                         operations_since_checkpoint = 0
 
         if not config.enum_only:
+            enum_task = None
+            enum_configured = _directory_enum_enabled(config)
+            stats.enum_configured = enum_configured  # type: ignore[attr-defined]
+            stats.enum_complete = False  # type: ignore[attr-defined]
+            stats.enum_skip_reason = None  # type: ignore[attr-defined]
+            stats._directory_enum_enabled = enum_configured  # type: ignore[attr-defined]
+            stats._directory_enum_started = False  # type: ignore[attr-defined]
+
+            if (
+                enum_configured
+                and bool(getattr(config, "enum_parallel_with_crawl", True))
+                and await running()
+            ):
+                start_after = max(0, int(getattr(config, "enum_start_after_pages", 3) or 3))
+                start_timeout = max(5.0, float(getattr(config, "enum_start_timeout_s", 45) or 45))
+
+                async def _parallel_enum():
+                    deadline = time.time() + start_timeout
+                    while await running():
+                        if stats.pages_crawled >= start_after or time.time() >= deadline:
+                            break
+                        await asyncio.sleep(0.4)
+                    if not await running():
+                        stats.enum_skip_reason = "scan_stopped_before_enum"  # type: ignore[attr-defined]
+                        return
+                    stats._directory_enum_started = True  # type: ignore[attr-defined]
+                    output_callback(
+                        "=== Directory enumeration starting in parallel with crawl "
+                        f"(after {stats.pages_crawled} page(s)) ==="
+                    )
+                    try:
+                        await _run_full_enum_suite(
+                            config,
+                            client,
+                            output_callback,
+                            running,
+                            manager,
+                            live_extensions,
+                            download_semaphore,
+                            discovered,
+                            queue,
+                            link_depths,
+                            stats,
+                            use_priority,
+                            update_progress,
+                            list(discovered) + extra_seeds,
+                        )
+                        stats.enum_complete = True  # type: ignore[attr-defined]
+                    except Exception as exc:
+                        from user_output import sanitize_error_message
+
+                        stats.enum_skip_reason = f"enum_error:{sanitize_error_message(exc)}"  # type: ignore[attr-defined]
+                        output_callback(f"Directory enumeration error: {sanitize_error_message(exc)}")
+
+                enum_task = asyncio.create_task(_parallel_enum())
+
             if config.crawl_concurrency > 1:
                 def _on_page_timeout(url: str):
                     stats.errors += 1
@@ -873,12 +952,43 @@ async def run_full_crawl_async(
                         if not queue:
                             break
                         if use_priority:
-                            _, _, current_url = heapq.heappop(queue)
+                            current_url = heapq.heappop(queue)[-1]
                         else:
                             current_url = queue.popleft()
                     await _process_crawl_url(current_url)
+
+            if enum_task is not None:
+                try:
+                    await enum_task
+                except Exception:
+                    pass
+            elif enum_configured and await running():
+                # Sequential fallback when parallel mode is disabled
+                stats._directory_enum_started = True  # type: ignore[attr-defined]
+                await _run_full_enum_suite(
+                    config,
+                    client,
+                    output_callback,
+                    running,
+                    manager,
+                    live_extensions,
+                    download_semaphore,
+                    discovered,
+                    queue,
+                    link_depths,
+                    stats,
+                    use_priority,
+                    update_progress,
+                    list(discovered) + extra_seeds,
+                )
+                stats.enum_complete = True  # type: ignore[attr-defined]
+            elif not enum_configured:
+                stats.enum_skip_reason = "directory_enum_disabled"  # type: ignore[attr-defined]
         elif config.enum_only:
             output_callback("=== Enum-only mode (Gobuster-beater) — skipping crawl phase ===")
+            stats.enum_configured = True  # type: ignore[attr-defined]
+            stats._directory_enum_enabled = True  # type: ignore[attr-defined]
+            stats._directory_enum_started = True  # type: ignore[attr-defined]
 
         # Merge capped-but-observed query params into attack-surface inventory
         try:
@@ -905,7 +1015,22 @@ async def run_full_crawl_async(
         except Exception:
             pass
 
-        if await running() and _directory_enum_enabled(config):
+        # Sync route-template inventory from tracker (export must not stay empty)
+        try:
+            tracker = getattr(stats, "route_template_tracker", None)
+            if tracker is not None:
+                counts = tracker.inventory_counts()
+                for tmpl in sorted(counts.keys(), key=lambda k: -counts[k])[:2000]:
+                    if tmpl not in stats.route_templates:
+                        stats.route_templates.append(tmpl)
+                stats.route_variants_skipped = max(
+                    int(getattr(stats, "route_variants_skipped", 0) or 0),
+                    int(getattr(tracker, "skipped_variants", 0) or 0),
+                )
+        except Exception:
+            pass
+
+        if config.enum_only and await running() and _directory_enum_enabled(config):
             await _run_full_enum_suite(
                 config,
                 client,
@@ -922,7 +1047,8 @@ async def run_full_crawl_async(
                 update_progress,
                 list(discovered) + extra_seeds,
             )
-        elif await running():
+            stats.enum_complete = True  # type: ignore[attr-defined]
+        elif await running() and not config.enum_only and not _directory_enum_enabled(config):
             output_callback(
                 "Directory enumeration skipped — enable “Run directory enum” "
                 "(or choose Deep Audit / Fast Scan) to probe folder/file names."
@@ -1641,15 +1767,27 @@ async def _check_broken_links(
 
     if sample_size == 0:
         sample_size = len(links)
-    candidates = [
-        link
-        for link in list(links)[:sample_size]
-        if should_follow_url(link, base_domain, restrict_domain)
-    ]
+    # Unique candidates only — repeated rows inflate broken-link headlines
+    seen_cand: set = set()
+    candidates = []
+    for link in list(links):
+        if link in seen_cand:
+            continue
+        if not should_follow_url(link, base_domain, restrict_domain):
+            continue
+        seen_cand.add(link)
+        candidates.append(link)
+        if sample_size and len(candidates) >= sample_size:
+            break
     if not candidates:
         return
 
     sem = asyncio.Semaphore(4 if prefer_get else 8)
+    existing = {
+        str(row.get("url") or "")
+        for row in (getattr(stats, "broken_links", None) or [])
+        if isinstance(row, dict)
+    }
 
     async def _one(link: str):
         async with sem:
@@ -1660,16 +1798,36 @@ async def _check_broken_links(
                 else:
                     response = await client.head(link, timeout=8, follow_redirects=True)
                 if response.status_code >= 400:
-                    stats.broken_links.append({"url": link, "status": str(response.status_code)})
-            except httpx.HTTPError:
-                stats.broken_links.append({"url": link, "status": "error"})
+                    status = str(response.status_code)
+                    class_ = "not_found" if status == "404" else (
+                        "access_denied" if status in ("401", "403", "405") else (
+                            "temporary_unavailable" if status.startswith("5") else "client_error"
+                        )
+                    )
+                    if link not in existing:
+                        existing.add(link)
+                        stats.broken_links.append(
+                            {"url": link, "status": status, "class": class_}
+                        )
+            except httpx.HTTPError as exc:
+                msg = str(exc).lower()
+                class_ = "fetch_error"
+                if "dns" in msg or "resolve" in msg or "getaddrinfo" in msg:
+                    class_ = "dns_failure"
+                elif "connect" in msg or "timeout" in msg:
+                    class_ = "connection_failure"
+                if link not in existing:
+                    existing.add(link)
+                    stats.broken_links.append(
+                        {"url": link, "status": "error", "class": class_}
+                    )
 
     await asyncio.gather(*[_one(link) for link in candidates], return_exceptions=True)
 
 
 def _persist_checkpoint(config, visited, discovered, queue, link_depths, use_priority):
     if use_priority:
-        flat_queue = [url for _, _, url in queue]
+        flat_queue = [item[-1] for item in queue]
     elif hasattr(queue, "copy"):
         flat_queue = list(queue)
     else:

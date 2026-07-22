@@ -469,6 +469,20 @@ async def assess_secrets_live(
     )
 
 
+def _cors_proof_status(proof: Any) -> Optional[int]:
+    """Extract HTTP status from stored CORS proof response lines, if present."""
+    if not isinstance(proof, dict):
+        return None
+    blob = str(proof.get("response") or "")
+    m = re.search(r"(?i)^HTTP/\d(?:\.\d)?\s+(\d{3})", blob, re.M)
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            return None
+    return None
+
+
 def assess_cors(
     detail: str,
     severity: str,
@@ -482,6 +496,7 @@ def assess_cors(
 
     Confirmation requires raw request/response proof (ACAO/ACAC headers). Without it the
     finding is an unverified configuration signal only.
+    Non-2xx / sitemap-style public probes stay informational — header reflection ≠ data exposure.
     """
     from urllib.parse import urlparse
 
@@ -511,6 +526,21 @@ def assess_cors(
 
     path = (urlparse(url).path or "/").lower()
     host = (urlparse(url).netloc or "").lower()
+    proof_status = _cors_proof_status(proof)
+    # Header reflection on 4xx/5xx (e.g. sitemap 403) confirms config, not readable data.
+    if proof_status is not None and not (200 <= proof_status < 300):
+        return ImpactResult(
+            role="cors",
+            impact="informational",
+            severity="info",
+            summary=(
+                f"CORS reflects Origin with credentials, but the probed response was "
+                f"HTTP {proof_status} — confirms header behavior only, not sensitive data exposure. "
+                "Keep informational until a sensitive authenticated 2xx body is readable cross-origin."
+            ),
+            validation="confirmed",
+            proof=proof if isinstance(proof, (str, dict)) else None,
+        )
 
     auth_like_path = bool(
         re.search(

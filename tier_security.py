@@ -964,28 +964,81 @@ def scan_ssrf_param_candidates(url: str) -> List[Finding]:
 # --- Auth account surfaces (Tier 1 leftovers) ---------------------------------
 
 def scan_auth_account_surfaces(url: str, body_text: str, forms: Optional[List[dict]] = None) -> List[Finding]:
-    """Flag replay/OTP/email-change surfaces for targeted abuse testing."""
+    """Flag replay/OTP/email-change surfaces for targeted abuse testing.
+
+    Keyword hits on FAQ/marketing pages are ignored — require auth-like path,
+    password/OTP form fields, or JS route constants tied to auth flows.
+    """
     findings: List[Finding] = []
-    blob = ((body_text or "") + " " + url)[:80000].lower()
     path = (urlparse(url).path or "").lower()
-    if re.search(r"(?i)\b(otp|one[_-]?time|verification[_-]?code|2fa|mfa)\b", blob + path):
+    # Skip marketing / help / legal pages that merely mention MFA
+    if re.search(
+        r"(?i)/(?:faq|help|support|terms|privacy|policy|about|blog|news|fraud|"
+        r"awareness|learn|education|article)(?:/|$|\.)",
+        path,
+    ):
+        return findings
+
+    functional_path = bool(
+        _AUTH_PATH_RE.search(path)
+        or re.search(
+            r"(?i)/(?:otp|mfa|2fa|verify|verification|login|signin|account|auth|"
+            r"password|reset|register|signup)(?:/|$|\.)",
+            path,
+        )
+    )
+    form_fields = set()
+    for form in forms or []:
+        for f in form.get("fields") or []:
+            form_fields.add(str(f).lower())
+    has_otp_field = bool(
+        form_fields
+        & {
+            "otp",
+            "mfa",
+            "2fa",
+            "totp",
+            "verification_code",
+            "verificationcode",
+            "one_time_password",
+            "onetimepassword",
+            "auth_code",
+            "authcode",
+        }
+    )
+    has_password_field = "password" in form_fields or "passwd" in form_fields
+    blob = (body_text or "")[:80000]
+    # Prefer form / path evidence over bare body keywords
+    if has_otp_field or (
+        functional_path
+        and re.search(r"(?i)\b(otp|one[_-]?time|verification[_-]?code|2fa|mfa)\b", blob + path)
+    ):
         findings.append(
             (
                 "authentication",
                 "info",
                 "OTP/MFA surface detected — test rate limits and brute-force resistance",
                 _ev("otp/mfa", label="auth_otp_surface"),
-                _meta("detected", "info", confidence="low", confidence_reason="UI/path references OTP/MFA"),
+                _meta(
+                    "detected",
+                    "info",
+                    confidence="medium" if has_otp_field or functional_path else "low",
+                    confidence_reason="Auth path/form references OTP/MFA (not FAQ keyword-only)",
+                ),
             )
         )
-    if re.search(r"(?i)(change[_-]?email|update[_-]?email|email[_-]?change)", blob + path):
+    if (
+        functional_path
+        or has_password_field
+        or re.search(r"(?i)/(?:account|profile|settings)/", path)
+    ) and re.search(r"(?i)(change[_-]?email|update[_-]?email|email[_-]?change)", blob + path):
         findings.append(
             (
                 "authentication",
                 "info",
                 "Email-change flow referenced — verify password/reauth required (ATO path)",
                 _ev("change-email", label="auth_email_change"),
-                _meta("detected", "info", confidence="low", confidence_reason="Email-change wording in client/path"),
+                _meta("detected", "info", confidence="low", confidence_reason="Email-change wording on auth-like surface"),
             )
         )
     if re.search(r"(?i)(refresh[_-]?token|token[_-]?reuse|revoke)", blob) and (

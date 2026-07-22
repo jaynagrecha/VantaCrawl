@@ -1903,11 +1903,34 @@ def enqueue_discovered_url(
             stats.requests_queued += 1
         if hasattr(stats, "discovered_urls"):
             stats.discovered_urls.add(crawl_url)
+        # Fair frontier: prefer under-sampled route templates so one locale family
+        # cannot monopolize the crawl queue.
+        if hasattr(stats, "record_request"):
+            try:
+                stats.record_request(
+                    phase="enqueue",
+                    source=kind,
+                    url=crawl_url,
+                    depth=link_depth,
+                    outcome="queued",
+                )
+            except Exception:
+                pass
     if use_priority:
         import heapq
 
-        priority = 0 if is_html_url(crawl_url) else 1
-        heapq.heappush(queue, (priority, len(discovered), crawl_url))
+        html_pri = 0 if is_html_url(crawl_url) else 1
+        template_load = 0
+        if route_tracker is not None:
+            try:
+                from crawl_url_policy import route_template_key
+
+                tmpl = route_template_key(crawl_url) or crawl_url
+                template_load = int(getattr(route_tracker, "_queued_counts", {}).get(tmpl, 1) or 1)
+            except Exception:
+                template_load = 0
+        # Lower tuple = popped first: HTML before assets, then lighter templates
+        heapq.heappush(queue, (html_pri, template_load, len(discovered), crawl_url))
     else:
         queue.append(crawl_url)
     return True

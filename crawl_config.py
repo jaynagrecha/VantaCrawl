@@ -49,9 +49,13 @@ class CrawlConfig:
     per_directory_wildcard: bool = True
     # Design: caps trim enqueue work only — observed params stay inventoried
     # Route-template sampling (locale/destination families) — inventory kept
-    max_instances_per_route_template: int = 3
+    max_instances_per_route_template: int = 2
     max_locales_per_route_template: int = 2
     same_locale_only: bool = True
+    # Run directory enum concurrently with crawl (do not wait for queue drain)
+    enum_parallel_with_crawl: bool = True
+    enum_start_after_pages: int = 3
+    enum_start_timeout_s: float = 45.0
     # After BM cookies exist, prefer HTTP for HTML and escalate on challenge (speed)
     # When BM cookies missing, Chrome-first still applies. Does not disable browser capability.
     http_first_when_bm_ready: bool = True

@@ -52,10 +52,86 @@ except Exception:  # pragma: no cover - Windows without tzdata fallback
 
 def _format_ist(ts: float, *, with_date: bool = False) -> str:
     """Format unix time in India Standard Time for journal / forensic UI."""
-    dt = datetime.fromtimestamp(float(ts), tz=timezone.utc).astimezone(_IST)
-    if with_date:
-        return dt.strftime("%Y-%m-%d %H:%M:%S IST")
-    return dt.strftime("%H:%M:%S IST")
+    try:
+        from report_time import format_ist
+
+        return format_ist(ts, with_date=with_date or True) if with_date else format_ist(ts, with_date=False)
+    except Exception:
+        dt = datetime.fromtimestamp(float(ts), tz=timezone.utc).astimezone(_IST)
+        if with_date:
+            return dt.strftime("%Y-%m-%d %H:%M:%S IST")
+        return dt.strftime("%H:%M:%S IST")
+
+
+def _format_utc(ts: float, *, with_date: bool = True) -> str:
+    try:
+        from report_time import format_utc
+
+        return format_utc(ts, with_date=with_date)
+    except Exception:
+        dt = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+        if with_date:
+            return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        return dt.strftime("%H:%M:%S UTC")
+
+
+def classify_defense_event(
+    *,
+    status_code: int,
+    body_preview: str = "",
+    signal: str = "",
+    headers: Optional[Dict[str, str]] = None,
+) -> str:
+    """Explicit defense/outcome class — DNS/origin failures are never bot catches."""
+    body_l = (body_preview or "").lower()
+    hdr = " ".join(f"{k}:{v}" for k, v in (headers or {}).items()).lower()
+    blob = f"{body_l} {hdr}"
+    if any(
+        tok in blob
+        for tok in (
+            "dns failure",
+            "dns resolution",
+            "name or service not known",
+            "could not resolve",
+            "nxdomain",
+            "getaddrinfo",
+        )
+    ):
+        return "origin_dns_failure"
+    if any(
+        tok in blob
+        for tok in (
+            "fail to connect",
+            "failed to connect",
+            "connection refused",
+            "connection reset",
+            "connect timed out",
+            "network unreachable",
+            "no route to host",
+            "upstream connect error",
+            "origin is unreachable",
+        )
+    ):
+        return "origin_connection_failure"
+    if status_code >= 500 and not signal and any(
+        tok in blob for tok in ("application error", "internal server error", "traceback")
+    ):
+        return "application_error"
+    if signal in ("rate_limit",) or status_code == 429:
+        return "rate_limit"
+    if signal and any(x in signal for x in ("captcha", "recaptcha", "hcaptcha", "turnstile")):
+        return "captcha"
+    if signal and any(x in signal for x in ("challenge", "turnstile", "js_challenge")):
+        return "confirmed_challenge"
+    if signal and any(
+        x in signal for x in ("akamai", "cloudflare", "waf", "datadome", "perimeterx", "blocked", "deny")
+    ):
+        return "confirmed_waf_deny"
+    if status_code in (401, 403, 405) and not signal:
+        return "ordinary_access_deny"
+    if signal:
+        return "confirmed_waf_deny"
+    return "unknown"
 
 # Header / body signals → protection family
 PROTECTION_SIGNATURES = (
@@ -140,13 +216,14 @@ REASON_HINTS = {
 class DefenseEvent:
     url: str
     status: int
-    outcome: str  # caught | unchallenged | error
+    outcome: str  # caught | unchallenged | error | origin_failure | access_deny
     signal: str
     protections: List[str] = field(default_factory=list)
     reason: str = ""
     headers: Dict[str, str] = field(default_factory=dict)
     body_snippet: str = ""
     time: float = field(default_factory=time.time)
+    event_class: str = ""
 
     def journal_dict(self) -> Dict[str, Any]:
         """Slim payload for live cockpit."""
@@ -159,9 +236,12 @@ class DefenseEvent:
             "signal": signal,
             "protections": protections,
             "reason": self.reason,
-            # IST for operators in India — time_unix remains the source of truth
+            # IST primary for operators; UTC paired to avoid label ambiguity
             "time": _format_ist(self.time),
+            "time_ist": _format_ist(self.time, with_date=True),
+            "time_utc": _format_utc(self.time, with_date=True),
             "time_unix": self.time,
+            "event_class": getattr(self, "event_class", "") or "",
         }
 
     def forensic_dict(self) -> Dict[str, Any]:
@@ -177,8 +257,10 @@ class DefenseEvent:
             "body_snippet": self.body_snippet,
             "time_unix": self.time,
             "time_ist": _format_ist(self.time, with_date=True),
-            # Kept for older report templates; same IST stamp
-            "time_utc": _format_ist(self.time, with_date=True),
+            # Real UTC — was previously mislabeled IST under this key
+            "time_utc": _format_utc(self.time, with_date=True),
+            "time_display": f"{_format_ist(self.time, with_date=True)} ({_format_utc(self.time, with_date=True)})",
+            "event_class": getattr(self, "event_class", "") or "",
         }
 
 
@@ -285,11 +367,14 @@ class DefenseTracker:
     caught_count: int = 0
     unchallenged_count: int = 0
     error_count: int = 0
+    origin_failure_count: int = 0
+    origin_failure_class_counts: Counter = field(default_factory=Counter)
     rate_limit_count: int = 0
     captcha_signal_count: int = 0
     bot_wall_count: int = 0
     sample_caught: List[DefenseEvent] = field(default_factory=list)
     sample_unchallenged: List[DefenseEvent] = field(default_factory=list)
+    sample_origin_failures: List[DefenseEvent] = field(default_factory=list)
     block_events: List[DefenseEvent] = field(default_factory=list)
     fingerprint_notes: List[str] = field(default_factory=list)
     # Evidence-backed vendor inventory (replaces flat-name-only UX)
@@ -425,6 +510,35 @@ class DefenseTracker:
                     signal = "rate_limit"
 
         challenged = bool(signal)
+        event_class = classify_defense_event(
+            status_code=status_code,
+            body_preview=body_preview,
+            signal=signal,
+            headers=headers,
+        )
+        # Origin/infra failures are never bot/WAF catches even if status is 503
+        if event_class in ("origin_dns_failure", "origin_connection_failure", "application_error"):
+            self.error_count += 1
+            self.origin_failure_count += 1
+            self.origin_failure_class_counts[event_class] += 1
+            fail_event = DefenseEvent(
+                url=url,
+                status=status_code,
+                outcome="origin_failure",
+                signal=event_class,
+                protections=on_response,
+                reason=(
+                    f"Infrastructure/origin failure ({event_class}) — not a bot/WAF catch. "
+                    f"HTTP {status_code}."
+                ),
+                headers=forensic_headers,
+                body_snippet=snippet[:160],
+                event_class=event_class,
+            )
+            if len(self.sample_origin_failures) < self._max_samples:
+                self.sample_origin_failures.append(fail_event)
+            return
+
         evidence_map = extract_response_evidence(
             headers,
             body_preview,
@@ -455,6 +569,7 @@ class DefenseTracker:
                 reason=reason,
                 headers=forensic_headers,
                 body_snippet=snippet,
+                event_class=event_class if event_class != "unknown" else "confirmed_waf_deny",
             )
             if len(self.sample_caught) < self._max_samples:
                 self.sample_caught.append(event)
@@ -483,6 +598,7 @@ class DefenseTracker:
                 ),
                 headers=forensic_headers,
                 body_snippet=snippet[:160],
+                event_class="ordinary_access_deny",
             )
             if len(self.access_deny_events) < self._max_block_events:
                 self.access_deny_events.append(deny_event)
@@ -504,6 +620,7 @@ class DefenseTracker:
             reason=_explain(status_code, "none", on_response, headers),
             headers=forensic_headers,
             body_snippet=snippet[:160],
+            event_class="unknown",
         )
         if len(self.sample_unchallenged) < self._max_samples:
             self.sample_unchallenged.append(event)
@@ -562,28 +679,37 @@ class DefenseTracker:
                 "Run a longer scan so catch vs unchallenged rates are meaningful.",
             )
         catch = self.catch_rate_pct()
+        caveat = (
+            " Observational only: ordinary crawl/asset GETs are not a controlled "
+            "bot-vs-browser cohort — do not treat this as a true WAF catch-rate."
+        )
+        if self.origin_failure_count:
+            caveat += (
+                f" Excluded {self.origin_failure_count} origin/DNS/connect failure(s) "
+                "from catch counts."
+            )
         if catch >= 70 and self.protections_seen:
             return (
-                "STRONG CATCH RATE — protections are stopping most scanner traffic",
+                "STRONG OBSERVED CHALLENGE RATE — protections often stop scanner traffic",
                 f"{catch}% of scored requests showed a block, challenge, or rate-limit signal. "
-                f"Still review the {self.unchallenged_count} unchallenged request(s) for gaps.",
+                f"Still review the {self.unchallenged_count} unchallenged request(s).{caveat}",
             )
         if catch >= 30:
             return (
-                "PARTIAL COVERAGE — some traffic is stopped, gaps remain",
+                "PARTIAL OBSERVED COVERAGE — some traffic is stopped, gaps remain",
                 f"Only {catch}% of scored requests were challenged/blocked. "
-                f"{self.unchallenged_count} completed without a detected bot wall — tighten rules before going public.",
+                f"{self.unchallenged_count} completed without a detected bot wall.{caveat}",
             )
         if self.protections_seen:
             return (
-                "WEAK CATCH RATE — protections detected but rarely triggered",
+                "WEAK OBSERVED CHALLENGE RATE — protections detected but rarely triggered",
                 f"Signals of {', '.join(sorted(self.protections_seen))} were seen, but only {catch}% of "
-                f"requests were actually challenged/blocked. Treat unchallenged traffic as hardening work.",
+                f"requests were actually challenged/blocked.{caveat}",
             )
         return (
             "FEW PROTECTIONS OBSERVED — high risk if this host goes public",
             f"{self.unchallenged_count} request(s) completed without challenge signals and little/no "
-            "bot-management fingerprint was detected. Add WAF/bot controls and CAPTCHA on sensitive forms.",
+            f"bot-management fingerprint was detected.{caveat}",
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -600,6 +726,8 @@ class DefenseTracker:
             "security_headers_missing": sorted(self.security_headers_missing),
             "caught_by_protection": self.caught_count,
             "completed_without_challenge": self.unchallenged_count,
+            "origin_failure_count": self.origin_failure_count,
+            "origin_failure_class_counts": dict(self.origin_failure_class_counts),
             "catch_rate_percent": self.catch_rate_pct(),
             "gap_rate_percent": self.gap_rate_pct(),
             "rate_limit_events": self.rate_limit_count,
@@ -619,7 +747,23 @@ class DefenseTracker:
             "block_journal": journal,
             "block_events_forensic": forensic,
             "sample_caught": [
-                {"url": e.url, "status": e.status, "signal": e.signal, "reason": e.reason} for e in self.sample_caught
+                {
+                    "url": e.url,
+                    "status": e.status,
+                    "signal": e.signal,
+                    "reason": e.reason,
+                    "event_class": e.event_class,
+                }
+                for e in self.sample_caught
+            ],
+            "sample_origin_failures": [
+                {
+                    "url": e.url,
+                    "status": e.status,
+                    "signal": e.signal,
+                    "event_class": e.event_class,
+                }
+                for e in self.sample_origin_failures
             ],
             "sample_unchallenged": [
                 {"url": e.url, "status": e.status} for e in self.sample_unchallenged
@@ -627,11 +771,17 @@ class DefenseTracker:
             "note": (
                 "completed_without_challenge means no challenge/block signal was detected — "
                 "not that a CAPTCHA or bot wall was cracked. "
+                "origin_failure_count is DNS/connect/upstream 5xx infrastructure noise — "
+                "never counted as bot/WAF catches. "
                 "access_deny_count is bare HTTP 401/403/405 without a WAF fingerprint "
                 "(common on Netlify/Vercel) — shown with status codes but not counted as WAF Blocks. "
+                "catch_rate_percent is observational over crawl traffic, not a controlled "
+                "browser-vs-automation cohort — do not cite it as a true WAF catch rate. "
                 "protections_detail separates confirmed-active edge WAFs from page-level CAPTCHAs "
                 "and passive JS/cookie shadows using evidence groups. "
-                "block_events_forensic includes status, protections, headers, and body snippets."
+                "block_events_forensic includes status, protections, headers, and body snippets. "
+                "Timestamps: time_ist is primary (India Standard Time); time_utc is true UTC "
+                "(never IST mislabeled as UTC)."
             ),
         }
 
@@ -643,7 +793,7 @@ class DefenseTracker:
             "=" * 70,
             "",
             f"Target:  {data['start_url']}",
-            f"When:    {time.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"When:    {_format_ist(time.time(), with_date=True)} ({_format_utc(time.time(), with_date=True)})",
             "",
             "-" * 70,
             "PROTECTIONS DETECTED ON THIS SERVER",
@@ -746,7 +896,8 @@ class DefenseTracker:
             lines.append("-" * 70)
             for item in forensic[:80]:
                 lines.append(
-                    f"  • [{item.get('time_utc')}] HTTP {item.get('status')} · "
+                    f"  • [{item.get('time_display') or item.get('time_ist') or item.get('time_utc')}] "
+                    f"HTTP {item.get('status')} · "
                     f"{item.get('signal')} · {item.get('url')}"
                 )
                 if item.get("protections"):
@@ -873,7 +1024,7 @@ def _defense_html(data: Dict[str, Any], plain: str) -> str:
               <div class="event-head">
                 <span class="badge">{_escape(item.get('status'))}</span>
                 <span class="badge signal">{_escape(item.get('signal'))}</span>
-                <span class="muted">{_escape(item.get('time_utc'))}</span>
+                <span class="muted">{_escape(item.get('time_display') or item.get('time_ist') or item.get('time_utc'))}</span>
               </div>
               <div class="url">{_escape(item.get('url'))}</div>
               <p class="why">{_escape(item.get('reason'))}</p>

@@ -1204,8 +1204,8 @@ def scan_xss(url: str, body_text: str, forms: Optional[List[dict]] = None) -> Li
                 findings.append(
                     (
                         "xss",
-                        "low",
-                        "Inline script with executable sink (no reflected input; verify source→sink ownership)",
+                        "info",
+                        "Potential DOM execution sink — source-to-sink flow not established",
                         sink_ev,
                     )
                 )
@@ -1621,6 +1621,7 @@ def scan_open_redirect(url: str) -> List[Finding]:
 
 
 def scan_mixed_content(url: str, body_text: str) -> List[Finding]:
+    """One finding per HTTP resource URL so reports group by evidence, not page spam."""
     findings: List[Finding] = []
     try:
         from recon_extract import extract_mixed_content
@@ -1628,14 +1629,13 @@ def scan_mixed_content(url: str, body_text: str) -> List[Finding]:
         resources = extract_mixed_content(url, body_text or "")
     except Exception:
         resources = []
-    if resources:
-        sample = ", ".join(resources[:3])
+    for resource in resources[:12]:
         findings.append(
             (
                 "mixed_content",
                 "medium",
-                f"HTTPS page loads {len(resources)} HTTP resource(s); e.g. {sample}",
-                _text_evidence(sample, label="http_resources"),
+                f"HTTPS page loads HTTP resource (mixed content): {resource}",
+                _text_evidence(resource, label="http_resource"),
             )
         )
     return findings

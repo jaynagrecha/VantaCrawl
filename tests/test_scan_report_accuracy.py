@@ -58,13 +58,30 @@ def test_snapshot_restores_elapsed_and_discovered(tmp_path: Path):
 
 
 def test_enum_not_started_message():
+    # Unconfigured: do not pretend enum is "waiting" — say disabled.
     stats = CrawlStats()
     stats.pages_crawled = 100
     stats.queue_size = 50
     meta = scan_status_from_stats(stats)
     assert meta["scan_status"] == "partial"
-    assert "not started" in meta["directory_enum_message"].lower()
+    assert meta["enum_configured"] is False
+    assert "disabled" in meta["directory_enum_message"].lower()
     assert "0 hidden paths found" not in meta["directory_enum_message"].lower()
+
+    # Configured but not started yet (parallel enum waiting on first pages)
+    stats2 = CrawlStats()
+    stats2.pages_crawled = 1
+    stats2.queue_size = 50
+    stats2.enum_configured = True
+    stats2.enum_words_total = 3000
+    stats2.enum_words_tested = 0
+    stats2._directory_enum_enabled = True
+    stats2._directory_enum_started = False
+    meta2 = scan_status_from_stats(stats2)
+    assert meta2["enum_configured"] is True
+    assert meta2["directory_enum_started"] is False
+    assert "not started" in meta2["directory_enum_message"].lower()
+    assert "0 hidden paths found" not in meta2["directory_enum_message"].lower()
 
 
 def test_mass_assignment_html_shell_suppressed():

@@ -182,10 +182,25 @@ class ReportWriter:
         payload = stats.snapshot()
         payload["findings"] = stats.findings
         payload["broken_links"] = stats.broken_links
+        payload["broken_links_summary"] = CrawlStats.summarize_broken_links(stats.broken_links)
         payload["sensitive_urls"] = stats.sensitive_urls
         payload["forms"] = stats.forms
         payload["parameters"] = stats.parameters[:500]
-        payload["discovered_urls"] = sorted(getattr(stats, "discovered_urls", set()))
+        payload["parameters_exported"] = min(len(stats.parameters), 500)
+        payload["parameters_total"] = len(stats.parameters)
+        payload["parameters_export_cap"] = 500
+        payload["parameters_note"] = (
+            "parameters list is capped at 500 for export; parameters_total is the full inventory size."
+        )
+        payload["route_templates"] = list(getattr(stats, "route_templates", []) or [])[:2000]
+        payload["request_ledger"] = list(getattr(stats, "request_ledger", []) or [])[:2000]
+        payload["request_ledger_note"] = (
+            "request_ledger is append-only and capped; use request_ledger_count for the full total."
+        )
+        payload["discovered_urls"] = sorted(getattr(stats, "discovered_urls", set()))[:5000]
+        payload["discovered_urls_note"] = (
+            "discovered_urls list is capped at 5000 for export; discovered_url_count is the full total."
+        )
         payload["enum_hit_urls"] = list(getattr(stats, "enum_hit_urls", []))
         payload["historical_seed_urls"] = list(getattr(stats, "historical_seed_urls", []))
         payload["subdomain_urls"] = list(getattr(stats, "subdomain_urls", []))
@@ -227,10 +242,119 @@ class ReportWriter:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS summary (key TEXT PRIMARY KEY, value TEXT)"
         )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS request ("
+            "phase TEXT, source TEXT, url TEXT, depth INTEGER, status TEXT, "
+            "final_url TEXT, response_type TEXT, bytes INTEGER, hash TEXT, "
+            "duration_ms REAL, outcome TEXT, ts REAL)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS url (url TEXT PRIMARY KEY, kind TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS broken_link (url TEXT PRIMARY KEY, status TEXT, class TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS form (action TEXT, method TEXT, fields TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS cookie (name TEXT, domain TEXT, path TEXT, flags TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS enumeration_result (url TEXT, status TEXT, evidence TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS defense_event ("
+            "url TEXT, status INTEGER, outcome TEXT, signal TEXT, event_class TEXT, ts REAL)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS route_template (template TEXT PRIMARY KEY, observed INTEGER)"
+        )
         conn.executemany(
             "INSERT INTO findings VALUES (?,?,?,?,?)",
             [(f["category"], f["severity"], f["url"], f["detail"], f.get("time", 0)) for f in stats.findings],
         )
+        for row in list(getattr(stats, "request_ledger", []) or [])[:8000]:
+            conn.execute(
+                "INSERT INTO request VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    row.get("phase"),
+                    row.get("source"),
+                    row.get("url"),
+                    int(row.get("depth") or 0),
+                    str(row.get("status") or ""),
+                    row.get("final_url"),
+                    row.get("response_type"),
+                    int(row.get("bytes") or 0),
+                    row.get("hash"),
+                    float(row.get("duration_ms") or 0),
+                    row.get("outcome"),
+                    float(row.get("ts") or 0),
+                ),
+            )
+        for u in list(getattr(stats, "discovered_urls", set()) or set())[:5000]:
+            conn.execute("INSERT OR IGNORE INTO url VALUES (?,?)", (u, "discovered"))
+        for row in list(getattr(stats, "broken_links", []) or []):
+            if isinstance(row, dict) and row.get("url"):
+                conn.execute(
+                    "INSERT OR REPLACE INTO broken_link VALUES (?,?,?)",
+                    (row.get("url"), str(row.get("status") or ""), str(row.get("class") or "")),
+                )
+        for form in list(getattr(stats, "forms", []) or [])[:2000]:
+            if isinstance(form, dict):
+                conn.execute(
+                    "INSERT INTO form VALUES (?,?,?)",
+                    (
+                        form.get("action") or "",
+                        form.get("method") or "",
+                        ",".join(str(x) for x in (form.get("fields") or [])[:40]),
+                    ),
+                )
+        for cookie in list(getattr(stats, "cookie_inventory", []) or [])[:2000]:
+            if isinstance(cookie, dict):
+                conn.execute(
+                    "INSERT INTO cookie VALUES (?,?,?,?)",
+                    (
+                        cookie.get("name") or "",
+                        cookie.get("domain") or cookie.get("host") or "",
+                        cookie.get("path") or "",
+                        str(cookie.get("flags") or cookie.get("role") or ""),
+                    ),
+                )
+        for hit in list(getattr(stats, "enum_hit_urls", []) or [])[:2000]:
+            conn.execute(
+                "INSERT INTO enumeration_result VALUES (?,?,?)",
+                (hit if isinstance(hit, str) else str(hit), "hit", ""),
+            )
+        tracker = getattr(stats, "defense_tracker", None)
+        if tracker is not None:
+            try:
+                data = tracker.to_dict()
+                for ev in list(data.get("block_events_forensic") or data.get("sample_caught") or [])[:500]:
+                    if isinstance(ev, dict):
+                        conn.execute(
+                            "INSERT INTO defense_event VALUES (?,?,?,?,?,?)",
+                            (
+                                ev.get("url"),
+                                int(ev.get("status") or 0),
+                                ev.get("outcome") or "",
+                                ev.get("signal") or "",
+                                ev.get("event_class") or "",
+                                float(ev.get("time_unix") or 0),
+                            ),
+                        )
+            except Exception:
+                pass
+        try:
+            tracker = getattr(stats, "route_template_tracker", None)
+            counts = tracker.inventory_counts() if tracker is not None else {}
+        except Exception:
+            counts = {}
+        if not counts:
+            for tmpl in list(getattr(stats, "route_templates", []) or [])[:2000]:
+                counts[tmpl] = counts.get(tmpl, 0) + 1
+        for tmpl, n in list(counts.items())[:2000]:
+            conn.execute("INSERT OR REPLACE INTO route_template VALUES (?,?)", (tmpl, int(n)))
         if self.last_conclusion:
             conn.execute(
                 "INSERT OR REPLACE INTO summary VALUES (?, ?)",
@@ -240,6 +364,15 @@ class ReportWriter:
                 "INSERT OR REPLACE INTO summary VALUES (?, ?)",
                 ("conclusion", self.last_conclusion.get("verdict_body", "")),
             )
+        bl_summary = CrawlStats.summarize_broken_links(getattr(stats, "broken_links", []) or [])
+        conn.execute(
+            "INSERT OR REPLACE INTO summary VALUES (?, ?)",
+            ("broken_links_unique", str(bl_summary.get("unique_urls", 0))),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO summary VALUES (?, ?)",
+            ("broken_links_summary", json.dumps(bl_summary)),
+        )
         conn.commit()
         conn.close()
         return path
@@ -276,7 +409,8 @@ td,th{{border:1px solid #ccc;padding:6px;text-align:left}}</style></head>
 <li>Links found: {snap['links_found']}</li>
 <li>Enum hits: {snap['enum_hits']}</li>
 <li>Findings: {snap['findings_count']}</li>
-<li>Broken links: {snap['broken_links_count']}</li>
+<li>Broken links: {snap.get('broken_links_summary', {}).get('unique_urls', snap['broken_links_count'])} unique
+ ({snap['broken_links_count']} row(s))</li>
 <li>Duration: {snap['elapsed_seconds']}s</li>
 </ul><h2>Technologies</h2><p>{escape(tech or 'None detected')}</p>
 <h2>Security Findings</h2><table><tr><th>Severity</th><th>Category</th><th>URL</th><th>Detail</th></tr>{rows or '<tr><td colspan=4>None</td></tr>'}</table>
@@ -477,9 +611,22 @@ def write_findings_snapshot(report_dir: str | Path, stats: CrawlStats) -> str:
         "enum_words_tested": enum_done,
         "enum_words_total": enum_total,
         "enum_hit_urls": list(getattr(stats, "enum_hit_urls", []) or [])[:200],
+        "enum_configured": bool(
+            status_meta.get("enum_configured")
+            if status_meta.get("enum_configured") is not None
+            else getattr(stats, "enum_configured", False)
+        ),
+        "enum_complete": bool(getattr(stats, "enum_complete", False)),
+        "enum_skip_reason": getattr(stats, "enum_skip_reason", None)
+        or status_meta.get("enum_skip_reason"),
         "route_variants_skipped": int(getattr(stats, "route_variants_skipped", 0) or 0),
         "out_of_scope_skipped": int(getattr(stats, "out_of_scope_skipped", 0) or 0),
         "status_codes": dict(getattr(stats, "status_codes", {}) or {}),
+        "broken_links": list(getattr(stats, "broken_links", []) or [])[:500],
+        "broken_links_summary": CrawlStats.summarize_broken_links(
+            getattr(stats, "broken_links", []) or []
+        ),
+        "request_ledger_count": len(getattr(stats, "request_ledger", []) or []),
         "findings": list(getattr(stats, "findings", []) or []),
         "technologies": dict(getattr(stats, "technologies", {}) or {}),
         "sensitive_urls": list(getattr(stats, "sensitive_urls", []) or [])[:100],

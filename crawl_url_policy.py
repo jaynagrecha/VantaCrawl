@@ -366,18 +366,36 @@ def extract_path_locale(url: str) -> str:
 
 
 def route_template_key(url: str) -> str:
-    """Collapse locale/destination/currency families into one route key."""
+    """Collapse locale/destination/currency/country-language families into one route key."""
     try:
         parts = urlsplit(url)
         segments = [s for s in (parts.path or "/").split("/") if s]
+        # Pre-mark country+language pairs: /us/en/... → /{country}/{locale}/...
+        marked: list[Optional[str]] = [None] * len(segments)
+        for i in range(len(segments) - 1):
+            a = segments[i]
+            b = segments[i + 1]
+            a_base = a.split(".", 1)[0].lower()
+            b_base = b.split(".", 1)[0].lower()
+            if (
+                len(a_base) == 2
+                and a_base.isalpha()
+                and a_base not in KNOWN_LOCALES
+                and b_base in KNOWN_LOCALES
+            ):
+                marked[i] = "{country}"
+                # language handled in main loop via KNOWN_LOCALES
         out: list[str] = []
-        for seg in segments:
+        for idx, seg in enumerate(segments):
             if "." in seg:
                 base, ext = seg.rsplit(".", 1)
                 ext = "." + ext
             else:
                 base, ext = seg, ""
             low = base.lower()
+            if marked[idx] == "{country}":
+                out.append("{country}" + ext)
+                continue
             if low in KNOWN_LOCALES:
                 out.append("{locale}" + ext)
                 continue
