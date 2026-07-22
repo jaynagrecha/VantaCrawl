@@ -27,8 +27,19 @@ _VULN_CATEGORIES = frozenset(
         "file_upload",
         "mixed_content",
         "sensitive_path",
+        "oauth",
+        "jwt",
+        "graphql",
+        "mass_assignment",
+        "rate_limit",
+        "business_logic",
+        "cloud",
+        "websocket",
     }
 )
+
+# Recon / intel categories — hardening unless severity proves abuse
+_INTEL_CATEGORIES = frozenset({"js_intel"})
 
 _HARDENING_CATEGORIES = frozenset({"header_audit"})
 
@@ -104,6 +115,20 @@ def classify_finding_kind(
 
     if cat == "idor" and severity in ("info",) and "candidate" in detail_l:
         return "hardening"
+
+    if cat in _INTEL_CATEGORIES:
+        return "hardening" if severity in ("info", "low") else "vulnerability"
+
+    # Info-only SSO/JWT/biz-logic hints are hardening until verified/exploitable
+    if cat in ("oauth", "jwt", "business_logic", "rate_limit", "websocket", "graphql", "mass_assignment", "cloud"):
+        if severity == "info":
+            return "hardening"
+        if severity == "low" and (
+            "missing aud" in detail_l
+            or "candidate" in detail_l
+            or "referenced" in detail_l
+        ):
+            return "hardening"
 
     if cat in _VULN_CATEGORIES:
         return "vulnerability"

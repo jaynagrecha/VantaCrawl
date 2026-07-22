@@ -1441,6 +1441,12 @@ def run_passive_vuln_scan(
         or (body_text and ("fetch(" in body_text or "axios." in body_text or "firebase" in body_text.lower()))
     ):
         findings.extend(scan_js_sensitive_routes(url, body_text))
+    try:
+        from tier_security import run_tier_passive
+
+        findings.extend(run_tier_passive(url, body_text or "", forms, headers))
+    except Exception:
+        pass
     # Secrets are handled once via config.secret_scan → scan_secrets (avoid double-fire)
     return findings
 
@@ -1487,6 +1493,7 @@ async def run_active_vuln_probes(
     *,
     max_params: int = 8,
     max_forms: int = 3,
+    body_text: str = "",
 ) -> List[Finding]:
     """Send minimal safe payloads on GET params and forms (authorized testing only).
 
@@ -1683,6 +1690,12 @@ async def run_active_vuln_probes(
         from exploit_probes import probe_idor
 
         findings.extend(await probe_idor(client, url, max_params=min(4, max_params)))
+    except Exception:
+        pass
+    try:
+        from tier_security import run_tier_active
+
+        findings.extend(await run_tier_active(client, url, body_text=body_text or ""))
     except Exception:
         pass
     return findings

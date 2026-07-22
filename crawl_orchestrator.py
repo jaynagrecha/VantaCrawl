@@ -1084,12 +1084,39 @@ async def _run_security_checks(
     status_code: int = 200,
     raw_body: bytes | None = None,
 ):
-    async def emit(category, severity, target, detail, evidence=None, *, skip_impact: bool = False):
+    def _unpack_finding(item):
+        meta = {}
+        if len(item) >= 5 and isinstance(item[4], dict):
+            meta = item[4]
+            category, severity, detail, evidence = item[0], item[1], item[2], item[3]
+        elif len(item) >= 4:
+            category, severity, detail, evidence = item[0], item[1], item[2], item[3]
+        else:
+            category, severity, detail, evidence = item[0], item[1], item[2], None
+        return category, severity, detail, evidence, meta
+
+    async def emit(
+        category,
+        severity,
+        target,
+        detail,
+        evidence=None,
+        *,
+        skip_impact: bool = False,
+        verification=None,
+        proof=None,
+        confidence=None,
+        confidence_reason=None,
+    ):
         out_category = category
         out_severity = severity
         out_detail = detail
         out_evidence = evidence
         impact = role = validation = impact_summary = None
+        out_verification = verification
+        out_proof = proof if isinstance(proof, dict) else None
+        out_confidence = confidence
+        out_confidence_reason = confidence_reason
         if not skip_impact and bool(getattr(config, "finding_impact_check", True)):
             try:
                 from finding_impact import apply_impact_to_finding, assess_finding
@@ -1147,6 +1174,43 @@ async def _run_security_checks(
                 role = applied.get("role")
                 validation = applied.get("validation")
                 impact_summary = applied.get("impact_summary")
+                # Prefer structured proof from tier probes; else impact.proof string
+                if not out_proof and applied.get("proof"):
+                    if isinstance(applied["proof"], dict):
+                        out_proof = applied["proof"]
+                    else:
+                        out_proof = {
+                            "request": "",
+                            "response": "",
+                            "evidence": str(applied["proof"])[:2000],
+                            "impact": impact_summary or "",
+                        }
+                if not out_verification and validation in (
+                    "confirmed",
+                    "active",
+                    "unverified",
+                    "invalid",
+                    "skipped",
+                ):
+                    out_verification = {
+                        "confirmed": "confirmed",
+                        "active": "exploitable",
+                        "unverified": "detected",
+                        "invalid": "detected",
+                        "skipped": "detected",
+                    }.get(str(validation), "detected")
+            except Exception:
+                pass
+
+        # Severity may only rise after verification (defense against impact re-escalation)
+        if out_verification:
+            try:
+                from finding_proof import gate_severity
+
+                out_severity = gate_severity(
+                    str(out_severity or "info"),
+                    verification=str(out_verification),
+                )
             except Exception:
                 pass
 
@@ -1160,6 +1224,10 @@ async def _run_security_checks(
             role=role,
             validation=validation,
             impact_summary=impact_summary,
+            verification=out_verification,
+            proof=out_proof,
+            confidence=out_confidence,
+            confidence_reason=out_confidence_reason,
         )
         if output_callback and out_severity in ("critical", "high", "medium"):
             shown = out_evidence
@@ -1329,11 +1397,18 @@ async def _run_security_checks(
         stats._http_methods_hosts.add(host)
         origin = f"{urlparse(url).scheme}://{urlparse(url).netloc}/"
         for item in await probe_http_methods(client, origin):
-            if len(item) >= 4:
-                category, severity, detail, evidence = item[0], item[1], item[2], item[3]
-            else:
-                category, severity, detail, evidence = item[0], item[1], item[2], None
-            await emit(category, severity, origin, detail, evidence=evidence)
+            category, severity, detail, evidence, meta = _unpack_finding(item)
+            await emit(
+                category,
+                severity,
+                origin,
+                detail,
+                evidence=evidence,
+                verification=meta.get("verification"),
+                proof=meta.get("proof"),
+                confidence=meta.get("confidence"),
+                confidence_reason=meta.get("confidence_reason"),
+            )
     if config.security_scan and config.vuln_scan:
         for item in run_passive_vuln_scan(
             url,
@@ -1343,11 +1418,18 @@ async def _run_security_checks(
             content_type,
             cookies=list(getattr(stats, "cookie_inventory", []) or []),
         ):
-            if len(item) >= 4:
-                category, severity, detail, evidence = item[0], item[1], item[2], item[3]
-            else:
-                category, severity, detail, evidence = item[0], item[1], item[2], None
-            await emit(category, severity, url, detail, evidence=evidence)
+            category, severity, detail, evidence, meta = _unpack_finding(item)
+            await emit(
+                category,
+                severity,
+                url,
+                detail,
+                evidence=evidence,
+                verification=meta.get("verification"),
+                proof=meta.get("proof"),
+                confidence=meta.get("confidence"),
+                confidence_reason=meta.get("confidence_reason"),
+            )
         if config.vuln_active_probe:
             for item in await run_active_vuln_probes(
                 client,
@@ -1355,22 +1437,37 @@ async def _run_security_checks(
                 forms=forms,
                 max_params=config.active_probe_max_params,
                 max_forms=config.active_probe_max_forms,
+                body_text=body_text or "",
             ):
-                if len(item) >= 4:
-                    category, severity, detail, evidence = item[0], item[1], item[2], item[3]
-                else:
-                    category, severity, detail, evidence = item[0], item[1], item[2], None
-                await emit(category, severity, url, detail, evidence=evidence)
+                category, severity, detail, evidence, meta = _unpack_finding(item)
+                await emit(
+                    category,
+                    severity,
+                    url,
+                    detail,
+                    evidence=evidence,
+                    verification=meta.get("verification"),
+                    proof=meta.get("proof"),
+                    confidence=meta.get("confidence"),
+                    confidence_reason=meta.get("confidence_reason"),
+                )
             # Firebase Auth/Storage abuse when JS embeds firebaseConfig
             try:
                 from exploit_probes import probe_firebase_from_body
 
                 for item in await probe_firebase_from_body(client, url, body_text or ""):
-                    if len(item) >= 4:
-                        category, severity, detail, evidence = item[0], item[1], item[2], item[3]
-                    else:
-                        category, severity, detail, evidence = item[0], item[1], item[2], None
-                    await emit(category, severity, url, detail, evidence=evidence)
+                    category, severity, detail, evidence, meta = _unpack_finding(item)
+                    await emit(
+                        category,
+                        severity,
+                        url,
+                        detail,
+                        evidence=evidence,
+                        verification=meta.get("verification") or "exploitable",
+                        proof=meta.get("proof"),
+                        confidence=meta.get("confidence"),
+                        confidence_reason=meta.get("confidence_reason"),
+                    )
             except Exception:
                 pass
 

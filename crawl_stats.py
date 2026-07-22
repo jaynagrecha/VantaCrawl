@@ -156,6 +156,10 @@ class CrawlStats:
         role: Optional[str] = None,
         validation: Optional[str] = None,
         impact_summary: Optional[str] = None,
+        verification: Optional[str] = None,
+        proof: Optional[dict] = None,
+        confidence: Optional[str] = None,
+        confidence_reason: Optional[str] = None,
     ):
         # Collapse noisy repeats (same header gap on every page of a host)
         host = ""
@@ -195,6 +199,23 @@ class CrawlStats:
             row["validation"] = validation
         if impact_summary:
             row["impact_summary"] = impact_summary
+        if verification:
+            row["verification"] = verification
+        elif validation in ("confirmed", "active", "unverified", "invalid", "skipped"):
+            # Map legacy validation → verification ladder where possible
+            row["verification"] = {
+                "confirmed": "confirmed",
+                "active": "exploitable",
+                "unverified": "detected",
+                "invalid": "detected",
+                "skipped": "detected",
+            }.get(str(validation), "detected")
+        if proof and isinstance(proof, dict):
+            row["proof"] = proof
+        if confidence:
+            row["confidence"] = confidence
+        if confidence_reason:
+            row["confidence_reason"] = confidence_reason
         self.findings.append(row)
 
     def is_duplicate_content(self, body: bytes) -> bool:

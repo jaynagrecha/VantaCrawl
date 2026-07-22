@@ -416,6 +416,153 @@ EXPLAINERS: List[Tuple[tuple, Dict[str, str]]] = [
             ),
         },
     ),
+    (
+        ("oauth", "redirect_uri", "missing state", "token leakage", "sso"),
+        {
+            "title": "OAuth / SSO misconfiguration",
+            "what": (
+                "The OAuth/OIDC/SAML flow shows a weakness (missing state, off-site redirect_uri, "
+                "token in URL, or related SSO risk)."
+            ),
+            "attacker": (
+                "They complete or hijack the login flow, steal tokens from URLs/logs, or link accounts "
+                "incorrectly to take over a session."
+            ),
+            "fix": (
+                "Require and validate state/nonce; strict redirect_uri allow-lists; never put tokens in "
+                "query strings; validate SAML/OIDC assertions (audience, recipient, replay)."
+            ),
+        },
+    ),
+    (
+        ("jwt", "alg=none", "alg confusion"),
+        {
+            "title": "JWT validation flaw",
+            "what": (
+                "A JSON Web Token uses a dangerous algorithm, weak signature, expired acceptance, or "
+                "missing audience/issuer checks."
+            ),
+            "attacker": (
+                "They forge or reuse tokens to impersonate users when the server does not verify "
+                "algorithm, signature, exp, aud, or iss correctly."
+            ),
+            "fix": (
+                "Deny alg=none; pin expected algorithms; validate exp/nbf/aud/iss; use strong secrets "
+                "or asymmetric keys; reject tokens after logout/revoke."
+            ),
+        },
+    ),
+    (
+        ("graphql", "__schema", "introspection"),
+        {
+            "title": "GraphQL exposure",
+            "what": (
+                "GraphQL introspection or sensitive operation names are exposed, revealing the API surface."
+            ),
+            "attacker": (
+                "They map the full schema, then target admin mutations or hidden fields that lack "
+                "authorization checks."
+            ),
+            "fix": (
+                "Disable introspection in production; enforce field-level auth; remove unused mutations; "
+                "rate-limit GraphQL."
+            ),
+        },
+    ),
+    (
+        ("mass_assignment", "hidden_params", "isadmin"),
+        {
+            "title": "Mass assignment / hidden parameters",
+            "what": (
+                "Privilege or debug fields (role, isAdmin, debug) appear in clients or were accepted "
+                "when injected into API bodies."
+            ),
+            "attacker": (
+                "They add undeclared JSON fields to escalate privileges or enable debug modes."
+            ),
+            "fix": (
+                "Use allow-listed DTOs; ignore unknown fields; never bind client input directly to "
+                "role/admin flags."
+            ),
+        },
+    ),
+    (
+        ("rate_limit", "without 429", "otp"),
+        {
+            "title": "Missing rate limiting",
+            "what": (
+                "An authentication-like endpoint accepted rapid repeated requests without lockout or 429."
+            ),
+            "attacker": (
+                "They brute-force OTP/login/password-reset or abuse coupon redemption at scale."
+            ),
+            "fix": (
+                "Add per-IP and per-account rate limits, progressive delays, and lockouts on auth and "
+                "redemption endpoints."
+            ),
+        },
+    ),
+    (
+        ("business_logic", "price", "coupon", "race"),
+        {
+            "title": "Business logic abuse",
+            "what": (
+                "Commerce or transfer flows may allow price/quantity manipulation, coupon abuse, "
+                "payment-after-cancel, or race-driven double-spend."
+            ),
+            "attacker": (
+                "They alter amounts, reuse coupons, race parallel checkouts, or change recipients "
+                "to steal value."
+            ),
+            "fix": (
+                "Recompute prices server-side; enforce coupon single-use; idempotency keys on pay/transfer; "
+                "lock order totals after checkout."
+            ),
+        },
+    ),
+    (
+        ("cloud", "s3", "blob", "lambda-url", "cloudfront"),
+        {
+            "title": "Cloud misconfiguration",
+            "what": (
+                "A cloud storage or function URL appears publicly readable/listable or exposed from the app."
+            ),
+            "attacker": (
+                "They list or download private objects, or invoke misconfigured serverless URLs."
+            ),
+            "fix": (
+                "Block anonymous list/read; tighten IAM/ACLs; keep Function URLs private or authenticated."
+            ),
+        },
+    ),
+    (
+        ("js_intel", "feature flag", "staging", "fetch()"),
+        {
+            "title": "Frontend intelligence (JS mining)",
+            "what": (
+                "Client bundles expose network helpers, routes, feature flags, or non-prod host strings."
+            ),
+            "attacker": (
+                "They mine JS for hidden APIs, admin paths, and staging hosts as attack entry points."
+            ),
+            "fix": (
+                "Strip secrets and internal hosts from production bundles; gate admin routes server-side."
+            ),
+        },
+    ),
+    (
+        ("websocket", "wss://", "ws://"),
+        {
+            "title": "WebSocket security signal",
+            "what": "A WebSocket endpoint is referenced from the client (cleartext WS is higher risk).",
+            "attacker": (
+                "They connect without auth or replay object IDs over the socket (IDOR over WebSocket)."
+            ),
+            "fix": (
+                "Prefer wss://; authenticate the handshake; authorize every message; reject cross-user IDs."
+            ),
+        },
+    ),
 ]
 
 
@@ -444,7 +591,16 @@ def explain_finding(category: str = "", detail: str = "") -> Dict[str, str]:
         "idor": ("idor", "insecure direct object"),
         "well_known": ("well_known",),
         "cloud_url": ("cloud_url", "firebase", "supabase", "azure"),
+        "cloud": ("cloud", "s3", "blob", "lambda-url", "cloudfront"),
         "file_metadata": ("file_metadata", "gps", "exif", "author"),
+        "oauth": ("oauth", "redirect_uri", "missing state", "token leakage", "sso"),
+        "jwt": ("jwt", "alg=none", "alg confusion"),
+        "graphql": ("graphql", "__schema", "introspection"),
+        "mass_assignment": ("mass_assignment", "hidden_params", "isadmin"),
+        "rate_limit": ("rate_limit", "without 429", "otp"),
+        "business_logic": ("business_logic", "price", "coupon", "race"),
+        "js_intel": ("js_intel", "feature flag", "staging", "fetch()"),
+        "websocket": ("websocket", "wss://", "ws://"),
     }
 
     def _secret_type_from_detail(text: str) -> str:
@@ -577,6 +733,10 @@ def group_findings_for_report(findings: List[Dict[str, Any]], *, max_groups: int
                 "validation": item.get("validation") or "",
                 "impact_summary": item.get("impact_summary") or "",
                 "role": item.get("role") or "",
+                "verification": item.get("verification") or "",
+                "proof": item.get("proof") if isinstance(item.get("proof"), dict) else {},
+                "confidence": item.get("confidence") or "",
+                "confidence_reason": item.get("confidence_reason") or "",
             }
         bucket = buckets[key]
         bucket["count"] += 1
@@ -589,6 +749,20 @@ def group_findings_for_report(findings: List[Dict[str, Any]], *, max_groups: int
             bucket["validation"] = item.get("validation") or bucket.get("validation")
             bucket["impact_summary"] = item.get("impact_summary") or bucket.get("impact_summary")
             bucket["role"] = item.get("role") or bucket.get("role")
+        # Prefer stronger verification / richer proof
+        _ver_rank = {"detected": 0, "verified": 1, "exploitable": 2, "confirmed": 3}
+        item_ver = str(item.get("verification") or "")
+        if _ver_rank.get(item_ver, -1) > _ver_rank.get(str(bucket.get("verification") or ""), -1):
+            bucket["verification"] = item_ver
+        if isinstance(item.get("proof"), dict) and (
+            not bucket.get("proof")
+            or sum(1 for v in (item.get("proof") or {}).values() if v)
+            > sum(1 for v in (bucket.get("proof") or {}).values() if v)
+        ):
+            bucket["proof"] = item.get("proof")
+        if item.get("confidence") and not bucket.get("confidence"):
+            bucket["confidence"] = item.get("confidence")
+            bucket["confidence_reason"] = item.get("confidence_reason") or ""
         url = item.get("url", "")
         if url and url not in bucket["_url_seen"] and len(bucket["urls"]) < url_cap:
             bucket["_url_seen"].add(url)
