@@ -19,18 +19,18 @@ def test_boomr_is_client_public_key():
     assert severity_for_kind("Boomr API Key", "high", "x" * 32) == "low"
 
 
-def test_boomr_static_limited_impact():
+def test_boomr_static_suppressed():
     static = assess_secrets_static(
         "Exposed Boomr API Key in response body",
         "high",
         "Fc8f46b5abcdef0123456789abcdef01",
     )
     assert static.role == "client_public_key"
-    assert static.impact == "limited_impact"
-    assert static.severity == "low"
+    assert static.impact == "no_impact"
+    assert static.suppress is True
 
 
-def test_boomr_live_skipped_not_possible_credential():
+def test_boomr_live_skipped_suppressed():
     result = asyncio.run(
         assess_secrets_live(
             label="Boomr API Key",
@@ -41,9 +41,20 @@ def test_boomr_live_skipped_not_possible_credential():
         )
     )
     assert result.role == "client_public_key"
-    assert result.impact == "limited_impact"
-    assert result.severity in ("info", "low")
+    assert result.impact == "no_impact"
+    assert result.suppress is True
     assert result.validation == "skipped"
+
+
+def test_google_client_key_still_shown():
+    """Maps/Firebase stay visible — restrictions can fail; unlike Boomr RUM noise."""
+    static = assess_secrets_static(
+        "Exposed Firebase API Key in response body",
+        "medium",
+        "AIzaSyAQmcbet1FYuca30mB23_Z_z91Sdt1PsCE",
+    )
+    assert static.suppress is False
+    assert static.impact == "limited_impact"
 
 
 def test_data_api_key_attribute_is_fp_even_outside_input():

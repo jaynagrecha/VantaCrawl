@@ -203,9 +203,21 @@ def assess_authentication(detail: str, severity: str, evidence: str = "") -> Imp
 
 def assess_secrets_static(detail: str, severity: str, evidence: str = "") -> ImpactResult:
     try:
-        from secret_classify import is_client_public_key
+        from secret_classify import is_browser_rum_telemetry_key, is_client_public_key
     except Exception:
         is_client_public_key = lambda *_a, **_k: False  # type: ignore
+        is_browser_rum_telemetry_key = lambda *_a, **_k: False  # type: ignore
+    # Pure RUM/analytics keys (Boomr, mPulse, …) — intentional in browser, no report value
+    if is_browser_rum_telemetry_key(detail):
+        return ImpactResult(
+            role="client_public_key",
+            impact="no_impact",
+            severity="info",
+            summary="Browser RUM/analytics client key — intentional in front-end bundles; not a stealable credential.",
+            validation="skipped",
+            proof=evidence or None,
+            suppress=True,
+        )
     if is_client_public_key(detail, evidence):
         sev = severity if severity in ("info", "low", "medium") else "low"
         # Google/Firebase browser keys stay low until a live probe proves broad usability
@@ -248,13 +260,26 @@ async def assess_secrets_live(
     elif detail and ":" in detail and not detail.lower().startswith("missing "):
         typed = detail.split(":", 1)[0].strip()
 
-    result = await validate_secret(typed, evidence or "", client=client)
-    suffix = format_validation_suffix(result)
-
     try:
-        from secret_classify import is_client_public_key
+        from secret_classify import is_browser_rum_telemetry_key, is_client_public_key
     except Exception:
         is_client_public_key = lambda *_a, **_k: False  # type: ignore
+        is_browser_rum_telemetry_key = lambda *_a, **_k: False  # type: ignore
+
+    # Drop pure RUM/telemetry noise before spending a live probe
+    if is_browser_rum_telemetry_key(typed) or is_browser_rum_telemetry_key(detail):
+        return ImpactResult(
+            role="client_public_key",
+            impact="no_impact",
+            severity="info",
+            summary="Browser RUM/analytics client key — intentional in front-end bundles; not a stealable credential.",
+            validation="skipped",
+            proof=evidence or None,
+            suppress=True,
+        )
+
+    result = await validate_secret(typed, evidence or "", client=client)
+    suffix = format_validation_suffix(result)
 
     if result.status == "active":
         # Never promote intentional client/publishable keys to critical
