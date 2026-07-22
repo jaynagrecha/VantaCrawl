@@ -12,14 +12,47 @@ from sqlmodel import select
 
 from ..config import get_settings
 from ..deps import CurrentUser, SessionDep
-from ..job_access import assert_job_owner, select_jobs_for_user
+from ..job_access import assert_job_owner, job_is_deletable, select_jobs_for_user
 from ..models import ScanJob, User
 from ..schemas import JobCreateRequest, JobListOut, JobOut, JobSettingsPatch, MessageOut
 from ..security import decode_access_token
-from ..services.queue import clear_job_command, enqueue_job, publish_progress, redis_client, set_job_command
+from ..services.queue import (
+    clear_job_command,
+    enqueue_job,
+    publish_progress,
+    purge_job_queue_state,
+    redis_client,
+    set_job_command,
+)
 from ..scan_settings import MODE_PRESETS, available_wordlists, concurrency_for_speed
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+def _purge_job_files(job: ScanJob) -> None:
+    """Best-effort delete of on-disk job/report directories for this job id only."""
+    settings = get_settings()
+    candidates: List[Path] = [
+        Path(settings.jobs_dir) / job.id,
+        Path(settings.reports_dir) / job.id,
+    ]
+    if (job.report_dir or "").strip():
+        candidates.append(Path(job.report_dir))
+
+    for raw in candidates:
+        try:
+            resolved = raw.resolve()
+        except Exception:
+            continue
+        if job.id not in resolved.parts:
+            continue
+        if resolved.is_dir():
+            shutil.rmtree(resolved, ignore_errors=True)
+        elif resolved.is_file():
+            try:
+                resolved.unlink()
+            except OSError:
+                pass
 
 
 def _to_out(job: ScanJob) -> JobOut:
@@ -245,6 +278,30 @@ def get_job(job_id: str, session: SessionDep, user: CurrentUser):
 
     job = heal_job_report_paths(session, _owned(session.get(ScanJob, job_id), user))
     return _to_out(job)
+
+
+@router.delete("/{job_id}", response_model=MessageOut)
+def delete_job(job_id: str, session: SessionDep, user: CurrentUser):
+    """Delete a finished job and its reports. Active/running jobs cannot be deleted."""
+    job = _owned(session.get(ScanJob, job_id), user)
+    if not job_is_deletable(job.status):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot delete a job while status is '{job.status}'. "
+                "Stop or wait until it finishes, then delete."
+            ),
+        )
+
+    _purge_job_files(job)
+    try:
+        purge_job_queue_state(job.id)
+    except Exception:
+        pass
+
+    session.delete(job)
+    session.commit()
+    return MessageOut(message="Job deleted")
 
 
 @router.patch("/{job_id}/settings", response_model=MessageOut)

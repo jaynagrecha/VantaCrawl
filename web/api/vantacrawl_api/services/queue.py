@@ -60,3 +60,21 @@ def get_job_command(job_id: str) -> Optional[str]:
 def clear_job_command(job_id: str) -> None:
     client = redis_client()
     client.delete(f"vantacrawl:cmd:{job_id}")
+
+
+def purge_job_queue_state(job_id: str) -> None:
+    """Remove a job id from Redis queues/commands (best-effort)."""
+    settings = get_settings()
+    client = redis_client()
+    try:
+        client.lrem(settings.job_queue_key, 0, job_id)
+    except Exception:
+        pass
+    try:
+        client.zrem(DELAYED_QUEUE_KEY, job_id)
+    except Exception:
+        pass
+    try:
+        client.delete(f"vantacrawl:cmd:{job_id}")
+    except Exception:
+        pass

@@ -102,6 +102,7 @@ export const api = {
   pauseJob: (id: string) => request<{ message: string }>(`/api/jobs/${id}/pause`, { method: "POST" }),
   resumeJob: (id: string) => request<{ message: string }>(`/api/jobs/${id}/resume`, { method: "POST" }),
   stopJob: (id: string) => request<{ message: string }>(`/api/jobs/${id}/stop`, { method: "POST" }),
+  deleteJob: (id: string) => request<{ message: string }>(`/api/jobs/${id}`, { method: "DELETE" }),
   forceCancelJob: (id: string) =>
     request<{ message: string }>(`/api/jobs/${id}/force-cancel`, { method: "POST" }),
   buildSummaryReport: (id: string) =>
