@@ -261,22 +261,25 @@ class DefenseTracker:
         forensic_headers = _extract_forensic_headers(headers)
         snippet = _body_snippet(body_preview)
 
-        # Enrich preview with header tokens for detect_challenge
+        # Challenge scoring only on deny / rate-limit statuses. Success responses
+        # (200 etc.) mentioning "recaptcha" in HTML must not inflate Challenged.
+        CATCH_STATUSES = (401, 403, 407, 429, 503)
         bits = [body_preview]
         server = str(headers_l.get("server") or "").lower()
-        if "cloudflare" in server:
-            bits.append("cloudflare")
-        if headers_l.get("cf-ray") or headers_l.get("cf-mitigated"):
-            bits.append("cf-challenge")
-        if headers_l.get("cf-mitigated"):
-            bits.append("challenge-platform")
-        for name in on_response:
-            bits.append(name.replace("_", " "))
+        if status_code in CATCH_STATUSES:
+            if "cloudflare" in server:
+                bits.append("cloudflare")
+            if headers_l.get("cf-ray") or headers_l.get("cf-mitigated"):
+                bits.append("cf-challenge")
+            if headers_l.get("cf-mitigated"):
+                bits.append("challenge-platform")
+            for name in on_response:
+                bits.append(name.replace("_", " "))
         preview = " ".join(bits)
 
         signal = detect_challenge(status_code, body_preview, headers=headers)
         preview_l = preview.lower()
-        if not signal:
+        if not signal and status_code in CATCH_STATUSES:
             for marker, label in (
                 ("turnstile", "cloudflare_turnstile"),
                 ("hcaptcha", "hcaptcha"),
@@ -297,7 +300,7 @@ class DefenseTracker:
                     break
 
         # Hard deny statuses with a known WAF fingerprint still count as caught
-        if not signal and status_code in (401, 403, 429, 503) and on_response:
+        if not signal and status_code in CATCH_STATUSES and on_response:
             preferred = [p for p in on_response if p != "rate_limit"]
             signal = preferred[0] if preferred else on_response[0]
             if status_code == 429:

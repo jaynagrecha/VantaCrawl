@@ -114,6 +114,13 @@ def _to_priority_queue(queue):
 
 
 class PauseController:
+    """Cooperative pause gate for async crawls.
+
+    Async callers must ``await wait_if_paused()`` (via the orchestrator ``running``
+    coroutine). Sync ``__call__`` still busy-waits for legacy desktop/CLI paths that
+    are not on the asyncio event loop.
+    """
+
     def __init__(self, base_is_running: Callable[[], bool]):
         self._base = base_is_running
         self.paused = False
@@ -123,17 +130,34 @@ class PauseController:
     def on_resume(self, callback: Callable[[], None]):
         self._on_resume.append(callback)
 
-    def __call__(self) -> bool:
+    def _fire_resume_callbacks(self) -> None:
+        if not self._was_paused:
+            return
+        self._was_paused = False
+        for callback in self._on_resume:
+            try:
+                callback()
+            except Exception:
+                pass
+
+    async def wait_if_paused(self) -> None:
+        """Yield to the event loop while paused (does not freeze other tasks)."""
         while self.paused and self._base():
             self._was_paused = True
-            time.sleep(0.25)
-        if self._was_paused:
-            self._was_paused = False
-            for callback in self._on_resume:
-                try:
-                    callback()
-                except Exception:
-                    pass
+            await asyncio.sleep(0.25)
+        self._fire_resume_callbacks()
+
+    def __call__(self) -> bool:
+        """Sync pause wait for non-async callers only."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            while self.paused and self._base():
+                self._was_paused = True
+                time.sleep(0.25)
+            self._fire_resume_callbacks()
+            return self._base()
+        # Inside a running loop: never block. Pause is handled by wait_if_paused().
         return self._base()
 
     def pause(self):
@@ -150,7 +174,8 @@ def disk_space_ok(min_mb: int) -> bool:
         usage = shutil.disk_usage(os.path.dirname(os.path.abspath(__file__)))
         return usage.free >= min_mb * 1024 * 1024
     except OSError:
-        return True
+        # Fail closed: if we cannot measure free space, do not keep writing.
+        return False
 
 
 def expand_wordlist(words: list, extension_aware: bool) -> list:
@@ -211,8 +236,11 @@ async def run_full_crawl_async(
 
     output_callback = wrap_output_callback(output_callback)
 
-    def running():
-        return pause_controller() and disk_space_ok(config.disk_space_guard_mb)
+    async def running() -> bool:
+        await pause_controller.wait_if_paused()
+        return bool(is_running_func()) and disk_space_ok(config.disk_space_guard_mb)
+
+    crawl_state_lock = asyncio.Lock()
 
     reporter = ReportWriter(
         config.report_dir(),
@@ -243,7 +271,7 @@ async def run_full_crawl_async(
     # Pass session always so httpx fallback hooks stay wired if stealth is re-enabled on resume
     event_hooks = make_httpx_hooks(evasion, output_callback, defense_tracker=defense)
 
-    extra_seeds = await gather_extra_seeds(config, output_callback) if running() else []
+    extra_seeds = await gather_extra_seeds(config, output_callback) if await running() else []
     for seed in extra_seeds:
         stats.record_url("historical", seed)
     visited = set()
@@ -313,7 +341,22 @@ async def run_full_crawl_async(
 
         pause_controller.on_resume(_apply_live_after_resume)
 
-        if defense is not None and running():
+        async def safe_enqueue(url, *, link_depth=0):
+            async with crawl_state_lock:
+                return enqueue_discovered_url(
+                    url,
+                    discovered,
+                    queue,
+                    config.output_file_path,
+                    output_callback,
+                    stats=stats,
+                    use_priority=use_priority,
+                    link_depth=link_depth,
+                    max_link_depth=config.link_depth_limit,
+                    link_depths=link_depths,
+                )
+
+        if defense is not None and await running():
             await probe_defense_fingerprint(client, config.start_url, defense, output_callback)
             # When Akamai/Bot Manager is present, tighten probe shape immediately
             try:
@@ -342,7 +385,7 @@ async def run_full_crawl_async(
             except Exception:
                 pass
 
-        if evasion.config.enabled and evasion.config.decoy_requests and running():
+        if evasion.config.enabled and evasion.config.decoy_requests and await running():
             await run_decoy_warmup(client, config.start_url, evasion, output_callback)
 
         stats.discovered_urls.update(discovered)
@@ -355,18 +398,7 @@ async def run_full_crawl_async(
                 redis_url = pop_url(config.distributed_redis_url, "crawler:queue")
                 if not redis_url:
                     break
-                if enqueue_discovered_url(
-                    redis_url,
-                    discovered,
-                    queue,
-                    config.output_file_path,
-                    output_callback,
-                    stats=stats,
-                    use_priority=use_priority,
-                    link_depth=0,
-                    max_link_depth=config.link_depth_limit,
-                    link_depths=link_depths,
-                ):
+                if await safe_enqueue(redis_url, link_depth=0):
                     pulled += 1
             if pulled:
                 output_callback(f"Pulled {pulled} URL(s) from Redis queue")
@@ -374,7 +406,7 @@ async def run_full_crawl_async(
         if config.distributed_redis_url:
             output_callback(f"Distributed mode: Redis at {config.distributed_redis_url}")
 
-        if config.subdomain_enum and running() and not config.enum_only:
+        if config.subdomain_enum and await running() and not config.enum_only:
             output_callback("Enumerating subdomains...")
             baseline_length, baseline_status = await get_async_baseline(client, config.start_url)
 
@@ -397,34 +429,24 @@ async def run_full_crawl_async(
             )
             for sub_url in subs:
                 stats.record_url("subdomain", sub_url)
-                enqueue_discovered_url(
-                    sub_url,
-                    discovered,
-                    queue,
-                    config.output_file_path,
-                    output_callback,
-                    stats=stats,
-                    use_priority=use_priority,
-                    link_depth=0,
-                    max_link_depth=config.link_depth_limit,
-                    link_depths=link_depths,
-                )
+                await safe_enqueue(sub_url, link_depth=0)
 
         checkpoint_lock = asyncio.Lock()
 
         async def _process_crawl_url(current_url):
             nonlocal operations_since_checkpoint, last_stats_emit
-            if not running():
+            if not await running():
                 return
-            if _should_skip_url(current_url, visited, config.ignore_robots):
-                return
-            current_depth = link_depths.get(current_url, 0)
-            if config.link_depth_limit and current_depth > config.link_depth_limit:
-                return
-            if current_url in visited:
-                return
+            async with crawl_state_lock:
+                if _should_skip_url(current_url, visited, config.ignore_robots):
+                    return
+                current_depth = link_depths.get(current_url, 0)
+                if config.link_depth_limit and current_depth > config.link_depth_limit:
+                    return
+                if current_url in visited:
+                    return
+                visited.add(current_url)
             output_callback(f"Crawling: {current_url}")
-            visited.add(current_url)
             stats.pages_crawled += 1
             stats.queue_size = len(queue)
             operations_since_checkpoint += 1
@@ -491,108 +513,45 @@ async def run_full_crawl_async(
                 if config.rss_feeds and body_text:
                     for feed in extract_rss_feeds(body_text, current_url):
                         stats.record_url("rss", feed)
-                        enqueue_discovered_url(
-                            feed,
-                            discovered,
-                            queue,
-                            config.output_file_path,
-                            output_callback,
-                            stats=stats,
-                            use_priority=use_priority,
-                            link_depth=current_depth + 1,
-                            max_link_depth=config.link_depth_limit,
-                            link_depths=link_depths,
-                        )
+                        await safe_enqueue(feed, link_depth=current_depth + 1)
 
                 if config.openapi_parse:
                     for api_url in extract_openapi_urls(body_text, current_url, content_type):
                         stats.record_url("openapi_doc", api_url)
-                        enqueue_discovered_url(
-                            api_url,
-                            discovered,
-                            queue,
-                            config.output_file_path,
-                            output_callback,
-                            stats=stats,
-                            use_priority=use_priority,
-                            link_depth=current_depth + 1,
-                            max_link_depth=config.link_depth_limit,
-                            link_depths=link_depths,
-                        )
+                        await safe_enqueue(api_url, link_depth=current_depth + 1)
                     if "json" in content_type and ("openapi" in body_text or "swagger" in body_text):
                         for endpoint in parse_openapi_endpoints(body_text, current_url):
                             stats.record_url("openapi_endpoint", endpoint)
-                            enqueue_discovered_url(
-                                endpoint,
-                                discovered,
-                                queue,
-                                config.output_file_path,
-                                output_callback,
-                                stats=stats,
-                                use_priority=use_priority,
-                                link_depth=current_depth + 1,
-                                max_link_depth=config.link_depth_limit,
-                                link_depths=link_depths,
-                            )
+                            await safe_enqueue(endpoint, link_depth=current_depth + 1)
 
                 if config.js_bundle_analysis and body_text and ("javascript" in content_type or current_url.endswith(".js")):
                     for route in extract_js_routes(body_text, current_url):
                         stats.record_url("js", route)
-                        enqueue_discovered_url(
-                            route,
-                            discovered,
-                            queue,
-                            config.output_file_path,
-                            output_callback,
-                            stats=stats,
-                            use_priority=use_priority,
-                            link_depth=current_depth + 1,
-                            max_link_depth=config.link_depth_limit,
-                            link_depths=link_depths,
-                        )
+                        await safe_enqueue(route, link_depth=current_depth + 1)
 
                 if body_text:
                     for map_url in extract_sourcemap_urls(body_text, current_url):
                         stats.record_url("sourcemap", map_url)
-                        enqueue_discovered_url(
-                            map_url,
-                            discovered,
-                            queue,
-                            config.output_file_path,
-                            output_callback,
-                            stats=stats,
-                            use_priority=use_priority,
-                            link_depth=current_depth + 1,
-                            max_link_depth=config.link_depth_limit,
-                            link_depths=link_depths,
-                        )
+                        await safe_enqueue(map_url, link_depth=current_depth + 1)
                     for ws_url in extract_websocket_urls(body_text, current_url):
                         stats.record_url("websocket", ws_url)
 
                 page_host = urlparse(current_url).netloc
+                passive_enqueue: list = []
                 _collect_passive_recon(
                     stats,
                     current_url,
                     body_text,
                     resp_headers,
                     page_host=page_host,
-                    enqueue=lambda u: enqueue_discovered_url(
-                        u,
-                        discovered,
-                        queue,
-                        config.output_file_path,
-                        output_callback,
-                        stats=stats,
-                        use_priority=use_priority,
-                        link_depth=current_depth + 1,
-                        max_link_depth=config.link_depth_limit,
-                        link_depths=link_depths,
-                    ),
+                    enqueue=passive_enqueue.append,
                 )
+                for pending_url in passive_enqueue:
+                    await safe_enqueue(pending_url, link_depth=current_depth + 1)
 
                 # Once per host: sitemap + TLS SAN + well-known (capped)
                 host_key = page_host.lower()
-                if host_key and host_key not in stats._host_recon_done and running():
+                if host_key and host_key not in stats._host_recon_done and await running():
                     stats._host_recon_done.add(host_key)
                     try:
                         host_recon = await run_host_recon_once(
@@ -604,18 +563,7 @@ async def run_full_crawl_async(
                             stats.record_url("sitemap_doc", doc)
                         for sm_url in host_recon.get("sitemap_urls") or []:
                             stats.record_url("sitemap", sm_url)
-                            enqueue_discovered_url(
-                                sm_url,
-                                discovered,
-                                queue,
-                                config.output_file_path,
-                                output_callback,
-                                stats=stats,
-                                use_priority=use_priority,
-                                link_depth=current_depth + 1,
-                                max_link_depth=config.link_depth_limit,
-                                link_depths=link_depths,
-                            )
+                            await safe_enqueue(sm_url, link_depth=current_depth + 1)
                         for wk in host_recon.get("well_known") or []:
                             # Inventory only — well-known discovery is recon, not a vuln
                             stats.record_dict_rows(
@@ -739,18 +687,7 @@ async def run_full_crawl_async(
                     reporter.write_warc_record(current_url, 200, {}, body)
 
                 for link in new_links:
-                    enqueue_discovered_url(
-                        link,
-                        discovered,
-                        queue,
-                        config.output_file_path,
-                        output_callback,
-                        stats=stats,
-                        use_priority=use_priority,
-                        link_depth=current_depth + 1,
-                        max_link_depth=config.link_depth_limit,
-                        link_depths=link_depths,
-                    )
+                    await safe_enqueue(link, link_depth=current_depth + 1)
 
             except Exception as error:
                 from user_output import sanitize_error_message
@@ -787,18 +724,24 @@ async def run_full_crawl_async(
                     process_url=_process_crawl_url,
                     page_timeout=float(getattr(config, "crawl_page_timeout", 90) or 90),
                     on_page_timeout=_on_page_timeout,
+                    queue_lock=crawl_state_lock,
                 )
             else:
-                while queue and running():
-                    if use_priority:
-                        _, _, current_url = heapq.heappop(queue)
-                    else:
-                        current_url = queue.popleft()
+                while True:
+                    if not await running():
+                        break
+                    async with crawl_state_lock:
+                        if not queue:
+                            break
+                        if use_priority:
+                            _, _, current_url = heapq.heappop(queue)
+                        else:
+                            current_url = queue.popleft()
                     await _process_crawl_url(current_url)
         elif config.enum_only:
             output_callback("=== Enum-only mode (Gobuster-beater) — skipping crawl phase ===")
 
-        if running() and _directory_enum_enabled(config):
+        if await running() and _directory_enum_enabled(config):
             await _run_full_enum_suite(
                 config,
                 client,
@@ -815,13 +758,13 @@ async def run_full_crawl_async(
                 update_progress,
                 list(discovered) + extra_seeds,
             )
-        elif running():
+        elif await running():
             output_callback(
                 "Directory enumeration skipped — enable “Run directory enum” "
                 "(or choose Deep Audit / Fast Scan) to probe folder/file names."
             )
 
-        if running() and getattr(config, "api_recon", False):
+        if await running() and getattr(config, "api_recon", False):
             from api_recon import run_api_recon
 
             await run_api_recon(
@@ -971,7 +914,7 @@ async def _run_full_enum_suite(
     else:
         output_callback("Directory enum skipped (wordlist, mutations, and smart order are off).")
 
-    if config.vhost_enum and running():
+    if config.vhost_enum and await running():
         baseline_length, baseline_status = await get_async_baseline(client, config.start_url)
         wl = config.vhost_wordlist or config.subdomain_wordlist
         vhosts = await enumerate_vhosts(
@@ -993,12 +936,12 @@ async def _run_full_enum_suite(
     bucket_wl = config.wordlist_file
     if not config.use_wordlist and not os.path.isfile(bucket_wl):
         bucket_wl = config.subdomain_wordlist
-    if config.s3_enum and running():
+    if config.s3_enum and await running():
         for url in await enumerate_s3_buckets(
             domain, bucket_wl, client, running=running, output_callback=output_callback, concurrency=config.enum_concurrency
         ):
             stats.record_url("s3", url)
-    if config.gcs_enum and running():
+    if config.gcs_enum and await running():
         for url in await enumerate_gcs_buckets(
             domain, bucket_wl, client, running=running, output_callback=output_callback, concurrency=config.enum_concurrency
         ):

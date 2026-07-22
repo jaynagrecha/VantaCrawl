@@ -8,6 +8,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from async_runtime import is_running
 from crawler_common import load_wordlist
 from enum_engine import REDIRECT_STATUSES, follow_same_host_redirects
 from .models import ApiEndpoint
@@ -111,7 +112,7 @@ async def run_active_api_enum(
 
     async def probe(url: str) -> None:
         nonlocal done
-        if running and not running():
+        if running and not await is_running(running):
             return
         status = 0
         final_url = url

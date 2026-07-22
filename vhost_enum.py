@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from async_runtime import is_running
 from crawler_common import load_wordlist, response_length
 
 
@@ -35,7 +36,7 @@ async def enumerate_vhosts(
     sem = asyncio.Semaphore(max(1, concurrency))
 
     async def check_word(word: str):
-        if not running():
+        if not await is_running(running):
             return
         host = f"{word.strip()}.{base_host}"
         async with sem:
@@ -65,7 +66,7 @@ async def enumerate_vhosts(
     output_callback(f"Vhost scan: {len(words)} hostnames against {base_url}")
     batch_size = concurrency
     for index in range(0, len(words), batch_size):
-        if not running():
+        if not await is_running(running):
             break
         batch = words[index : index + batch_size]
         await asyncio.gather(*[check_word(word) for word in batch], return_exceptions=True)

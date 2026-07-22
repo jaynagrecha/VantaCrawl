@@ -9,6 +9,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from discovery_extra import parse_openapi_endpoints
+from async_runtime import is_running
 from .models import ApiEndpoint
 
 WELL_KNOWN_DOC_PATHS = (
@@ -59,7 +60,7 @@ async def discover_doc_urls(
     endpoints: List[ApiEndpoint] = []
     seen: Set[str] = set()
     for url in candidates:
-        if running and not running():
+        if running and not await is_running(running):
             break
         if url in seen:
             continue

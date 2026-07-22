@@ -14,6 +14,8 @@ import httpx
 import requests
 from bs4 import BeautifulSoup
 
+from async_runtime import is_running
+
 # Kept for backward compatibility; prefer evasion_layer profiles for live scans.
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -1057,7 +1059,7 @@ async def download_referenced_assets(
 
     async def fetch_one(asset_url, *, allow_nested=True):
         nonlocal saved
-        if running and not running():
+        if running and not await is_running(running):
             return
         if manager and asset_url in manager.cache:
             return

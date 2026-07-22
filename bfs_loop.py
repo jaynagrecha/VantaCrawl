@@ -4,25 +4,33 @@ from __future__ import annotations
 
 import asyncio
 import heapq
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union, Awaitable
+
+from async_runtime import is_running
+
+RunningFn = Callable[[], Union[bool, Awaitable[bool]]]
 
 
 async def run_concurrent_bfs(
     *,
     queue,
     use_priority: bool,
-    running: Callable[[], bool],
+    running: RunningFn,
     crawl_concurrency: int,
     process_url: Callable[[str], Any],
     page_timeout: float = 90.0,
     on_page_timeout: Optional[Callable[[str], Any]] = None,
+    queue_lock: Optional[asyncio.Lock] = None,
 ):
     """Process the queue with N workers; do not batch-barrier on the slowest URL.
 
     Each page is bounded by ``page_timeout`` so one hung fetch cannot freeze the crawl.
     Workers exit only after the queue stays empty while no work is in flight.
+
+    When ``queue_lock`` is provided, share it with producers that enqueue into the
+    same queue (e.g. crawl discover) so pop/push stay consistent.
     """
-    queue_lock = asyncio.Lock()
+    queue_lock = queue_lock or asyncio.Lock()
     state = {"active": 0, "empty_streak": 0}
     n = max(1, int(crawl_concurrency) or 1)
     timeout = max(1.0, float(page_timeout) if page_timeout else 90.0)
@@ -37,7 +45,7 @@ async def run_concurrent_bfs(
             return queue.popleft()
 
     async def _worker():
-        while running():
+        while await is_running(running):
             url = await _pop_next()
             if url is None:
                 await asyncio.sleep(0.15)

@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from async_runtime import is_running
 from content_validate import classify_bucket_response
 from crawler_common import load_wordlist
 
@@ -57,7 +58,7 @@ async def enumerate_s3_buckets(
     sem = asyncio.Semaphore(max(1, concurrency))
 
     async def check_name(name: str):
-        if not running():
+        if not await is_running(running):
             return
         bucket = name.strip().lower()
         if not bucket:
@@ -75,7 +76,7 @@ async def enumerate_s3_buckets(
 
     output_callback(f"S3 scan: {len(words)} names for {root}")
     for index in range(0, len(words), concurrency):
-        if not running():
+        if not await is_running(running):
             break
         await asyncio.gather(*[check_name(w) for w in words[index : index + concurrency]], return_exceptions=True)
     return found
@@ -96,7 +97,7 @@ async def enumerate_gcs_buckets(
     sem = asyncio.Semaphore(max(1, concurrency))
 
     async def check_name(name: str):
-        if not running():
+        if not await is_running(running):
             return
         bucket = name.strip().lower()
         if not bucket:
@@ -110,7 +111,7 @@ async def enumerate_gcs_buckets(
 
     output_callback(f"GCS scan: {len(words)} bucket names")
     for index in range(0, len(words), concurrency):
-        if not running():
+        if not await is_running(running):
             break
         await asyncio.gather(*[check_name(w) for w in words[index : index + concurrency]], return_exceptions=True)
     return found

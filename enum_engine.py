@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from async_runtime import is_running
 from checkpoint import load_enum_checkpoint, save_enum_checkpoint
 from crawl_config import CrawlConfig
 from crawl_stats import CrawlStats
@@ -595,7 +596,7 @@ async def run_pro_directory_enum(
             await on_hit_callback(probe)
 
     async def check_word(path_segments: List[str], word: str, depth: int) -> Optional[ProbeResult]:
-        if not running():
+        if not await is_running(running):
             return None
         # Re-read filters each probe so Pause → change settings → Resume applies live
         status_filter = build_status_filter(config)
@@ -644,7 +645,7 @@ async def run_pro_directory_enum(
 
     async def enumerate_level(path_segments: List[str], depth: int, start_index: int = 0):
         max_d = 0 if config.enum_flat_scan else (config.branch_depth_limit or config.max_depth)
-        if depth > max_d or not running():
+        if depth > max_d or not await is_running(running):
             return
         if path_segments:
             output_callback(f"Enum under {format_enum_path(path_segments)} (depth {depth})")
@@ -652,7 +653,7 @@ async def run_pro_directory_enum(
         index = start_index if path_segments == resume_segments and depth == resume_depth else 0
         while index < len(words):
             batch_size = max(1, int(config.enum_concurrency) or 1)
-            if not running():
+            if not await is_running(running):
                 return
             if config.enum_word_limit and index >= config.enum_word_limit:
                 output_callback(f"Enum word limit reached ({config.enum_word_limit:,}).")

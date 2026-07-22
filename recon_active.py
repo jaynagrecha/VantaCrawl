@@ -9,6 +9,7 @@ import ssl
 from typing import Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse
 
+from async_runtime import is_running
 from recon_extract import parse_sitemap_locs
 
 # Fixed ≤6 probes; security.txt intentionally omitted (user policy)
@@ -104,7 +105,7 @@ async def probe_well_known(
     origin = origin.rstrip("/") + "/"
     hits: List[Dict[str, str]] = []
     for path in WELL_KNOWN_PATHS:
-        if running and not running():
+        if running and not await is_running(running):
             break
         url = urljoin(origin, path.lstrip("/"))
         # urljoin with origin ending / and path starting / needs care
@@ -163,7 +164,7 @@ async def fetch_sitemaps(
         return text
 
     for root in roots:
-        if running and not running():
+        if running and not await is_running(running):
             break
         text = await _get(root)
         if not text:
@@ -182,7 +183,7 @@ async def fetch_sitemaps(
             break
 
     for child in children_to_fetch[:max_child_sitemaps]:
-        if running and not running():
+        if running and not await is_running(running):
             break
         text = await _get(child)
         if not text:
@@ -236,7 +237,7 @@ async def run_host_recon_once(
         tasks.append(("well_known", probe_well_known(client, origin, running=running)))
 
     for name, coro in tasks:
-        if running and not running():
+        if running and not await is_running(running):
             break
         try:
             value = await coro

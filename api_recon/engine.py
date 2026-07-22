@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from async_runtime import is_running
+
 from .active import run_active_api_enum
 from .auth import build_api_headers
 from .docs import discover_doc_urls
@@ -72,7 +74,7 @@ async def run_api_recon(
     ][:40]
     mined = 0
     for url in js_like:
-        if not running():
+        if not await is_running(running):
             break
         try:
             resp = await client.get(url, headers=headers, timeout=12, follow_redirects=True)
@@ -86,7 +88,7 @@ async def run_api_recon(
         output_callback(f"API passive: mined {mined} path hint(s) from JS/HTML samples")
 
     # Docs / well-known
-    if running():
+    if await is_running(running):
         if update_progress:
             update_progress(1, 0, "API recon: OpenAPI / well-known docs…")
         docs, doc_eps = await discover_doc_urls(
@@ -115,7 +117,7 @@ async def run_api_recon(
         output_callback(f"API import (HAR): {len(imported)} request(s)")
 
     # Active enum (optional)
-    if getattr(config, "api_recon_active", False) and running():
+    if getattr(config, "api_recon_active", False) and await is_running(running):
         wl = (getattr(config, "api_recon_wordlist", "") or "").strip() or _DEFAULT_WORDLIST
         limit = int(getattr(config, "api_recon_word_limit", 3000) or 3000)
         active_hits = await run_active_api_enum(
@@ -139,7 +141,7 @@ async def run_api_recon(
         output_callback(f"API active: {len(active_hits)} live/protected path(s)")
 
     # GraphQL introspection (optional)
-    if getattr(config, "api_recon_graphql", False) and running():
+    if getattr(config, "api_recon_graphql", False) and await is_running(running):
         gql_urls: Set[str] = set()
         for ep in result.endpoints:
             if "graphql" in (ep.path or "").lower() or "graphql" in (ep.url or "").lower():
@@ -148,7 +150,7 @@ async def run_api_recon(
         for path in ("/graphql", "/api/graphql", "/v1/graphql"):
             gql_urls.add(origin + path)
         for url in list(gql_urls)[:8]:
-            if not running():
+            if not await is_running(running):
                 break
             ops, eps = await try_introspection(client, url, headers=headers)
             result.endpoints.extend(eps)

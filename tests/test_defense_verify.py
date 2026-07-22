@@ -68,3 +68,27 @@ def test_cloudflare_403_still_counts_as_waf_block():
     assert tracker.access_deny_count == 0
     assert tracker.block_status_counts.get("403") == 1
 
+
+def test_captcha_widget_on_200_is_not_caught():
+    """A login page embedding reCAPTCHA is not a bot-wall block."""
+    tracker = DefenseTracker(start_url="https://lab.local")
+    tracker.record_response(
+        "https://lab.local/login",
+        200,
+        {},
+        '<div class="g-recaptcha" data-sitekey="x"></div>',
+    )
+    assert tracker.caught_count == 0
+    assert tracker.unchallenged_count == 1
+
+
+def test_cdn_headers_on_200_are_not_caught():
+    tracker = DefenseTracker(start_url="https://lab.local")
+    tracker.record_response(
+        "https://lab.local/",
+        200,
+        {"server": "cloudflare", "cf-ray": "abc123"},
+        "<html>ok</html>",
+    )
+    assert tracker.caught_count == 0
+    assert tracker.unchallenged_count == 1
