@@ -3,14 +3,28 @@
 from __future__ import annotations
 
 from content_validate import needs_content_gate, validate_sensitive_content
-from cookie_impact import classify_cookie, analyze_set_cookie_headers
-from recon_extract import extract_mixed_content, find_jwt_candidates, jwt_header_looks_valid
+from cookie_impact import (
+    analyze_response_cookies,
+    analyze_set_cookie_headers,
+    classify_cookie,
+)
+from file_metadata import metadata_findings
+from recon_extract import (
+    extract_mixed_content,
+    find_jwt_candidates,
+    jwt_alg_is_none,
+    jwt_header_looks_valid,
+)
 from security_scan import (
     extract_forms,
+    scan_api_leaks,
+    scan_authentication_flaws,
+    scan_directory_traversal,
     scan_file_upload,
     scan_open_redirect,
     scan_secrets,
     scan_sensitive_path,
+    scan_sql_injection,
     scan_ssrf,
 )
 
@@ -161,3 +175,136 @@ def test_mitigated_session_cookie_no_finding():
     )
     assert inv and inv[0]["impact"] == "mitigated_credential"
     assert findings == []
+
+
+# --- Round 2 ---------------------------------------------------------------
+
+
+def test_path_only_dotdot_not_traversal_fp():
+    assert scan_directory_traversal("https://x.com/static/../assets/app.js") == []
+    assert scan_directory_traversal("https://x.com/page?next=../home") == []
+
+
+def test_traversal_etc_passwd_param_still_flagged():
+    findings = scan_directory_traversal("https://x.com/file?path=../../../etc/passwd")
+    assert any(f[0] == "directory_traversal" for f in findings)
+
+
+def test_api_leak_phpinfo_404_not_fp():
+    findings = scan_api_leaks(
+        "https://x.com/phpinfo.php",
+        "<html><title>Not Found</title></html>",
+        {},
+        "text/html",
+    )
+    assert findings == []
+
+
+def test_api_leak_phpinfo_with_body_proof():
+    findings = scan_api_leaks(
+        "https://x.com/phpinfo.php",
+        "<h1>PHP Version 8.2.12</h1><p>phpinfo()</p>",
+        {},
+        "text/html",
+    )
+    assert any(f[0] == "api_leak" for f in findings)
+
+
+def test_bare_api_key_param_not_critical_fp():
+    findings = scan_authentication_flaws(
+        "https://x.com/search?api_key=&q=test",
+        {},
+        "",
+    )
+    assert findings == []
+
+
+def test_credential_like_url_value_still_flagged():
+    findings = scan_authentication_flaws(
+        "https://x.com/callback?api_key=AbCdEfGhIjKlMnOpQrStUvWx",
+        {},
+        "",
+    )
+    assert any(f[0] == "authentication" for f in findings)
+
+
+def test_sql_special_chars_without_error_not_fp():
+    findings = scan_sql_injection(
+        "https://shop.example/item?id=1'",
+        "Welcome to our shop",
+    )
+    assert findings == []
+
+
+def test_cart_token_cookie_not_auth():
+    assert classify_cookie("cart_token", "abc123def456ghi789") == "unknown"
+    assert classify_cookie("device_sid", "abc123def456ghi789") == "unknown"
+    assert classify_cookie("ab_test_session", "variant_a") == "unknown"
+
+
+def test_request_cookie_inventory_only_no_finding():
+    inv, findings = analyze_response_cookies(
+        {"Cookie": "sessionid=abc123def456ghi789jkl012"},
+        page_url="https://example.com/",
+        include_request_cookie=True,
+    )
+    assert any(r["name"] == "sessionid" for r in inv)
+    assert findings == []
+
+
+def test_git_forbidden_plaintext_not_confirmed():
+    assert (
+        validate_sensitive_content(
+            "https://x.com/.git/config",
+            status=403,
+            body="Forbidden\n",
+            content_type="text/plain",
+        )
+        is None
+    )
+
+
+def test_git_config_body_still_confirmed():
+    proof = validate_sensitive_content(
+        "https://x.com/.git/config",
+        status=200,
+        body='[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n',
+        content_type="text/plain",
+    )
+    assert proof and "Confirmed" in proof
+
+
+def test_plain_author_metadata_not_finding():
+    findings = metadata_findings(
+        {
+            "url": "https://x.com/a.pdf",
+            "fields": {"author": "Ada Lovelace", "title": "Notes"},
+            "interesting": {"author": "Ada Lovelace"},
+        }
+    )
+    assert findings == []
+
+
+def test_email_author_metadata_still_finding():
+    findings = metadata_findings(
+        {
+            "url": "https://x.com/a.pdf",
+            "fields": {"author": "jsmith@corp.local"},
+            "interesting": {"author": "jsmith@corp.local"},
+        }
+    )
+    assert any(f[0] == "file_metadata" and f[1] == "medium" for f in findings)
+
+
+def test_jwt_alg_none_helper():
+    # header {"alg":"none","typ":"JWT"}
+    import base64
+    import json
+
+    header = base64.urlsafe_b64encode(
+        json.dumps({"alg": "none", "typ": "JWT"}, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    payload = base64.urlsafe_b64encode(b'{"sub":"1"}').decode().rstrip("=")
+    token = f"{header}.{payload}."
+    assert jwt_header_looks_valid(token)
+    assert jwt_alg_is_none(token)

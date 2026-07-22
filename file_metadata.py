@@ -153,25 +153,24 @@ def metadata_findings(record: Dict[str, Any]) -> List[Tuple[str, str, str, Optio
             )
         )
 
+    # Plain Author/Creator names stay in inventory fields — only emit PII / internal hints
     for key in ("author", "creator", "last_modified_by", "company"):
         value = fields.get(key) or fields.get(key.title()) or fields.get(key.upper())
         if not value:
-            # case-insensitive search
             for fk, fv in fields.items():
                 if fk.lower() == key and fv:
                     value = fv
                     break
         if not value:
             continue
-        sev = "info"
-        if re.search(r"(?i)@|\.local\b|internal|corp\\|\\\\", value):
-            sev = "medium"
+        if not re.search(r"(?i)@|\.local\b|\binternal\b|corp\\|\\\\", str(value)):
+            continue
         out.append(
             (
                 "file_metadata",
-                sev,
-                f"Document {key.replace('_', ' ')} in metadata: {value[:120]}",
-                value[:160],
+                "medium",
+                f"Document {key.replace('_', ' ')} in metadata may leak PII/internal identity: {str(value)[:120]}",
+                str(value)[:160],
             )
         )
     return out[:12]

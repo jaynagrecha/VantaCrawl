@@ -95,22 +95,15 @@ def validate_sensitive_content(
     if GIT_PATH_RE.search(path):
         if status >= 500:
             return None
+        # Require real git markers — bare 401/403 "Forbidden" is not proof
         if GIT_HEAD_RE.search(text[:200]) or GIT_CONFIG_RE.search(text[:4000]):
             return "Confirmed .git content in response body"
-        if looks_html or status == 404:
-            return None
-        if status in (200, 401, 403) and text.strip() and not looks_html:
-            return f".git path returned non-HTML HTTP {status} (likely real)"
         return None
 
     if ENV_PATH_RE.search(path):
         env_hits = ENV_LINE_RE.findall(text[:8000])
         if len(env_hits) >= 2:
             return f"Confirmed .env-style content ({len(env_hits)} KEY= lines)"
-        if looks_html or status == 404:
-            return None
-        if status in (200, 401, 403) and text.strip() and not looks_html:
-            return f".env path returned non-HTML HTTP {status}"
         return None
 
     if BACKUP_PATH_RE.search(path):
@@ -118,19 +111,14 @@ def validate_sensitive_content(
             return "Confirmed archive magic bytes"
         if text.startswith("SQLite format"):
             return "Confirmed SQLite database header"
-        if looks_html and status == 200 and HTMLISH_RE.search(text[:1500]):
-            return None
-        if status in (200, 401, 403) and not looks_html and len(raw) > 64:
-            return f"Backup-like path returned non-HTML HTTP {status} ({len(raw)} bytes)"
+        # Non-HTML 200 with substantial bytes can still be a real archive/blob
+        if status == 200 and not looks_html and len(raw) > 256:
+            return f"Backup-like path returned non-HTML HTTP 200 ({len(raw)} bytes)"
         return None
 
     if CONFIG_PATH_RE.search(path):
-        if looks_html and status == 404:
-            return None
         if CONFIG_HINT_RE.search(text[:6000]):
             return "Confirmed config-like content in response"
-        if status in (200, 401, 403) and text.strip() and not looks_html:
-            return f"Config path returned non-HTML HTTP {status}"
         return None
 
     if PHPINFO_PATH_RE.search(path):
@@ -141,10 +129,6 @@ def validate_sensitive_content(
     if AWS_PATH_RE.search(path):
         if AWS_CREDS_RE.search(text[:8000]):
             return "Confirmed AWS credentials/config content"
-        if looks_html or status == 404:
-            return None
-        if status in (200, 401, 403) and text.strip() and not looks_html:
-            return f".aws path returned non-HTML HTTP {status}"
         return None
 
     return "ok"

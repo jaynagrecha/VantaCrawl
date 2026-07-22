@@ -703,8 +703,9 @@ OPEN_REDIRECT_PARAM_RE = re.compile(
 
 GRAPHQL_PATH_RE = re.compile(r"(?i)/(?:graphql|graphiql|playground)(?:$|/|\?)")
 
-AUTH_WEAK_RE = re.compile(
-    r"(?i)(password=|passwd=|pwd=|api_key=|token=.*http://|sessionid=.*http://)"
+_URL_CRED_PARAM_RE = re.compile(
+    r"(?i)^(password|passwd|pwd|pass|api[_-]?key|access[_-]?token|refresh[_-]?token|"
+    r"id[_-]?token|secret|client[_-]?secret|sessionid|session_id|auth[_-]?token)$"
 )
 
 
@@ -722,25 +723,12 @@ def _looks_like_code_listing(body_text: str) -> bool:
 
 
 def scan_sql_injection(url: str, body_text: str, forms: Optional[List[dict]] = None) -> List[Tuple[str, str, str]]:
-    """Require SQL-error evidence for high confidence; name-only params stay informational."""
+    """Emit only when the response body contains SQL-error evidence (passive)."""
     findings = []
     has_sql_error = bool(body_text and SQL_ERROR_RE.search(body_text))
     if has_sql_error and not _looks_like_code_listing(body_text or ""):
         findings.append(("sql_injection", "high", "SQL error pattern in response body (possible SQLi)"))
-    # Name-only hints are too noisy as medium — keep as info when no error evidence
-    if not has_sql_error:
-        params = _query_params(url)
-        risky = [name for name in params if SQL_PARAM_RE.match(name)]
-        if risky and any(
-            re.search(r"[\"'`]", v) for values in params.values() for v in values
-        ):
-            findings.append(
-                (
-                    "sql_injection",
-                    "medium",
-                    f"SQL-special characters in parameter(s) {', '.join(risky[:5])} (verify server handling)",
-                )
-            )
+    # Special-char-in-param without SQL errors is not a finding — active probes confirm SQLi
     return findings
 
 
@@ -756,15 +744,22 @@ def scan_xss(url: str, body_text: str, forms: Optional[List[dict]] = None) -> Li
                 continue
             if not re.search(r"[<>\"'`]", value):
                 continue
-            if value in body_text and re.search(rf"(?i)(<[^>]*>[^<]*{re.escape(value)}|['\"]{re.escape(value)})", body_text):
+            if value in body_text and re.search(
+                rf"(?i)(<[^>]*>[^<]*{re.escape(value)}|['\"]{re.escape(value)})",
+                body_text,
+            ):
+                # Passive reflection stays low — active marker probe confirms XSS
                 findings.append(
-                    ("xss", "medium", f"Parameter '{name}' value with HTML/JS metacharacters reflected (possible XSS)"),
+                    (
+                        "xss",
+                        "low",
+                        f"Parameter '{name}' value with HTML/JS metacharacters reflected (possible XSS)",
+                    ),
                 )
                 break
     if re.search(r"(?i)<script[^>]*>[^<]{0,200}(document\.cookie\s*=|eval\s*\()", body_text):
         if not _looks_like_code_listing(body_text):
             findings.append(("xss", "high", "Inline script with sensitive DOM access in response"))
-    # Drop blanket GET-form XSS info noise (was a major FP source)
     return findings
 
 
@@ -832,20 +827,37 @@ def scan_ssrf(url: str, body_text: str = "") -> List[Tuple[str, str, str]]:
 
 
 def scan_directory_traversal(url: str) -> List[Tuple[str, str, str]]:
+    """Passive: only param values that look like file-disclosure attempts.
+
+    Bare ``../`` in a URL path is normal relative resolution — never a finding.
+    Active probes confirm traversal via /etc/passwd markers.
+    """
     findings = []
-    parsed = urlparse(url)
-    # Require traversal sequences in path or param values — not mere param names like page=
-    if TRAVERSAL_RE.search(unquote(parsed.path or "")):
-        findings.append(("directory_traversal", "high", "Path traversal sequence in URL path"))
     for name, values in _query_params(url).items():
         for value in values:
-            if TRAVERSAL_RE.search(unquote(value or "")):
-                sev = "critical" if re.match(
-                    r"(?i)^(file|path|folder|dir|document|template|include|doc)$", name
-                ) else "high"
-                findings.append(
-                    ("directory_traversal", sev, f"Traversal payload in parameter '{name}'"),
+            decoded = unquote(value or "")
+            if not TRAVERSAL_RE.search(decoded):
+                continue
+            if not re.search(
+                r"(?i)(etc/passwd|windows[/\\]win\.ini|/proc/self|\.git/config|boot\.ini)",
+                decoded,
+            ):
+                continue
+            sev = (
+                "medium"
+                if re.match(
+                    r"(?i)^(file|path|folder|dir|document|template|include|doc)$",
+                    name,
                 )
+                else "low"
+            )
+            findings.append(
+                (
+                    "directory_traversal",
+                    sev,
+                    f"Traversal + sensitive file target in parameter '{name}' (verify disclosure)",
+                ),
+            )
     return findings
 
 
@@ -856,11 +868,28 @@ def scan_authentication_flaws(url: str, headers: dict, body_text: str = "") -> L
     path = parsed.path.lower()
     if scheme == "http" and re.search(r"(?i)(login|signin|auth|password|admin)", path):
         findings.append(("authentication", "high", "Login/auth page served over unencrypted HTTP"))
-    if AUTH_WEAK_RE.search(url):
-        findings.append(("authentication", "critical", "Credentials or tokens appear in URL query string"))
+    # Require a credential-shaped value — bare password=/api_key= keys are form noise
+    for name, values in _query_params(url).items():
+        if not _URL_CRED_PARAM_RE.match(name):
+            continue
+        for value in values:
+            if not value or len(value) < 8:
+                continue
+            if not _secret_looks_real(f"{name}={value}"):
+                continue
+            if len(set(value)) < 5:
+                continue
+            sev = "high" if scheme == "https" else "critical"
+            findings.append(
+                (
+                    "authentication",
+                    sev,
+                    f"Credential-like value in URL query parameter '{name}'",
+                )
+            )
+            break
     lowered = {k.lower(): v for k, v in (headers or {}).items()}
     # Cookie flag / stealable-credential analysis is handled by cookie_impact
-    # (see crawl_orchestrator) so we do not double-fire crude "session" substring checks.
     if body_text and re.search(r"(?i)(type=['\"]password['\"]|name=['\"]password['\"])", body_text):
         if scheme == "http":
             findings.append(("authentication", "high", "Password form on HTTP connection"))
@@ -930,16 +959,48 @@ def scan_mixed_content(url: str, body_text: str) -> List[Tuple[str, str, str]]:
     return findings
 
 
+def _api_debug_body_proof(path: str, body_text: str, content_type: str = "") -> Optional[str]:
+    """Return proof string when a sensitive API/debug path has real content."""
+    if not body_text:
+        return None
+    text = body_text[:12000]
+    if re.search(r"(?i)/phpinfo(?:\.php)?(?:/|$)", path):
+        if re.search(r"(?i)(?:phpinfo\s*\(|PHP Version\s*\d|PHP Credits)", text):
+            return "phpinfo() body proof"
+        return None
+    if "/actuator" in path:
+        if re.search(r"(?i)(\"status\"\s*:\s*\"UP\"|\"_links\"|actuator)", text[:4000]):
+            return "actuator JSON/body proof"
+        return None
+    if re.search(r"(?i)/server-status(?:/|$)", path):
+        if re.search(r"(?i)Apache Server Status|Server uptime|Current Time:", text[:4000]):
+            return "Apache server-status proof"
+        return None
+    if "openid-configuration" in path:
+        if re.search(r"(?i)\"issuer\"\s*:|\"jwks_uri\"\s*:", text[:4000]):
+            return "OIDC discovery document proof"
+        return None
+    if re.search(r"(?i)/(?:debug)(?:/|$)", path):
+        if re.search(r"(?i)(traceback|stack trace|DEBUG\s*=\s*True|django\.debug|Werkzeug)", text[:6000]):
+            return "debug/traceback body proof"
+        return None
+    return None
+
+
 def scan_api_leaks(url: str, body_text: str, headers: dict, content_type: str = "") -> List[Tuple[str, str, str]]:
     findings = []
     path = urlparse(url).path.lower()
-    # Path-segment markers (avoid substring FPs like /debugging-guide)
+    # Path-segment markers require body proof (align with sensitive_path content gate)
     sensitive_segments = (
         r"(?:^|/)(?:debug|actuator|phpinfo(?:\.php)?|server-status)(?:/|$)",
         r"(?:^|/)\.well-known/openid-configuration(?:/|$)",
     )
     if any(re.search(pat, path) for pat in sensitive_segments):
-        findings.append(("api_leak", "medium", f"Sensitive API/debug path: {path}"))
+        proof = _api_debug_body_proof(path, body_text or "", content_type)
+        if proof:
+            findings.append(
+                ("api_leak", "medium", f"Sensitive API/debug path confirmed: {path} ({proof})")
+            )
     elif re.search(r"(?:^|/)(?:swagger|api-docs|openapi)(?:/|$)", path) and body_text:
         if re.search(r"(?i)(\"swagger\"|openapi|paths\s*:)", body_text[:2000]):
             findings.append(("api_leak", "low", f"API documentation exposed at {path}"))
@@ -949,14 +1010,19 @@ def scan_api_leaks(url: str, body_text: str, headers: dict, content_type: str = 
             r"(?i)(__schema|introspectionQuery|GraphiQL|graphql playground)", body_text
         ):
             findings.append(("api_leak", "high", "GraphQL introspection/playground indicators on GraphQL path"))
-        elif re.search(r"(?i)actuator/health", path) or (
-            "json" in (content_type or "").lower()
-            and re.search(r"(?i)\"status\"\s*:\s*\"UP\"", body_text[:2000])
-            and "/actuator" in path
+        elif "/actuator" in path and (
+            re.search(r"(?i)actuator/health", path)
+            or (
+                "json" in (content_type or "").lower()
+                and re.search(r"(?i)\"status\"\s*:\s*\"UP\"", body_text[:2000])
+            )
         ):
             findings.append(("api_leak", "high", "Actuator/health-style JSON exposed"))
-        elif re.search(r"(?i)[?&]debug=true(?:&|$)", url):
-            findings.append(("api_leak", "medium", "debug=true present in URL"))
+        elif re.search(r"(?i)[?&]debug=true(?:&|$)", url) and re.search(
+            r"(?i)(traceback|stack trace|DEBUG\s*=\s*True|exception)",
+            body_text[:6000],
+        ):
+            findings.append(("api_leak", "medium", "debug=true with debug/error body content"))
     ct = (content_type or "").lower()
     path_l = path
     # OAuth/token endpoints legitimately return access_token — do not mark critical
@@ -1069,15 +1135,20 @@ async def run_active_vuln_probes(
         ),
         (
             "ssrf",
-            "http://127.0.0.1:9/",
+            # Metadata URL — connection-refused alone is a common app error FP
+            "http://169.254.169.254/latest/meta-data/",
             "high",
             lambda body, baseline, _marker: bool(
                 re.search(
-                    r"(?i)(connection refused|couldn't connect|failed to connect|errno\s*111|ECONNREFUSED)",
-                    body,
+                    r"(?i)(ami-[0-9a-f]{8,}|instance-id|meta-data/|computeMetadata|"
+                    r"metadata\.google|169\.254\.169\.254)",
+                    body or "",
                 )
             )
-            and "connection refused" not in (baseline or "").lower(),
+            and not re.search(
+                r"(?i)(ami-[0-9a-f]{8,}|instance-id|computeMetadata)",
+                baseline or "",
+            ),
             lambda name: bool(SSRF_PARAM_RE.match(name)),
         ),
     )

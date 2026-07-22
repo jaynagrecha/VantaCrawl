@@ -50,16 +50,12 @@ def test_xss_plain_reflection_not_fp():
 
 
 def test_xss_metachar_reflection_detected():
-    findings = scan_xss(
-        "https://x.com/search?q=%3Cscript%3E",
-        '<html><body>query: "<script>"</body></html>',
-    )
     # value after parse_qs may be decoded depending on caller; simulate decoded
     findings = scan_xss(
         "https://x.com/search?q=<script>",
         '<html><body>query: "<script>"</body></html>',
     )
-    assert any(f[0] == "xss" for f in findings)
+    assert any(f[0] == "xss" and f[1] == "low" for f in findings)
 
 
 def test_secret_placeholder_filtered():

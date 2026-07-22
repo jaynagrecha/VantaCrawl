@@ -133,6 +133,7 @@ def test_mixed_content_script_vs_image():
         detail="HTTPS page loads http://cdn.example/app.js",
     )
     assert script.impact == "possible"
+    assert script.suppress is False
 
     img = _assess(
         category="mixed_content",
@@ -140,6 +141,7 @@ def test_mixed_content_script_vs_image():
         detail="HTTPS page loads 2 HTTP resource(s); e.g. http://x/a.png",
     )
     assert img.impact == "limited_impact"
+    assert img.suppress is True
 
 
 def test_secrets_static_unverified():
