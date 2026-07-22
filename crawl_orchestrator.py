@@ -375,7 +375,39 @@ async def run_full_crawl_async(
                 )
 
         if defense is not None and await running():
-            await probe_defense_fingerprint(client, config.start_url, defense, output_callback)
+            chrome_first = bool(
+                getattr(config, "browser_primary", False) or getattr(config, "deep_mirror", False)
+            )
+            # When Chrome-first is already on, warm BM cookies in real Chrome *before*
+            # any HTTP fingerprint probes (robots/favicon over HTTP → Akamai "JS
+            # fingerprint not received" / NoScript categories).
+            if chrome_first:
+                try:
+                    from browser_fetch import chrome_available, make_browser_fetcher
+
+                    if fetcher_box["fn"] is None and chrome_available():
+                        fetcher_box["fn"] = make_browser_fetcher(
+                            config, output=output_callback
+                        )
+                        store = getattr(fetcher_box["fn"], "cookie_store", None)
+                        if store is not None:
+                            stats.cookie_store = store  # type: ignore[attr-defined]
+                    if fetcher_box["fn"] is not None and chrome_available():
+                        output_callback(
+                            "Chrome-first warm-up: loading start URL in real Chrome "
+                            "to finish BM sensor / sync cookies before HTTP probes…"
+                        )
+                        await fetcher_box["fn"](client, config.start_url, False)
+                except Exception as exc:
+                    output_callback(f"Chrome BM warm-up skipped: {exc}")
+
+            await probe_defense_fingerprint(
+                client,
+                config.start_url,
+                defense,
+                output_callback,
+                skip_static_probes=chrome_first,
+            )
             # When Akamai/Bot Manager is present, tighten probe shape immediately
             try:
                 seen = {str(p).lower() for p in (getattr(defense, "protections_seen", None) or set())}
@@ -414,6 +446,16 @@ async def run_full_crawl_async(
                                 store = getattr(fetcher_box["fn"], "cookie_store", None)
                                 if store is not None:
                                     stats.cookie_store = store  # type: ignore[attr-defined]
+                                # First-time BM detect: warm Chrome now so remaining crawl
+                                # has BM cookies (initial probe was HTTP-only).
+                                try:
+                                    output_callback(
+                                        "BM detected after HTTP probe — Chrome warm-up "
+                                        "to obtain BM cookies for the HTTP jar…"
+                                    )
+                                    await fetcher_box["fn"](client, config.start_url, False)
+                                except Exception as warm_exc:
+                                    output_callback(f"Post-detect Chrome warm-up skipped: {warm_exc}")
                             else:
                                 output_callback(
                                     "Chrome-first requested for Bot Manager but Chrome is "

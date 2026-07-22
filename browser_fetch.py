@@ -40,6 +40,118 @@ document.querySelectorAll('[href],[src],[srcset],[poster],[action],[data-src],[d
 return out;
 """
 
+# Akamai Bot Manager client cookies — presence means the sensor ran far enough to set state.
+# Missing these after a Chrome navigation → Akamai often logs "javascript fingerprint not
+# received" / "Client Disabled Javascript (NoScript Triggered)" for later HTTP traffic.
+BM_COOKIE_NAMES = ("_abck", "bm_sz", "ak_bmsc", "bm_sv", "bm_mi", "bm_so")
+BM_PAGE_MARKERS = (
+    "akamai",
+    "_abck",
+    "bmak.",
+    "bm_sz",
+    "ak_bmsc",
+    "edgesuite",
+    "sec-cpt",
+    "challenge-platform",
+    "cf-browser-verification",
+)
+
+
+def bm_cookie_names_present(cookies) -> list[str]:
+    """Return which BM cookie names appear in a Selenium cookie list or name→value map."""
+    names: set[str] = set()
+    if isinstance(cookies, dict):
+        names = {str(k).lower() for k in cookies.keys()}
+    else:
+        for row in cookies or []:
+            if isinstance(row, dict):
+                names.add(str(row.get("name") or "").lower())
+            else:
+                names.add(str(row).lower())
+    return [n for n in BM_COOKIE_NAMES if n in names]
+
+
+def page_suggests_bot_manager(html: str) -> bool:
+    low = (html or "").lower()
+    return any(m in low for m in BM_PAGE_MARKERS)
+
+
+def _seed_driver_cookies(driver, url: str, cookie_header: str) -> int:
+    """Push `a=b; c=d` into Chrome before navigation via CDP (best-effort)."""
+    raw = (cookie_header or "").strip()
+    if not raw:
+        return 0
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").strip()
+        if not host:
+            return 0
+        secure = (parsed.scheme or "https").lower() == "https"
+        seeded = 0
+        for part in raw.split(";"):
+            part = part.strip()
+            if not part or "=" not in part:
+                continue
+            name, value = part.split("=", 1)
+            name = name.strip()
+            if not name:
+                continue
+            payload = {
+                "name": name,
+                "value": value.strip(),
+                "domain": host,
+                "path": "/",
+                "secure": secure,
+            }
+            try:
+                driver.execute_cdp_cmd("Network.setCookie", payload)
+                seeded += 1
+            except Exception:
+                try:
+                    # Fallback: some drivers want url instead of domain
+                    payload2 = {
+                        "name": name,
+                        "value": value.strip(),
+                        "url": f"{parsed.scheme}://{host}/",
+                        "path": "/",
+                    }
+                    driver.execute_cdp_cmd("Network.setCookie", payload2)
+                    seeded += 1
+                except Exception:
+                    continue
+        return seeded
+    except Exception:
+        return 0
+
+
+def _wait_for_bm_cookies(driver, *, timeout_seconds: float) -> list[str]:
+    """Poll document cookies until at least one BM cookie appears or timeout."""
+    deadline = time.time() + max(0.0, float(timeout_seconds or 0))
+    found: list[str] = []
+    while time.time() < deadline:
+        try:
+            rows = driver.get_cookies() or []
+        except Exception:
+            rows = []
+        found = bm_cookie_names_present(rows)
+        if found:
+            return found
+        # Also check document.cookie in case HttpOnly lags get_cookies
+        try:
+            doc = driver.execute_script("return document.cookie || '';") or ""
+            for name in BM_COOKIE_NAMES:
+                if f"{name}=" in doc and name not in found:
+                    found.append(name)
+            if found:
+                return found
+        except Exception:
+            pass
+        time.sleep(0.35)
+    return found
+
+
 def _candidate_chrome_bins() -> list[str]:
     env_bins = [
         os.environ.get("CHROME_BIN"),
@@ -176,12 +288,28 @@ def get_selenium_driver(proxy_url: str = "", user_agent: str = ""):
     return _selenium_driver
 
 
-def fetch_with_selenium(url, settle_seconds=2, proxy_url="", screenshot_path=None, user_agent: str = ""):
+def fetch_with_selenium(
+    url,
+    settle_seconds=2,
+    proxy_url="",
+    screenshot_path=None,
+    user_agent: str = "",
+    *,
+    cookie_header: str = "",
+    bm_wait_seconds: float = 12.0,
+    bm_post_settle_seconds: float = 1.5,
+):
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support import expected_conditions as EC
     from selenium.webdriver.support.ui import WebDriverWait
 
     driver = get_selenium_driver(proxy_url, user_agent=user_agent)
+    try:
+        driver.execute_cdp_cmd("Network.enable", {})
+    except Exception:
+        pass
+    if cookie_header:
+        _seed_driver_cookies(driver, url, cookie_header)
     try:
         driver.get(url)
     except Exception:
@@ -191,8 +319,24 @@ def fetch_with_selenium(url, settle_seconds=2, proxy_url="", screenshot_path=Non
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
     except Exception:
         pass
-    if settle_seconds:
-        time.sleep(min(float(settle_seconds), 3.0))
+
+    html_preview = ""
+    try:
+        html_preview = driver.page_source or ""
+    except Exception:
+        html_preview = ""
+
+    bm_found: list[str] = []
+    needs_bm_wait = page_suggests_bot_manager(html_preview) or float(bm_wait_seconds or 0) > 0
+    if needs_bm_wait and float(bm_wait_seconds or 0) > 0:
+        # Always give BM sensor time on Chrome-first navigations — interstitial HTML
+        # may not include obvious markers until scripts run.
+        bm_found = _wait_for_bm_cookies(driver, timeout_seconds=float(bm_wait_seconds))
+        if bm_found and float(bm_post_settle_seconds or 0) > 0:
+            time.sleep(min(float(bm_post_settle_seconds), 5.0))
+    elif settle_seconds:
+        time.sleep(min(float(settle_seconds), 5.0))
+
     if screenshot_path:
         os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
         driver.save_screenshot(screenshot_path)
@@ -200,7 +344,17 @@ def fetch_with_selenium(url, settle_seconds=2, proxy_url="", screenshot_path=Non
         dom_urls = driver.execute_script(DOM_LINKS_SCRIPT) or []
     except Exception:
         dom_urls = []
-    return driver.page_source, driver.get_cookies(), dom_urls
+    try:
+        cookies = driver.get_cookies() or []
+    except Exception:
+        cookies = []
+    if not bm_found:
+        bm_found = bm_cookie_names_present(cookies)
+    try:
+        page_html = driver.page_source or ""
+    except Exception:
+        page_html = html_preview
+    return page_html, cookies, dom_urls, bm_found
 
 
 def quit_selenium_driver() -> None:
@@ -256,6 +410,7 @@ def make_browser_fetcher(
     on_challenge_default = bool(
         getattr(config, "browser_on_challenge", True) or getattr(config, "selenium_fallback", False)
     )
+    _bm_cookie_warn_hosts: set[str] = set()
 
     def _ua_for(url: str) -> str:
         try:
@@ -263,34 +418,70 @@ def make_browser_fetcher(
         except Exception:
             return get_random_user_agent()
 
-    async def _selenium_fetch(url: str, screenshot_path=None) -> Tuple[str, list, list]:
+    async def _selenium_fetch(url: str, screenshot_path=None) -> Tuple[str, list, list, list]:
         loop = asyncio.get_running_loop()
+        cookie_header = ""
+        if bool(getattr(config, "auto_sync_cookies", True)):
+            cookie_header = store.header_for(url) or store.as_cookie_string()
+        bm_wait = float(getattr(config, "bm_cookie_wait_seconds", 12.0) or 0)
+        bm_settle = float(getattr(config, "bm_post_cookie_settle_seconds", 1.5) or 0)
+        # Overall timeout must cover BM wait + page load
+        overall = max(45.0, 25.0 + bm_wait + bm_settle)
         try:
             return await asyncio.wait_for(
                 loop.run_in_executor(
                     _executor,
-                    fetch_with_selenium,
-                    url,
-                    2,
-                    getattr(config, "proxy_url", "") or "",
-                    screenshot_path,
-                    _ua_for(url),
+                    lambda: fetch_with_selenium(
+                        url,
+                        2,
+                        getattr(config, "proxy_url", "") or "",
+                        screenshot_path,
+                        _ua_for(url),
+                        cookie_header=cookie_header,
+                        bm_wait_seconds=bm_wait,
+                        bm_post_settle_seconds=bm_settle,
+                    ),
                 ),
-                timeout=45.0,
+                timeout=overall,
             )
         except asyncio.TimeoutError as exc:
             quit_selenium_driver()
             raise TimeoutError(f"Browser fetch timed out for {url}") from exc
 
-    def _sync_cookies(client, url: str, cookies: list, output_note: Optional[Callable[[str], None]] = None):
+    def _sync_cookies(
+        client,
+        url: str,
+        cookies: list,
+        output_note: Optional[Callable[[str], None]] = None,
+        *,
+        bm_found: Optional[list] = None,
+    ):
         if not bool(getattr(config, "auto_sync_cookies", True)):
             return
         updated = store.ingest_selenium_cookies(cookies, url)
         header = store.apply_to_client(client, url)
         if header:
             config.cookie_string = store.as_cookie_string()
-        if updated and output_note:
-            output_note(f"Synced {updated} browser cookie(s) into HTTP jar for {_host_label(url)}")
+        present = list(bm_found or []) or bm_cookie_names_present(cookies)
+        if output_note:
+            if updated:
+                output_note(
+                    f"Synced {updated} browser cookie(s) into HTTP jar for {_host_label(url)}"
+                )
+            if present:
+                output_note(
+                    f"BM cookies on HTTP jar after Chrome: {', '.join(present)}"
+                )
+            else:
+                host = _host_label(url)
+                if host not in _bm_cookie_warn_hosts:
+                    _bm_cookie_warn_hosts.add(host)
+                    output_note(
+                        "Chrome finished HTML load but no Akamai BM cookies "
+                        "(_abck/bm_sz/ak_bmsc) were set — sensor likely incomplete "
+                        "(headless fingerprint / script blocked). HTTP follow-ups may "
+                        "still be scored as NoScript / JS fingerprint missing."
+                    )
 
     async def browser_page_fetcher(client, url, deep_render=False):
         global _chrome_skip_logged
@@ -352,13 +543,15 @@ def make_browser_fetcher(
             return response.text, []
 
         try:
-            page_html, cookies, dom_urls = await _selenium_fetch(url, screenshot_path=screenshot_path)
+            page_html, cookies, dom_urls, bm_found = await _selenium_fetch(
+                url, screenshot_path=screenshot_path
+            )
         except Exception:
             if force_browser:
                 raise
             # Challenge escalation failed (no Chrome / timeout) — caller continues via HTTP
             return "", []
-        _sync_cookies(client, url, cookies, output_note=output)
+        _sync_cookies(client, url, cookies, output_note=output, bm_found=bm_found)
         return page_html, dom_urls or []
 
     # Expose store for orchestrator / tests

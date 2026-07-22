@@ -178,6 +178,10 @@ class CrawlConfig:
     browser_primary: bool = False  # Chrome-first for HTML navigations
     browser_on_challenge: bool = True  # Escalate to Chrome when HTTP hits WAF/challenge
     auto_sync_cookies: bool = True  # Browser → per-host Cookie jar for httpx/curl_cffi
+    # Wait for Akamai BM cookies (_abck/bm_sz/…) after Chrome page load (0 = body-only)
+    bm_cookie_wait_seconds: float = 12.0
+    # Extra settle after BM cookies appear (sensor sometimes mutates _abck once more)
+    bm_post_cookie_settle_seconds: float = 1.5
 
     crawl_concurrency: int = 4
     enum_similarity_threshold: int = 50

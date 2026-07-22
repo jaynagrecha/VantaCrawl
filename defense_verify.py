@@ -684,14 +684,29 @@ class DefenseTracker:
         return "\n".join(lines)
 
 
-async def probe_defense_fingerprint(client, start_url: str, tracker: DefenseTracker, output_callback=None):
-    """One-shot probe of the home page / a few paths to fingerprint protections early."""
+async def probe_defense_fingerprint(
+    client,
+    start_url: str,
+    tracker: DefenseTracker,
+    output_callback=None,
+    *,
+    skip_static_probes: bool = False,
+):
+    """One-shot probe of the home page / a few paths to fingerprint protections early.
+
+    When Chrome-first is on, callers should set ``skip_static_probes=True`` so we do
+    not fire robots.txt/favicon over plain HTTP (those register in Akamai as
+    "javascript fingerprint not received" / NoScript).
+    """
     tracker.start_url = start_url
     if output_callback:
         output_callback("Checking what protections this server appears to use…")
     parsed = urlparse(start_url)
     origin = f"{parsed.scheme}://{parsed.netloc}"
-    probes = [start_url, origin + "/", origin + "/robots.txt", origin + "/favicon.ico"]
+    if skip_static_probes:
+        probes = [start_url]
+    else:
+        probes = [start_url, origin + "/", origin + "/robots.txt", origin + "/favicon.ico"]
     seen: Set[str] = set()
     for url in probes:
         if url in seen:

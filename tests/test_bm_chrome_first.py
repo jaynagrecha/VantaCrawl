@@ -15,7 +15,7 @@ def test_browser_primary_honored_after_mid_scan_flip(monkeypatch):
 
     def fake_selenium(*_a, **_k):
         calls["selenium"] += 1
-        return "<html>chrome</html>", [{"name": "a", "value": "b"}], []
+        return "<html>chrome</html>", [{"name": "a", "value": "b"}], [], []
 
     monkeypatch.setattr("browser_fetch.fetch_with_selenium", fake_selenium)
     monkeypatch.setattr("browser_fetch.chrome_available", lambda: True)
