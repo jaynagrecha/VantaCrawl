@@ -1360,14 +1360,8 @@ async def _run_security_checks(
     if config.param_discovery:
         stats.parameters.extend(discover_parameters(url, body_text, forms))
     if config.cors_check:
-        # Once per host, plus re-check on auth-like paths (session cookies matter there)
+        # Once per non-static URL per host — ACAO/ACAC is typically origin-wide.
         path_l = (urlparse(url).path or "").lower()
-        auth_like = bool(
-            re.search(
-                r"(?i)/(?:login|signin|auth|oauth|account|api(?:/|$)|graphql|dashboard)",
-                path_l,
-            )
-        )
         static_like = bool(
             re.search(
                 r"(?i)\.(?:css|js|mjs|map|png|jpe?g|gif|svg|ico|woff2?|ttf|webp)(?:$|\?)",
@@ -1375,12 +1369,9 @@ async def _run_security_checks(
             )
         )
         cors_hosts = getattr(stats, "_cors_hosts", set())
-        should_cors = (not static_like) and (
-            auth_like or (host_key and host_key not in cors_hosts)
-        )
+        should_cors = (not static_like) and bool(host_key) and host_key not in cors_hosts
         if should_cors:
-            if host_key and not auth_like:
-                stats._cors_hosts.add(host_key)
+            stats._cors_hosts.add(host_key)
             cors_issue = await check_cors(client, url)
             if cors_issue:
                 sev = "high" if "credentials" in cors_issue.lower() else "medium"

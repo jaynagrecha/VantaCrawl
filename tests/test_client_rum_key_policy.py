@@ -46,15 +46,15 @@ def test_boomr_live_skipped_suppressed():
     assert result.validation == "skipped"
 
 
-def test_google_client_key_still_shown():
-    """Maps/Firebase stay visible — restrictions can fail; unlike Boomr RUM noise."""
+def test_google_client_key_suppressed_unless_live_active():
+    """Maps/Firebase are browser-by-design — suppress static hits (unlike Stripe pk_)."""
     static = assess_secrets_static(
         "Exposed Firebase API Key in response body",
         "medium",
         "AIzaSyAQmcbet1FYuca30mB23_Z_z91Sdt1PsCE",
     )
-    assert static.suppress is False
-    assert static.impact == "limited_impact"
+    assert static.suppress is True
+    assert static.impact == "no_impact"
 
 
 def test_data_api_key_attribute_is_fp_even_outside_input():

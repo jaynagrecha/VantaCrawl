@@ -171,12 +171,23 @@ class CrawlStats:
             host = url
         detail_key = (detail or "").strip().lower()
         evidence_key = (evidence or "").strip().lower()
-        # Host-level dedupe ONLY for header_audit (same missing header site-wide)
+        sev_l = (severity or "").strip().lower()
+        # Evidence label prefix: "js_env_leak: `…`" → "js_env_leak"
+        evidence_label = evidence_key.split(":", 1)[0].strip() if evidence_key else ""
+        # Host-level dedupe for site-wide / inventory noise
         if category == "header_audit":
             dedupe_key = f"{category}|{detail_key}|{host}"
+        elif category == "cors":
+            # Credentialed CORS is origin-wide — one finding per host
+            dedupe_key = f"cors|{host}"
         elif category == "secrets_exposure" and evidence_key:
             # Same secret value = one finding even when product labels differ (Ript vs Text)
             dedupe_key = f"{category}|{host}|{evidence_key}"
+        elif category in ("js_intel", "business_logic") or (
+            category == "mass_assignment" and sev_l == "info"
+        ):
+            # Same intel signal across every JS bundle / page → one per host+label
+            dedupe_key = f"{category}|{host}|{evidence_label or detail_key[:120]}"
         elif evidence_key:
             dedupe_key = f"{category}|{detail_key}|{url}|{evidence_key}"
         else:

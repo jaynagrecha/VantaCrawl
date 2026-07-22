@@ -43,8 +43,9 @@ _OAUTH_PATH_RE = re.compile(
     r"(?i)/(?:oauth|oidc|authorize|auth/realms|sso|saml|connect/authorize)(?:/|$|\?)"
 )
 _HIDDEN_PARAM_RE = re.compile(
-    r"""(?i)['"`](isAdmin|is_admin|debug|role|internal|staff|enabled|isStaff|is_staff|admin)['"`]\s*:"""
+    r"""(?i)['"`](isAdmin|is_admin|debug|role|internal|staff|isStaff|is_staff|admin)['"`]\s*:"""
 )
+# Strong privilege/debug names only — bare "enabled" is ubiquitous UI noise.
 _HIDDEN_PARAM_NAMES = (
     "isAdmin",
     "is_admin",
@@ -52,16 +53,27 @@ _HIDDEN_PARAM_NAMES = (
     "role",
     "internal",
     "staff",
-    "enabled",
     "isStaff",
+    "is_staff",
     "admin",
 )
+# Real feature-flag SDKs only — generic `flags:` / `featureFlags` objects are inventory noise.
 _FEATURE_FLAG_RE = re.compile(
-    r"(?i)(feature[_-]?flag|featureFlags|launchDarkly|split\.io|unleash|flags\s*[:=])"
+    r"(?i)\b(?:launchDarkly|LDClient|SplitFactory|split\.io|unleash(?:-client)?)\b"
 )
+# Require a host-like shape with an env token as a DNS label (not substring of "device").
 _ENV_HINT_RE = re.compile(
-    r"""['"`]((?:https?://)?[a-z0-9.\-]*(?:staging|stg|dev|internal|admin|test|beta|qa)[a-z0-9.\-/]*)['"`]""",
-    re.I,
+    r"""['"`](
+        (?:https?://)?
+        (?:[a-z0-9\-]+\.)*
+        (?:staging|stg|dev|internal|admin|test|beta|qa|uat)
+        (?:[.\-][a-z0-9.\-]+)+
+        (?:/[^\s'"`]*)?
+    )['"`]""",
+    re.I | re.X,
+)
+_ENV_NOISE_RE = re.compile(
+    r"(?i)\b(?:device|devices|developer|development|devtools?|test(?:ing)?id|testdata)\b"
 )
 _WS_RE = re.compile(r"""['"`](wss?://[^'"`\s]{8,200})['"`]""")
 _GRAPHQL_ADMIN_RE = re.compile(
@@ -364,11 +376,15 @@ def scan_hidden_params_in_js(url: str, body_text: str) -> List[Finding]:
     findings: List[Finding] = []
     if not body_text:
         return findings
+    # Prefer object-key shape (`"isAdmin":`) — bare string literals of weak names are noisy.
     found = sorted({m.group(1) for m in _HIDDEN_PARAM_RE.finditer(body_text[:200000])})
     if not found:
-        # also bare string literals of param names near assign
         for name in _HIDDEN_PARAM_NAMES:
-            if re.search(rf"""['"`]{re.escape(name)}['"`]""", body_text[:200000]):
+            if re.search(
+                rf"""['"`]{re.escape(name)}['"`]\s*:""",
+                body_text[:200000],
+                re.I,
+            ):
                 found.append(name)
         found = sorted(set(found))
     if found:
@@ -513,7 +529,10 @@ def scan_business_logic_hints(url: str, body_text: str) -> List[Finding]:
                 _ev("coupon/redeem", label="biz_coupon"),
             )
         )
-    if re.search(r"(?i)(transfer|recipient|send[_-]?money|western.?union)", blob):
+    if re.search(r"(?i)(transfer|recipient|send[_-]?money|western.?union)", blob) and re.search(
+        r"(?i)/(?:transfer|wallet|send(?:-|_ )?money|payout|wire|remit)/",
+        path + " " + blob[:2000],
+    ):
         findings.append(
             (
                 "business_logic",
@@ -686,51 +705,108 @@ async def probe_cloud_urls(client, body_text: str, page_url: str) -> List[Findin
 
 # --- JS frontend intelligence ------------------------------------------------
 
-def scan_js_frontend_intel(url: str, body_text: str) -> List[Finding]:
-    findings: List[Finding] = []
-    if not body_text:
-        return findings
-    text = body_text[:250000]
-    mines = []
-    if re.search(r"\bfetch\s*\(", text):
-        mines.append("fetch()")
-    if re.search(r"\baxios\s*\.", text):
-        mines.append("axios()")
-    if re.search(r"(?i)graphql|gql`", text):
-        mines.append("graphql")
-    if mines:
-        findings.append(
-            (
-                "js_intel",
-                "info",
-                f"Client bundle uses network helpers: {', '.join(mines)}",
-                _ev(", ".join(mines), label="js_network"),
-            )
-        )
-    if _FEATURE_FLAG_RE.search(text):
-        findings.append(
-            (
-                "js_intel",
-                "info",
-                "Feature-flag tooling referenced in client bundle",
-                _ev("feature flag", label="js_feature_flag"),
-            )
-        )
-    envs = []
-    for m in _ENV_HINT_RE.finditer(text):
-        val = m.group(1)
-        if any(x in val.lower() for x in ("staging", "stg", "dev", "internal", "admin", "test", "beta")):
-            envs.append(val)
-        if len(envs) >= 6:
+def _collect_env_host_candidates(body_text: str, *, limit: int = 6) -> List[str]:
+    """Host-like staging/dev/internal strings — excludes device/CSS false positives."""
+    text = body_text or ""
+    out: List[str] = []
+    for m in _ENV_HINT_RE.finditer(text[:250000]):
+        val = (m.group(1) or "").strip()
+        if not val or _ENV_NOISE_RE.search(val):
+            continue
+        low = val.lower()
+        # Must look like a host/URL, not a CSS/media token
+        if "://" not in low and "." not in low.split("/", 1)[0]:
+            continue
+        if low not in {x.lower() for x in out}:
+            out.append(val)
+        if len(out) >= limit:
             break
-    if envs:
+    return out
+
+
+def scan_js_frontend_intel(url: str, body_text: str) -> List[Finding]:
+    """Frontend recon — intentionally sparse.
+
+    Bare ``fetch()`` / ``axios`` / ``graphql`` string hits are every SPA and are
+    not findings. Env/internal hosts are handled by ``probe_js_env_hosts``.
+    Feature-flag SDK mentions alone are not reported (recon inventory only).
+    """
+    return []
+
+
+async def probe_js_env_hosts(client, url: str, body_text: str, *, max_hosts: int = 3) -> List[Finding]:
+    """GET referenced env/internal hosts; 401/403/400 means referenced-but-denied, not exposed."""
+    findings: List[Finding] = []
+    candidates = _collect_env_host_candidates(body_text or "", limit=max_hosts)
+    if not candidates:
+        return findings
+    probed: List[str] = []
+    denied: List[str] = []
+    open_ok: List[str] = []
+    for raw in candidates:
+        target = raw.strip()
+        if not target.lower().startswith(("http://", "https://")):
+            target = "https://" + target.lstrip("/")
+        try:
+            parsed = urlparse(target)
+            if not parsed.netloc or "." not in parsed.netloc:
+                continue
+            # Only probe the origin root — avoid hammering deep paths from minified JS
+            origin = f"{parsed.scheme}://{parsed.netloc}/"
+            resp = await client.get(origin, timeout=8, follow_redirects=True)
+            code = int(getattr(resp, "status_code", 0) or 0)
+            probed.append(f"{parsed.netloc}→{code}")
+            if code in (400, 401, 403, 404):
+                denied.append(f"{parsed.netloc} (HTTP {code})")
+            elif 200 <= code < 400:
+                open_ok.append(f"{parsed.netloc} (HTTP {code})")
+        except Exception:
+            denied.append(f"{urlparse(target).netloc or target} (unreachable)")
+        if len(probed) >= max_hosts:
+            break
+    if not probed:
+        return findings
+    if open_ok and not denied:
         findings.append(
             (
                 "js_intel",
                 gate_severity("low", verification="verified"),
-                "Non-prod/internal host or path strings in bundle: "
-                + ", ".join(list(dict.fromkeys(envs))[:5]),
-                _ev(", ".join(list(dict.fromkeys(envs))[:5]), label="js_env_leak"),
+                "Non-prod/internal hosts referenced in bundle and reachable anonymously: "
+                + ", ".join(open_ok[:5]),
+                _ev(", ".join(open_ok[:5]), label="js_env_leak"),
+                _meta(
+                    "verified",
+                    "low",
+                    confidence="medium",
+                    confidence_reason="anonymous GET succeeded",
+                ),
+            )
+        )
+    elif open_ok and denied:
+        findings.append(
+            (
+                "js_intel",
+                "info",
+                "Non-prod/internal hosts in bundle — some reachable, some denied: "
+                + ", ".join((open_ok + denied)[:6]),
+                _ev(", ".join((open_ok + denied)[:6]), label="js_env_leak"),
+                _meta("verified", "info", confidence="medium", confidence_reason="mixed probe results"),
+            )
+        )
+    else:
+        findings.append(
+            (
+                "js_intel",
+                "info",
+                "Non-prod/internal hosts referenced in bundle but access denied to anonymous scanners: "
+                + ", ".join(denied[:5]),
+                _ev(", ".join(denied[:5]), label="js_env_leak"),
+                _meta(
+                    "verified",
+                    "info",
+                    confidence="high",
+                    confidence_reason="probe returned 401/403/400/unreachable",
+                ),
             )
         )
     return findings
@@ -995,4 +1071,5 @@ async def run_tier_active(client, url: str, body_text: str = "") -> List[Finding
     findings.extend(await probe_price_manipulation(client, url))
     findings.extend(await probe_race_conditions(client, url, parallelism=10))
     findings.extend(await probe_cloud_urls(client, body_text or "", url))
+    findings.extend(await probe_js_env_hosts(client, url, body_text or ""))
     return findings

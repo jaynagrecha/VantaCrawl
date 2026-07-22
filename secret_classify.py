@@ -755,7 +755,8 @@ def assignment_note(body_text: str, start: int, end: int, value: str) -> str:
 
 # Browser RUM / analytics / telemetry keys designed to ship in JS.
 # These have no stealable-credential value → suppress from findings entirely.
-# (Google Maps/Firebase AIza keys are different: keep visible; restrictions can fail.)
+# Google Maps/Firebase AIza keys are also browser-by-design — suppress unless a
+# live probe proves the key is unrestricted / broadly usable (see finding_impact).
 _CLIENT_RUM_LABEL_MARKERS = (
     "boomr",
     "boomerang",
@@ -790,6 +791,24 @@ def is_browser_rum_telemetry_key(label: str) -> bool:
     return False
 
 
+def is_google_browser_api_key(label: str, evidence: str = "") -> bool:
+    """True for Maps/Firebase/Google Cloud ``AIza…`` keys meant for browser embeds."""
+    low = (label or "").lower()
+    ev = (evidence or "").strip()
+    if ev.startswith("AIza"):
+        return True
+    return any(
+        x in low
+        for x in (
+            "maps api",
+            "google cloud / maps",
+            "firebase api",
+            "google maps",
+            "google cloud api",
+        )
+    )
+
+
 def is_client_public_key(label: str, evidence: str = "") -> bool:
     """True for intentionally browser-embeddable / publishable credentials."""
     low = (label or "").lower()
@@ -800,13 +819,7 @@ def is_client_public_key(label: str, evidence: str = "") -> bool:
         return True
     if ev.startswith("pk_live_") or ev.startswith("pk_test_"):
         return True
-    if (
-        ev.startswith("AIza")
-        or "maps api" in low
-        or "google cloud / maps" in low
-        or "firebase api" in low
-        or "google maps" in low
-    ):
+    if is_google_browser_api_key(label, evidence):
         return True
     if is_browser_rum_telemetry_key(label):
         return True
@@ -816,19 +829,18 @@ def is_client_public_key(label: str, evidence: str = "") -> bool:
 def severity_for_kind(label: str, default: str = "high", evidence: str = "") -> str:
     """Static severity before live checks.
 
-    Browser Google/Firebase ``AIza…`` keys default to **low** — they are often
-    intentional client keys. Live validation may raise to medium when a probe
-    proves the key is broadly usable / unrestricted.
+    Browser Google/Firebase ``AIza…`` keys default to **info** and are suppressed
+    from reports unless live validation proves unrestricted use (then medium).
     """
     low = (label or "").lower()
     ev = (evidence or "").strip()
     if is_client_public_key(label, evidence):
-        # Stripe publishable stays medium (known payment surface); Google/AIza stays low
+        # Stripe publishable stays medium (known payment surface); Google/AIza stays info
         # until live proof of unrestricted use.
         if "publishable" in low or ev.startswith("pk_live_") or ev.startswith("pk_test_"):
             return "medium"
-        if ev.startswith("AIza") or "maps" in low or "google" in low or "firebase" in low:
-            return "low"
+        if is_google_browser_api_key(label, evidence):
+            return "info"
         return "low"
     if any(x in low for x in ("password", "private key", "secret access", "client secret", "auth token")):
         return "critical" if "publishable" not in low else "medium"

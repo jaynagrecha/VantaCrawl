@@ -41,19 +41,19 @@ def test_firebase_context_labels_firebase_api_key():
     assert label == "Firebase API Key"
 
 
-def test_aiza_static_severity_is_low():
-    assert severity_for_kind("Google Cloud / Maps API Key", "high", AIZA) == "low"
+def test_aiza_static_suppressed():
+    assert severity_for_kind("Google Cloud / Maps API Key", "high", AIZA) == "info"
     static = assess_secrets_static(
         "Exposed Firebase API Key in response body",
         "medium",
         AIZA,
     )
     assert static.role == "client_public_key"
-    assert static.impact == "limited_impact"
-    assert static.severity == "low"
+    assert static.suppress is True
+    assert static.severity == "info"
 
 
-def test_aiza_live_restricted_is_info_not_possible_credential():
+def test_aiza_live_restricted_is_suppressed():
     class FakeResp:
         def __init__(self, status_code, payload=None):
             self.status_code = status_code
@@ -80,9 +80,8 @@ def test_aiza_live_restricted_is_info_not_possible_credential():
         )
     )
     assert result.role == "client_public_key"
-    assert result.impact == "limited_impact"
+    assert result.suppress is True
     assert result.severity == "info"
-    assert result.validation == "unverified"
 
 
 def test_aiza_live_active_stays_medium():
