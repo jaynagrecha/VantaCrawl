@@ -16,6 +16,17 @@ class CrawlStats:
     finished_at: Optional[float] = None
     pages_crawled: int = 0
     links_found: int = 0
+    # Mapper-quality counters (invariants: raw >= unique >= queued-ish)
+    duplicates_skipped: int = 0
+    out_of_scope_skipped: int = 0
+    non_http_skipped: int = 0
+    query_variants_skipped: int = 0
+    static_assets_recorded: int = 0
+    soft_404s_filtered: int = 0
+    forms_deduped: int = 0
+    requests_queued: int = 0
+    static_asset_urls: List[str] = field(default_factory=list)
+    _form_keys_seen: Set[str] = field(default_factory=set)
     enum_hits: int = 0
     enum_words_tested: int = 0
     enum_words_total: int = 0
@@ -435,6 +446,14 @@ class CrawlStats:
             "elapsed_seconds": round(elapsed, 1),
             "pages_crawled": self.pages_crawled,
             "links_found": self.links_found,
+            "duplicates_skipped": self.duplicates_skipped,
+            "out_of_scope_skipped": self.out_of_scope_skipped,
+            "non_http_skipped": self.non_http_skipped,
+            "query_variants_skipped": self.query_variants_skipped,
+            "static_assets_recorded": self.static_assets_recorded,
+            "soft_404s_filtered": self.soft_404s_filtered,
+            "forms_deduped": self.forms_deduped,
+            "requests_queued": self.requests_queued,
             "enum_hits": self.enum_hits,
             "enum_words_tested": self.enum_words_tested,
             "enum_words_total": self.enum_words_total,

@@ -344,6 +344,15 @@ async def run_full_crawl_async(
 
         pause_controller.on_resume(_apply_live_after_resume)
 
+        from crawl_url_policy import QueryVariantTracker
+
+        query_tracker = QueryVariantTracker(
+            max_values_per_parameter=int(getattr(config, "max_values_per_parameter", 2) or 2),
+            max_query_variants_per_endpoint=int(
+                getattr(config, "max_query_variants_per_endpoint", 3) or 3
+            ),
+        )
+
         async def safe_enqueue(url, *, link_depth=0):
             async with crawl_state_lock:
                 return enqueue_discovered_url(
@@ -357,6 +366,11 @@ async def run_full_crawl_async(
                     link_depth=link_depth,
                     max_link_depth=config.link_depth_limit,
                     link_depths=link_depths,
+                    query_tracker=query_tracker,
+                    skip_static_pages=bool(getattr(config, "skip_static_page_enqueue", True)),
+                    start_url=config.start_url,
+                    scope_mode=str(getattr(config, "scope_mode", "allowed-subdomains") or "allowed-subdomains"),
+                    base_url_for_canonical=config.start_url,
                 )
 
         if defense is not None and await running():
@@ -618,9 +632,29 @@ async def run_full_crawl_async(
 
                 forms = extract_forms(body_text, current_url, content_type) if config.form_discovery else []
                 if forms:
-                    stats.forms.extend(forms)
-                    if config.form_submit_probe:
-                        await _probe_form_actions(client, forms, output_callback, stats)
+                    # Deduplicate by form_key (method+action+field names/types); never CSRF values
+                    unique_forms = []
+                    for form in forms:
+                        key = form.get("form_key") or ""
+                        if key and key in stats._form_keys_seen:
+                            stats.forms_deduped += 1
+                            continue
+                        if key:
+                            stats._form_keys_seen.add(key)
+                        unique_forms.append(form)
+                    stats.forms.extend(unique_forms)
+                    if config.form_submit_probe and unique_forms:
+                        await _probe_form_actions(
+                            client,
+                            unique_forms,
+                            output_callback,
+                            stats,
+                            start_url=config.start_url,
+                            scope_mode=str(
+                                getattr(config, "scope_mode", "allowed-subdomains")
+                                or "allowed-subdomains"
+                            ),
+                        )
 
                 login_why = detect_login_surface(current_url, body_text, forms)
                 if login_why:
@@ -1430,11 +1464,33 @@ async def _run_security_checks(
                 pass
 
 
-async def _probe_form_actions(client, forms, output_callback, stats):
+async def _probe_form_actions(
+    client,
+    forms,
+    output_callback,
+    stats,
+    *,
+    start_url: str = "",
+    scope_mode: str = "allowed-subdomains",
+):
+    from crawl_url_policy import host_in_exact_origin_scope, resolve_http_target
+
+    seen_keys = set()
     for form in forms[:10]:
-        action = form.get("action")
+        action = resolve_http_target(form.get("action") or "", start_url or "")
         if not action or form.get("method") != "GET":
             continue
+        mode = (scope_mode or "").strip().lower()
+        if start_url and mode in ("exact-origin", "exact_origin"):
+            if not host_in_exact_origin_scope(action, start_url):
+                stats.out_of_scope_skipped += 1
+                output_callback(f"[SKIP][OUT_OF_SCOPE] form action={action}")
+                continue
+        key = form.get("form_key") or action
+        if key in seen_keys:
+            stats.forms_deduped += 1
+            continue
+        seen_keys.add(key)
         try:
             response = await client.get(action, timeout=10)
             # Inventory / log only — HTTP status of a GET form is not a vulnerability
