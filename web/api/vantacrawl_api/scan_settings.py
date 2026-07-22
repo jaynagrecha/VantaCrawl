@@ -538,6 +538,7 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "deep_mirror",
             "browser_primary",
             "browser_on_challenge",
+            "bm_cookie_wait_seconds",
             "auto_sync_cookies",
             "screenshot_capture",
         ],
