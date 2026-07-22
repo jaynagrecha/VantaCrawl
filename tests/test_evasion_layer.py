@@ -69,6 +69,23 @@ def test_detect_rate_limit_and_cloudflare():
     assert detect_challenge(503, "checking your browser before access") == "checking your browser"
 
 
+def test_detect_akamai_rate_burst():
+    body = (
+        "Access Denied. Your IP has been flagged as DoS traffic under the rule Rate-Burst. "
+        "AkamaiGHost / errors.edgesuite.net"
+    )
+    assert detect_challenge(403, body) == "akamai_rate_burst"
+
+
+def test_rate_burst_backoff_uses_harder_path():
+    session = EvasionSession(EvasionConfig(enabled=True, level="stealth", adaptive_backoff=True))
+    body = "Akamai Rate-Burst DoS traffic denied"
+    session.after_request("https://lab.local/x", 403, body)
+    assert session.last_challenge == "akamai_rate_burst"
+    # Harder than mild WAF 403 pacing (0.5 * 2^1 = 1s first hit → rate path 1*2^1=2s)
+    assert session.backoff_remaining() > 0
+
+
 def test_detect_akamai_soft_and_hard():
     assert detect_challenge(403, "AkamaiGHost access denied") in ("akamai", "akamai_block")
     soft = detect_challenge(
