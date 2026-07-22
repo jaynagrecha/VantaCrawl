@@ -21,6 +21,7 @@ class CrawlStats:
     out_of_scope_skipped: int = 0
     non_http_skipped: int = 0
     query_variants_skipped: int = 0
+    route_variants_skipped: int = 0
     static_assets_recorded: int = 0
     soft_404s_filtered: int = 0
     forms_deduped: int = 0
@@ -450,6 +451,7 @@ class CrawlStats:
             "out_of_scope_skipped": self.out_of_scope_skipped,
             "non_http_skipped": self.non_http_skipped,
             "query_variants_skipped": self.query_variants_skipped,
+            "route_variants_skipped": self.route_variants_skipped,
             "static_assets_recorded": self.static_assets_recorded,
             "soft_404s_filtered": self.soft_404s_filtered,
             "forms_deduped": self.forms_deduped,

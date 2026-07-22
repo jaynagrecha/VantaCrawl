@@ -344,7 +344,7 @@ async def run_full_crawl_async(
 
         pause_controller.on_resume(_apply_live_after_resume)
 
-        from crawl_url_policy import QueryVariantTracker
+        from crawl_url_policy import QueryVariantTracker, RouteTemplateTracker
 
         query_tracker = QueryVariantTracker(
             max_values_per_parameter=int(getattr(config, "max_values_per_parameter", 2) or 2),
@@ -353,6 +353,17 @@ async def run_full_crawl_async(
             ),
         )
         stats.query_variant_tracker = query_tracker  # type: ignore[attr-defined]
+        route_tracker = RouteTemplateTracker(
+            max_instances_per_route_template=int(
+                getattr(config, "max_instances_per_route_template", 3) or 3
+            ),
+            max_locales_per_route_template=int(
+                getattr(config, "max_locales_per_route_template", 2) or 2
+            ),
+            same_locale_only=bool(getattr(config, "same_locale_only", True)),
+            start_url=config.start_url,
+        )
+        stats.route_template_tracker = route_tracker  # type: ignore[attr-defined]
 
         async def safe_enqueue(url, *, link_depth=0):
             async with crawl_state_lock:
@@ -368,6 +379,7 @@ async def run_full_crawl_async(
                     max_link_depth=config.link_depth_limit,
                     link_depths=link_depths,
                     query_tracker=query_tracker,
+                    route_tracker=route_tracker,
                     skip_static_pages=bool(getattr(config, "skip_static_page_enqueue", True)),
                     start_url=config.start_url,
                     scope_mode=str(getattr(config, "scope_mode", "allowed-subdomains") or "allowed-subdomains"),

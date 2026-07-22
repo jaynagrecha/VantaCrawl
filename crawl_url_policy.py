@@ -185,19 +185,28 @@ def resource_identity(url: str) -> str:
         return url
 
 
+def is_page_data_json_url(url: str) -> bool:
+    """Gatsby/Next page-data JSON — inventory / extract later; never browser HTML queue."""
+    try:
+        path = (urlsplit(url).path or "").lower()
+    except Exception:
+        return False
+    return "/page-data/" in path and path.endswith(".json")
+
+
 def is_analysis_asset_url(url: str) -> bool:
-    """JS/JSON/XML/sourcemap — still fetched for route/secret extractors."""
-    if not url:
+    """JS/JSON/XML/sourcemap — still fetched for route/secret extractors.
+
+    Exception: page-data.json is inventoried but not enqueued as a crawl page
+    (floods the frontier on locale/destination sites without adding HTML surface).
+    """
+    if not url or is_page_data_json_url(url):
         return False
     try:
         path = (urlsplit(url).path or "").lower()
     except Exception:
         return False
     if ANALYSIS_EXT_RE.search(path):
-        return True
-    if path.endswith("/page-data.json") or (
-        "/page-data/" in path and path.endswith(".json")
-    ):
         return True
     return False
 
@@ -210,6 +219,8 @@ def is_static_asset_url(url: str) -> bool:
         path = (urlsplit(url).path or "").lower()
     except Exception:
         return False
+    if is_page_data_json_url(url):
+        return True
     if STATIC_EXT_RE.search(path):
         return True
     if any(m in path for m in STATIC_PATH_MARKERS):
@@ -220,7 +231,9 @@ def is_static_asset_url(url: str) -> bool:
 
 
 def is_non_analysis_static_url(url: str) -> bool:
-    """Images/fonts/CSS/media — inventory/mirror only; do not enqueue as crawl pages."""
+    """Images/fonts/CSS/media/page-data — inventory/mirror only; do not enqueue as crawl pages."""
+    if is_page_data_json_url(url):
+        return True
     if not url or is_analysis_asset_url(url):
         return False
     try:
@@ -248,8 +261,10 @@ def is_non_analysis_static_url(url: str) -> bool:
 def is_html_crawl_candidate(url: str) -> bool:
     """False only for assets that should not enter the fetch queue at all.
 
-    Analysis assets (JS/JSON/XML) remain True so extractors keep full power.
+    Analysis assets (JS/XML, non-page-data JSON) remain True so extractors keep full power.
     """
+    if is_page_data_json_url(url):
+        return False
     if is_analysis_asset_url(url):
         return True
     if is_non_analysis_static_url(url):
@@ -268,6 +283,171 @@ def is_html_crawl_candidate(url: str) -> bool:
             return True
         return False
     return True
+
+
+def discovery_kind(url: str) -> str:
+    """Label for structured discovery logs (not a security finding)."""
+    try:
+        path = (urlsplit(url).path or "").lower()
+    except Exception:
+        path = ""
+    if is_page_data_json_url(url) or path.endswith(".json"):
+        return "JSON_RESOURCE"
+    if path.endswith((".js", ".mjs", ".cjs", ".map")):
+        return "SCRIPT_REFERENCE"
+    if "sitemap" in path and path.endswith((".xml", ".gz")):
+        return "SITEMAP"
+    if path.endswith((".xml",)):
+        return "XML_RESOURCE"
+    if path.endswith((".html", ".htm", ".php", ".asp", ".aspx", ".jsp")) or path.endswith("/"):
+        return "HTML_PAGE"
+    return "ENDPOINT"
+
+
+# Common BCP-47 language tags used as path segments (not country codes like "be")
+KNOWN_LOCALES = frozenset(
+    {
+        "en",
+        "fr",
+        "nl",
+        "de",
+        "es",
+        "it",
+        "pt",
+        "ja",
+        "ko",
+        "zh",
+        "ar",
+        "ru",
+        "uk",
+        "pl",
+        "cs",
+        "sk",
+        "hu",
+        "ro",
+        "bg",
+        "el",
+        "tr",
+        "sv",
+        "da",
+        "no",
+        "fi",
+        "he",
+        "th",
+        "vi",
+        "id",
+        "ms",
+        "hi",
+        "ka",
+        "en-us",
+        "en-gb",
+        "pt-br",
+        "zh-cn",
+        "zh-tw",
+    }
+)
+
+_SEND_MONEY_RE = re.compile(r"(?i)^send-money-to-(.+)$")
+_CURRENCY_PAIR_RE = re.compile(r"(?i)^([a-z]{3})-to-([a-z]{3})-rate$")
+_ID_SEG_RE = re.compile(r"(?i)^(?:[0-9a-f]{8,}|[0-9]{4,})$")
+
+
+def extract_path_locale(url: str) -> str:
+    """First known locale segment in the path, if any."""
+    try:
+        segments = [s for s in (urlsplit(url).path or "/").split("/") if s]
+    except Exception:
+        return ""
+    for seg in segments:
+        base = seg.split(".", 1)[0].lower()
+        if base in KNOWN_LOCALES:
+            return base
+    return ""
+
+
+def route_template_key(url: str) -> str:
+    """Collapse locale/destination/currency families into one route key."""
+    try:
+        parts = urlsplit(url)
+        segments = [s for s in (parts.path or "/").split("/") if s]
+        out: list[str] = []
+        for seg in segments:
+            if "." in seg:
+                base, ext = seg.rsplit(".", 1)
+                ext = "." + ext
+            else:
+                base, ext = seg, ""
+            low = base.lower()
+            if low in KNOWN_LOCALES:
+                out.append("{locale}" + ext)
+                continue
+            m = _SEND_MONEY_RE.match(base)
+            if m:
+                out.append("send-money-to-{destination}" + ext)
+                continue
+            m = _CURRENCY_PAIR_RE.match(base)
+            if m:
+                out.append("{currency-pair}-rate" + ext)
+                continue
+            if _ID_SEG_RE.match(low):
+                out.append("{id}" + ext)
+                continue
+            out.append(seg)
+        path = "/" + "/".join(out)
+        host = (parts.netloc or "").lower()
+        return f"{(parts.scheme or 'https').lower()}://{host}{path}"
+    except Exception:
+        return url
+
+
+class RouteTemplateTracker:
+    """Cap fetch queue for equivalent route families; always keep URL inventory."""
+
+    def __init__(
+        self,
+        *,
+        max_instances_per_route_template: int = 3,
+        max_locales_per_route_template: int = 2,
+        same_locale_only: bool = True,
+        start_url: str = "",
+    ):
+        self.max_instances = max(1, int(max_instances_per_route_template or 3))
+        self.max_locales = max(1, int(max_locales_per_route_template or 2))
+        self.same_locale_only = bool(same_locale_only)
+        self.seed_locale = extract_path_locale(start_url) if start_url else ""
+        self._queued_counts: Dict[str, int] = {}
+        self._queued_locales: Dict[str, Set[str]] = {}
+        self._inventory: Dict[str, Set[str]] = {}
+        self.skipped_variants = 0
+        self.observed = 0
+
+    def observe(self, url: str) -> str:
+        key = route_template_key(url)
+        self._inventory.setdefault(key, set()).add(url)
+        self.observed += 1
+        return key
+
+    def inventory_counts(self) -> Dict[str, int]:
+        return {k: len(v) for k, v in self._inventory.items()}
+
+    def allow(self, url: str) -> bool:
+        """True if this URL should enter the fetch queue."""
+        key = self.observe(url)
+        loc = extract_path_locale(url)
+        if self.same_locale_only and self.seed_locale and loc and loc != self.seed_locale:
+            self.skipped_variants += 1
+            return False
+        locales = self._queued_locales.setdefault(key, set())
+        if loc and loc not in locales and len(locales) >= self.max_locales:
+            self.skipped_variants += 1
+            return False
+        if self._queued_counts.get(key, 0) >= self.max_instances:
+            self.skipped_variants += 1
+            return False
+        self._queued_counts[key] = self._queued_counts.get(key, 0) + 1
+        if loc:
+            locales.add(loc)
+        return True
 
 
 class QueryVariantTracker:

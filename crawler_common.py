@@ -1737,18 +1737,22 @@ def enqueue_discovered_url(
     link_depths=None,
     *,
     query_tracker=None,
+    route_tracker=None,
     skip_static_pages=False,
     start_url="",
     scope_mode="allowed-subdomains",
     base_url_for_canonical="",
 ):
-    """Enqueue a crawl candidate with scheme/scope/query/static gates.
+    """Enqueue a crawl candidate with scheme/scope/query/static/route gates.
 
     Updates ``discovered`` *before* queue insert (atomic when caller holds a lock).
+    Caps trim the *fetch queue* only — inventory of observed URLs is preserved.
     """
     from crawl_url_policy import (
+        discovery_kind,
         host_in_exact_origin_scope,
         is_html_crawl_candidate,
+        is_page_data_json_url,
         is_static_asset_url,
         resolve_http_target,
         strip_tracking_params,
@@ -1783,10 +1787,16 @@ def enqueue_discovered_url(
         if stats is not None:
             if hasattr(stats, "static_assets_recorded"):
                 stats.static_assets_recorded += 1
-            if hasattr(stats, "static_asset_urls") and is_static_asset_url(crawl_url):
+            if hasattr(stats, "static_asset_urls") and (
+                is_static_asset_url(crawl_url) or is_page_data_json_url(crawl_url)
+            ):
                 if crawl_url not in stats.static_asset_urls and len(stats.static_asset_urls) < 5000:
                     stats.static_asset_urls.append(crawl_url)
-        # Still mark seen so we do not re-process; do not BFS as a page
+            if hasattr(stats, "discovered_urls"):
+                stats.discovered_urls.add(crawl_url)
+        kind = discovery_kind(crawl_url)
+        if kind in ("JSON_RESOURCE", "SCRIPT_REFERENCE", "SITEMAP", "XML_RESOURCE"):
+            output_callback(f"[DISCOVERY][{kind}] {crawl_url} (recorded, not queued)")
         if crawl_url not in discovered:
             discovered.add(crawl_url)
         return False
@@ -1796,8 +1806,16 @@ def enqueue_discovered_url(
         if stats is not None and hasattr(stats, "query_variants_skipped"):
             stats.query_variants_skipped += 1
         if stats is not None and hasattr(stats, "discovered_urls"):
-            # Keep the URL visible in discovery inventory even when not queued
             stats.discovered_urls.add(crawl_url)
+        return False
+
+    if route_tracker is not None and not route_tracker.allow(crawl_url):
+        if stats is not None and hasattr(stats, "route_variants_skipped"):
+            stats.route_variants_skipped += 1
+        if stats is not None and hasattr(stats, "discovered_urls"):
+            stats.discovered_urls.add(crawl_url)
+        kind = discovery_kind(crawl_url)
+        output_callback(f"[FILTER][ROUTE_SAMPLE] {kind} {crawl_url}")
         return False
 
     if crawl_url in discovered:
@@ -1807,7 +1825,8 @@ def enqueue_discovered_url(
     discovered.add(crawl_url)
     if link_depths is not None:
         link_depths[crawl_url] = link_depth
-    output_callback(f"[DISCOVERY][HTML_LINK] {crawl_url}")
+    kind = discovery_kind(crawl_url)
+    output_callback(f"[DISCOVERY][{kind}] {crawl_url}")
     log_to_file(output_file_path, crawl_url)
     if stats is not None:
         stats.links_found += 1

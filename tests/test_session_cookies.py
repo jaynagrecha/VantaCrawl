@@ -6,6 +6,20 @@ from browser_fetch import _response_looks_challenged
 from session_cookies import SessionCookieStore
 
 
+def test_cookie_store_reports_new_vs_changed():
+    store = SessionCookieStore()
+    changed, new_names, _ = store.ingest_selenium_cookies(
+        [{"name": "_abck", "value": "a", "domain": "ex.com"}],
+        "https://ex.com/",
+    )
+    assert changed == 1 and new_names == ["_abck"]
+    changed2, new2, ch2 = store.ingest_selenium_cookies(
+        [{"name": "_abck", "value": "b", "domain": "ex.com"}],
+        "https://ex.com/",
+    )
+    assert changed2 == 1 and new2 == [] and ch2 == ["_abck"]
+
+
 def test_cookie_store_per_host_and_header():
     store = SessionCookieStore()
     store.load_cookie_string("seed=1; theme=dark")
