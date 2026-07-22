@@ -356,7 +356,20 @@ def simplify_log_line(message: str) -> str:
         (r"^VHOST hit: (.+) \[(\d+)\] size=(\d+)$", r"Found alternate site name: \1 (HTTP \2)"),
         (r"^S3 bucket: (.+) \[(\d+)\]$", r"Possible cloud storage bucket: \1"),
         (r"^GCS bucket: (.+) \[(\d+)\]$", r"Possible Google Cloud bucket: \1"),
-        (r"^Hit follow-up scan failed: (.+) \((.+)\)$", r"Could not run extra checks on \1 — \2"),
+        (
+            r"^Hit follow-up scan failed: (\S+) \((.+)\)$",
+            lambda m: (
+                f"Could not run extra checks on {m.group(1)} — "
+                + (
+                    "connection timed out (curl 28); follow-up skipped so directory scan can continue"
+                    if (
+                        "timed out" in m.group(2).lower()
+                        or ("curl" in m.group(2).lower() and "28" in m.group(2))
+                    )
+                    else sanitize_error_message(m.group(2))
+                )
+            ),
+        ),
         (r"^Form probe: (.+) -> (\d+)$", r"Tested form at \1 (response \2)"),
         (r"^Form probe failed: (.+) \((.+)\)$", r"Form test failed at \1 — \2"),
         (r"^Paused\.$", "Scan paused."),

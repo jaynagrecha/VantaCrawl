@@ -923,33 +923,26 @@ async def _run_full_enum_suite(
         output_callback("Directory enumeration skipped (directory enum is off).")
         return
 
+    # Per-hit follow-up must not block the wordlist. Re-GETs were timing out
+    # (curl 28 / 12s) on Netlify soft-404s and stalling directory enum.
+    from enum_followup import EnumFollowupScheduler
+
+    followup = EnumFollowupScheduler(
+        client=client,
+        config=config,
+        stats=stats,
+        output_callback=output_callback,
+        run_security=_run_security_checks,
+        extract_forms=extract_forms,
+        concurrency=2,
+        timeout_s=5.0,
+        max_followups=40,
+        max_consecutive_timeouts=4,
+    )
+
     async def on_enum_hit(probe):
-        if not (config.enum_auto_crawl_hits or config.enum_auto_vuln_scan):
-            return
-        try:
-            response = await client.get(probe.url, timeout=12, follow_redirects=True)
-            body_text = (response.content or b"").decode("utf-8", errors="replace")
-            resp_headers = dict(response.headers)
-            resp_headers["_status_code"] = str(response.status_code)
-            forms = extract_forms(body_text, probe.url, resp_headers.get("content-type", "")) if body_text else []
-            if config.enum_auto_vuln_scan:
-                prev = config.security_scan
-                config.security_scan = True
-                await _run_security_checks(
-                    client,
-                    config,
-                    stats,
-                    probe.url,
-                    body_text,
-                    forms,
-                    resp_headers,
-                    output_callback,
-                    status_code=response.status_code,
-                    raw_body=response.content or b"",
-                )
-                config.security_scan = prev
-        except Exception as error:
-            output_callback(f"Hit follow-up scan failed: {probe.url} ({error})")
+        # Schedule only — never await the network work here (keeps enum moving).
+        followup.schedule(probe)
 
     # Full Audit / Site Map enable wordlist+mutations by default. Skip the heavy
     # probe loop only when the user turned both off in expert settings.
@@ -974,6 +967,7 @@ async def _run_full_enum_suite(
             merge_wordlists_fn=merge_wordlists,
             on_hit_callback=on_enum_hit,
         )
+        await followup.drain(timeout=45.0)
     else:
         output_callback("Directory enum skipped (wordlist, mutations, and smart order are off).")
 
