@@ -31,9 +31,11 @@ def test_evasion_headers_include_full_client_hints_and_sec_fetch():
     headers = session.build_headers("https://lab.local/admin", is_navigation=True)
     assert f"Chrome/{CHROME_MAJOR}" in headers["User-Agent"]
     assert "Sec-CH-UA" in headers
-    assert "Sec-CH-UA-Full-Version-List" in headers
-    assert "Sec-CH-UA-Platform" in headers
     assert "Sec-CH-UA-Mobile" in headers
+    assert "Sec-CH-UA-Platform" in headers
+    # High-entropy hints stay off until Accept-CH (real Chrome behaviour)
+    assert "Sec-CH-UA-Full-Version-List" not in headers
+    assert "Sec-CH-UA-Arch" not in headers
     assert headers.get("Sec-Fetch-Mode") == "navigate"
     assert headers.get("Sec-Fetch-Dest") == "document"
     assert headers.get("Accept-Language")
@@ -41,6 +43,20 @@ def test_evasion_headers_include_full_client_hints_and_sec_fetch():
     assert headers.get("Connection") == "keep-alive"
     assert "Accept-CH" not in headers
     assert "Linux" not in headers["User-Agent"]
+    assert "Macintosh" not in headers["User-Agent"]
+    assert headers.get("Sec-CH-UA-Platform") == '"Windows"'
+
+    # After Accept-CH, high-entropy hints appear
+    session.after_request(
+        "https://lab.local/admin",
+        200,
+        "",
+        headers={"Accept-CH": "Sec-CH-UA-Full-Version-List, Sec-CH-UA-Arch, Sec-CH-UA-Bitness"},
+    )
+    headers2 = session.build_headers("https://lab.local/next", is_navigation=True)
+    assert "Sec-CH-UA-Full-Version-List" in headers2
+    assert "Sec-CH-UA-Arch" in headers2
+    assert "Sec-CH-UA-Bitness" in headers2
 
 
 def test_non_navigation_still_sends_sec_fetch():
