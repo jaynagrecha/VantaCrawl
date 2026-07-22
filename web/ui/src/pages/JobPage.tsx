@@ -595,7 +595,12 @@ export default function JobPage() {
                 <ul style={{ fontSize: ".85rem", maxHeight: 240, overflow: "auto", paddingLeft: "1.1rem" }}>
                   {findings.map((f, i) => {
                     const secretKey = `${f.url || ""}-${i}`;
-                    const hasSecret = Boolean(f.evidence_full || f.evidence_masked);
+                    const isSecretCategory =
+                      f.category === "secrets_exposure" || Boolean(f.secret_type);
+                    const hasEvidence = Boolean(f.evidence_full || f.evidence_masked);
+                    const patternEvidence = !isSecretCategory
+                      ? f.evidence_full || f.evidence_masked || ""
+                      : "";
                     const shown = revealedSecrets[secretKey]
                       ? f.evidence_full || f.evidence_masked || ""
                       : f.evidence_masked || (f.evidence_full ? "••••" : "");
@@ -627,7 +632,7 @@ export default function JobPage() {
                             </a>
                           </>
                         ) : null}
-                        {hasSecret ? (
+                        {isSecretCategory && hasEvidence ? (
                           <div className="secret-reveal-row">
                             <code className="mono">{shown}</code>
                             {f.evidence_full ? (
@@ -644,6 +649,14 @@ export default function JobPage() {
                                 {revealedSecrets[secretKey] ? "Hide" : "Show full"}
                               </button>
                             ) : null}
+                          </div>
+                        ) : null}
+                        {!isSecretCategory && patternEvidence ? (
+                          <div className="secret-reveal-row">
+                            <span className="muted" style={{ marginRight: ".35rem" }}>
+                              matched:
+                            </span>
+                            <code className="mono">{patternEvidence}</code>
                           </div>
                         ) : null}
                       </li>

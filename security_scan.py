@@ -679,6 +679,10 @@ def fingerprint_technology(headers: dict, body_text: str) -> List[str]:
 
 # --- Vulnerability indicators (authorized targets only) ---
 
+# Finding tuple: (category, severity, detail, evidence) — evidence is the exact
+# matched pattern + short context snippet whenever a regex/heuristic fired.
+Finding = Tuple[str, str, str, Optional[str]]
+
 SQL_ERROR_RE = re.compile(
     r"(?i)(sql syntax|mysql_fetch|mysqli_|ORA-\d{5}|SQLite/JDBCDriver|"
     r"PostgreSQL.*ERROR|unclosed quotation mark|quoted string not properly terminated|"
@@ -689,6 +693,40 @@ RCE_BODY_RE = re.compile(
     r"(?i)(eval\s*\(|system\s*\(|exec\s*\(|passthru\s*\(|shell_exec\s*\(|"
     r"popen\s*\(|proc_open\s*\(|Runtime\.getRuntime\s*\(\)\.exec|os\.system\s*\()"
 )
+RCE_SHELL_EVIDENCE_RE = re.compile(
+    r"(?i)(sh:|bash:|command not found|permission denied|\buid=\d+\b)"
+)
+_STATIC_ASSET_PATH_RE = re.compile(
+    r"(?i)\.(?:js|mjs|cjs|css|map|png|jpe?g|gif|svg|ico|woff2?|ttf|eot|webp|avif)(?:$|\?)"
+)
+
+
+def _match_evidence(
+    match: re.Match,
+    text: str,
+    *,
+    pad: int = 56,
+    label: str = "",
+) -> str:
+    """Exact matched token + surrounding context for reports/UI evidence."""
+    raw = (match.group(0) or "").strip()
+    start = max(0, match.start() - pad)
+    end = min(len(text or ""), match.end() + pad)
+    snippet = (text or "")[start:end].replace("\n", " ").replace("\r", " ")
+    snippet = re.sub(r"\s+", " ", snippet).strip()
+    if start > 0:
+        snippet = "…" + snippet
+    if end < len(text or ""):
+        snippet = snippet + "…"
+    prefix = f"{label}: " if label else ""
+    return f"{prefix}matched `{raw}` @ offset {match.start()}: {snippet}"
+
+
+def _text_evidence(value: str, *, label: str = "matched") -> str:
+    text = re.sub(r"\s+", " ", (value or "").strip())
+    if len(text) > 220:
+        text = text[:200] + "…"
+    return f"{label}: `{text}`"
 
 TRAVERSAL_RE = re.compile(r"(?i)(\.\./|\.\.%2f|%2e%2e%2f|\.\.\\|%252e%252e/)")
 
@@ -774,18 +812,21 @@ _UPLOAD_RISKY_ACCEPT_RE = re.compile(
 )
 
 
-def scan_sql_injection(url: str, body_text: str, forms: Optional[List[dict]] = None) -> List[Tuple[str, str, str]]:
+def scan_sql_injection(url: str, body_text: str, forms: Optional[List[dict]] = None) -> List[Finding]:
     """Tiered passive SQLi: SQL error + request signal (payload-shaped → high, name-only → medium)."""
-    if not body_text or not SQL_ERROR_RE.search(body_text):
+    err = SQL_ERROR_RE.search(body_text or "")
+    if not body_text or not err:
         return []
     if _looks_like_code_listing(body_text):
         return []
+    err_ev = _match_evidence(err, body_text, label="sql_error")
     params = _query_params(url)
-    payload_params = [
-        name
-        for name, values in params.items()
-        if any(_SQL_PAYLOAD_RE.search(v or "") for v in values)
-    ]
+    payload_bits: List[str] = []
+    for name, values in params.items():
+        for v in values:
+            pm = _SQL_PAYLOAD_RE.search(v or "")
+            if pm:
+                payload_bits.append(f"{name}={pm.group(0)}")
     named_params = [name for name in params if SQL_PARAM_RE.match(name)]
     form_named = False
     if forms:
@@ -794,13 +835,15 @@ def scan_sql_injection(url: str, body_text: str, forms: Optional[List[dict]] = N
                 if SQL_PARAM_RE.match(str(field)):
                     form_named = True
                     break
-    if payload_params:
+    if payload_bits:
         return [
             (
                 "sql_injection",
                 "high",
                 f"SQL error with payload-shaped value in parameter(s) "
-                f"{', '.join(payload_params[:5])} (precise passive SQLi)",
+                f"{', '.join(list(dict.fromkeys(p.split('=', 1)[0] for p in payload_bits))[:5])} "
+                f"(precise passive SQLi)",
+                f"{err_ev} | param_payload: {', '.join(payload_bits[:4])}",
             )
         ]
     if named_params or form_named:
@@ -810,14 +853,15 @@ def scan_sql_injection(url: str, body_text: str, forms: Optional[List[dict]] = N
                 "sql_injection",
                 "medium",
                 f"SQL error near SQL-named parameter(s) {who} without payload chars (precise passive SQLi)",
+                f"{err_ev} | params: {who}",
             )
         ]
     return []
 
 
-def scan_xss(url: str, body_text: str, forms: Optional[List[dict]] = None) -> List[Tuple[str, str, str]]:
+def scan_xss(url: str, body_text: str, forms: Optional[List[dict]] = None) -> List[Finding]:
     """Precise passive XSS with second-signal gating for inline cookie/eval scripts."""
-    findings = []
+    findings: List[Finding] = []
     if not body_text:
         return findings
     params = _query_params(url)
@@ -827,21 +871,28 @@ def scan_xss(url: str, body_text: str, forms: Optional[List[dict]] = None) -> Li
             body_text[:200000],
         ):
             block = match.group(1) or ""
-            if not re.search(r"(?i)(document\.cookie\s*=|eval\s*\()", block):
+            sink = re.search(r"(?i)(document\.cookie\s*=|eval\s*\()", block)
+            if not sink:
                 continue
-            # Second signal: reflected param inside this script, or non-analytics ownership
-            reflected = any(
-                v and len(v) >= 3 and v in block
-                for values in params.values()
-                for v in values
+            sink_ev = _match_evidence(sink, block, label="xss_sink")
+            reflected_name = ""
+            for name, values in params.items():
+                for v in values:
+                    if v and len(v) >= 3 and v in block:
+                        reflected_name = name
+                        break
+                if reflected_name:
+                    break
+            analytics = bool(
+                _ANALYTICS_SCRIPT_RE.search(block) or _ANALYTICS_SCRIPT_RE.search(match.group(0))
             )
-            analytics = bool(_ANALYTICS_SCRIPT_RE.search(block) or _ANALYTICS_SCRIPT_RE.search(match.group(0)))
-            if reflected:
+            if reflected_name:
                 findings.append(
                     (
                         "xss",
                         "high",
                         "Inline script with cookie/eval sink and reflected parameter (precise passive XSS)",
+                        f"{sink_ev} | reflected_param: {reflected_name}",
                     )
                 )
             elif not analytics:
@@ -850,17 +901,18 @@ def scan_xss(url: str, body_text: str, forms: Optional[List[dict]] = None) -> Li
                         "xss",
                         "low",
                         "Inline script with cookie/eval sink (no reflected input; verify ownership)",
+                        sink_ev,
                     )
                 )
-            # analytics cookie/eval → skip (expected)
             break
     for name, values in params.items():
         for value in values:
             if len(value) < 3 or len(value) > 200:
                 continue
-            payload_hit = bool(_XSS_PAYLOAD_RE.search(value))
-            tag_hit = bool(re.search(r"<\s*[a-zA-Z][^>]{0,80}>", value))
-            if not payload_hit and not tag_hit:
+            payload_m = _XSS_PAYLOAD_RE.search(value) or re.search(
+                r"<\s*[a-zA-Z][^>]{0,80}>", value
+            )
+            if not payload_m:
                 continue
             if value not in body_text:
                 continue
@@ -869,14 +921,22 @@ def scan_xss(url: str, body_text: str, forms: Optional[List[dict]] = None) -> Li
                     "xss",
                     "medium",
                     f"Parameter '{name}' HTML/JS payload reflected unescaped (precise passive XSS)",
+                    _text_evidence(value, label=f"reflected_param[{name}]"),
                 )
             )
             break
     return findings
 
 
-def scan_rce(url: str, body_text: str, forms: Optional[List[dict]] = None) -> List[Tuple[str, str, str]]:
-    """Precise passive RCE: command-style param + shell execution evidence (not docs)."""
+def scan_rce(url: str, body_text: str, forms: Optional[List[dict]] = None) -> List[Finding]:
+    """Precise passive RCE: command-style param + shell execution evidence (not docs).
+
+    Static JS/CSS bundles are never treated as RCE from body tokens alone — ``eval(`` in
+    webpack output is expected client-side noise.
+    """
+    path = urlparse(url).path or ""
+    if _STATIC_ASSET_PATH_RE.search(path):
+        return []
     if _looks_like_code_listing(body_text or ""):
         return []
     params = _query_params(url)
@@ -887,36 +947,40 @@ def scan_rce(url: str, body_text: str, forms: Optional[List[dict]] = None) -> Li
     ]
     if not cmd_params:
         return []
-    shellish = any(
-        re.search(r"[;&|`$]|^\s*(id|whoami|ls|cat|ping|uname)\b", v or "")
-        for n in cmd_params
-        for v in params.get(n) or []
-    )
-    if not shellish:
+    shellish_vals = []
+    for n in cmd_params:
+        for v in params.get(n) or []:
+            if re.search(r"[;&|`$]|^\s*(id|whoami|ls|cat|ping|uname)\b", v or ""):
+                shellish_vals.append(f"{n}={v[:80]}")
+    if not shellish_vals:
         return []
     body = body_text or ""
-    if re.search(r"(?i)(sh:|bash:|command not found|permission denied|\buid=\d+\b)", body):
+    shell_m = RCE_SHELL_EVIDENCE_RE.search(body)
+    if shell_m:
         return [
             (
                 "rce",
                 "high",
                 f"Command param(s) {', '.join(cmd_params[:3])} with shell execution evidence (precise passive RCE)",
+                f"{_match_evidence(shell_m, body, label='shell_evidence')} | {'; '.join(shellish_vals[:3])}",
             )
         ]
-    if RCE_BODY_RE.search(body) and re.search(r"(?i)(sh:|bash:|uid=)", body):
+    rce_m = RCE_BODY_RE.search(body)
+    if rce_m and re.search(r"(?i)(sh:|bash:|uid=)", body):
         return [
             (
                 "rce",
                 "high",
                 f"Command param(s) {', '.join(cmd_params[:3])} with code-exec evidence (precise passive RCE)",
+                f"{_match_evidence(rce_m, body, label='rce_pattern')} | {'; '.join(shellish_vals[:3])}",
             )
         ]
     return []
 
 
-def scan_file_upload(forms: Optional[List[dict]], url: str) -> List[Tuple[str, str, str]]:
+def scan_file_upload(forms: Optional[List[dict]], url: str) -> List[Finding]:
     """Precise type=file surfaces with severity by accept/path risk (not blind medium)."""
-    findings = []
+    findings: List[Finding] = []
     if not forms:
         return findings
     seen_actions: set = set()
@@ -951,19 +1015,25 @@ def scan_file_upload(forms: Optional[List[dict]], url: str) -> List[Tuple[str, s
         else:
             sev = "info"
             why = "type=file upload surface"
+        fields = ",".join(form.get("file_fields") or []) or "type=file"
+        evidence = _text_evidence(
+            f"action={action}; method={method}; fields={fields}; accept={accept_blob or '(none)'}",
+            label="file_upload",
+        )
         findings.append(
             (
                 "file_upload",
                 sev,
                 f"File upload form at {action} via {method} ({why})",
+                evidence,
             )
         )
     return findings
 
 
-def scan_ssrf(url: str, body_text: str = "") -> List[Tuple[str, str, str]]:
+def scan_ssrf(url: str, body_text: str = "") -> List[Finding]:
     """Precise passive SSRF with severity ladder: metadata > loopback > RFC1918."""
-    findings = []
+    findings: List[Finding] = []
     params = _query_params(url)
     for name, values in params.items():
         if not _SSRF_FETCH_PARAM_RE.match(name):
@@ -978,6 +1048,7 @@ def scan_ssrf(url: str, body_text: str = "") -> List[Tuple[str, str, str]]:
                         "ssrf",
                         "high",
                         f"Parameter '{name}' points at cloud metadata URL (precise passive SSRF)",
+                        _text_evidence(f"{name}={decoded}", label="ssrf_target"),
                     )
                 )
             elif _SSRF_LOOPBACK_RE.search(decoded):
@@ -986,6 +1057,7 @@ def scan_ssrf(url: str, body_text: str = "") -> List[Tuple[str, str, str]]:
                         "ssrf",
                         "medium",
                         f"Parameter '{name}' points at loopback URL (precise passive SSRF)",
+                        _text_evidence(f"{name}={decoded}", label="ssrf_target"),
                     )
                 )
             elif _SSRF_RFC1918_RE.search(decoded):
@@ -994,23 +1066,25 @@ def scan_ssrf(url: str, body_text: str = "") -> List[Tuple[str, str, str]]:
                         "ssrf",
                         "low",
                         f"Parameter '{name}' points at private-network URL (precise passive SSRF)",
+                        _text_evidence(f"{name}={decoded}", label="ssrf_target"),
                     )
                 )
     return findings
 
 
-def scan_directory_traversal(url: str) -> List[Tuple[str, str, str]]:
+def scan_directory_traversal(url: str) -> List[Finding]:
     """Precise: traversal + sensitive file target in file/path-style params only.
 
     Bare ``../`` in URL paths is normal relative resolution — never a finding.
     """
-    findings = []
+    findings: List[Finding] = []
     for name, values in _query_params(url).items():
         if not _TRAVERSAL_FILE_PARAM_RE.match(name):
             continue
         for value in values:
             decoded = unquote(value or "")
-            if not TRAVERSAL_RE.search(decoded):
+            trav = TRAVERSAL_RE.search(decoded)
+            if not trav:
                 continue
             if not re.search(
                 r"(?i)(etc/passwd|windows[/\\]win\.ini|/proc/self|\.git/config|boot\.ini)",
@@ -1022,17 +1096,17 @@ def scan_directory_traversal(url: str) -> List[Tuple[str, str, str]]:
                     "directory_traversal",
                     "medium",
                     f"Traversal + sensitive file target in parameter '{name}' (precise passive)",
+                    _text_evidence(f"{name}={decoded}", label="traversal_payload"),
                 )
             )
     return findings
 
 
-def scan_authentication_flaws(url: str, headers: dict, body_text: str = "") -> List[Tuple[str, str, str]]:
+def scan_authentication_flaws(url: str, headers: dict, body_text: str = "") -> List[Finding]:
     """HTTP auth findings require a real login surface — not path keywords like /author."""
-    findings = []
+    findings: List[Finding] = []
     parsed = urlparse(url)
     scheme = parsed.scheme.lower()
-    # Require a credential-shaped value — bare password=/api_key= keys are form noise
     for name, values in _query_params(url).items():
         if not _URL_CRED_PARAM_RE.match(name):
             continue
@@ -1043,7 +1117,6 @@ def scan_authentication_flaws(url: str, headers: dict, body_text: str = "") -> L
                 continue
             if len(set(value)) < 5:
                 continue
-            # Client/public key shapes in URLs stay lower (intentional embeds / share links)
             if value.startswith(("pk_live_", "pk_test_", "AIza")) or re.fullmatch(
                 r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value
             ):
@@ -1053,6 +1126,7 @@ def scan_authentication_flaws(url: str, headers: dict, body_text: str = "") -> L
                         "authentication",
                         sev,
                         f"Client/public-style credential in URL query parameter '{name}'",
+                        _text_evidence(f"{name}={mask_secret_value(value)}", label="url_credential"),
                     )
                 )
                 break
@@ -1062,29 +1136,41 @@ def scan_authentication_flaws(url: str, headers: dict, body_text: str = "") -> L
                     "authentication",
                     sev,
                     f"Credential-like value in URL query parameter '{name}'",
+                    _text_evidence(f"{name}={mask_secret_value(value)}", label="url_credential"),
                 )
             )
             break
     lowered = {k.lower(): v for k, v in (headers or {}).items()}
-    has_password_field = bool(
-        body_text
-        and re.search(r"(?i)(type=['\"]password['\"]|name=['\"]password['\"])", body_text)
-    )
+    pw = re.search(r"(?i)(type=['\"]password['\"]|name=['\"]password['\"])", body_text or "")
     www_auth = lowered.get("www-authenticate", "")
-    if scheme == "http" and has_password_field:
-        findings.append(("authentication", "high", "Password form on HTTP connection"))
+    if scheme == "http" and pw:
+        findings.append(
+            (
+                "authentication",
+                "high",
+                "Password form on HTTP connection",
+                _match_evidence(pw, body_text or "", label="password_field"),
+            )
+        )
     if www_auth and scheme == "http":
-        findings.append(("authentication", "medium", f"Basic/digest auth over HTTP ({www_auth[:40]})"))
+        findings.append(
+            (
+                "authentication",
+                "medium",
+                f"Basic/digest auth over HTTP ({www_auth[:40]})",
+                _text_evidence(www_auth[:120], label="www-authenticate"),
+            )
+        )
     return findings
 
 
-def scan_open_redirect(url: str) -> List[Tuple[str, str, str]]:
+def scan_open_redirect(url: str) -> List[Finding]:
     """Precise passive open redirect: absolute off-site URL in redirect-style params.
 
     Suppress OAuth ``redirect_uri`` (with /oauth|/authorize or client_id). Active probes
     still confirm via Location.
     """
-    findings = []
+    findings: List[Finding] = []
     parsed = urlparse(url)
     host = (parsed.netloc or "").lower()
     path = (parsed.path or "").lower()
@@ -1126,13 +1212,14 @@ def scan_open_redirect(url: str) -> List[Tuple[str, str, str]]:
                     "open_redirect",
                     sev,
                     f"Parameter '{name}' points off-site to {target_host} ({note}; precise passive open redirect)",
+                    _text_evidence(f"{name}={decoded}", label="redirect_target"),
                 )
             )
     return findings
 
 
-def scan_mixed_content(url: str, body_text: str) -> List[Tuple[str, str, str]]:
-    findings = []
+def scan_mixed_content(url: str, body_text: str) -> List[Finding]:
+    findings: List[Finding] = []
     try:
         from recon_extract import extract_mixed_content
 
@@ -1146,82 +1233,89 @@ def scan_mixed_content(url: str, body_text: str) -> List[Tuple[str, str, str]]:
                 "mixed_content",
                 "medium",
                 f"HTTPS page loads {len(resources)} HTTP resource(s); e.g. {sample}",
+                _text_evidence(sample, label="http_resources"),
             )
         )
     return findings
 
 
-def _api_debug_body_proof(path: str, body_text: str, content_type: str = "") -> Optional[str]:
-    """Return proof string when a sensitive API/debug path has real content."""
+def _api_debug_body_proof(path: str, body_text: str, content_type: str = "") -> Optional[Tuple[str, str]]:
+    """Return (proof_label, evidence) when a sensitive API/debug path has real content."""
     if not body_text:
         return None
     text = body_text[:12000]
-    if re.search(r"(?i)/phpinfo(?:\.php)?(?:/|$)", path):
-        if re.search(r"(?i)(?:phpinfo\s*\(|PHP Version\s*\d|PHP Credits)", text):
-            return "phpinfo() body proof"
-        return None
-    if "/actuator" in path:
-        if re.search(r"(?i)(\"status\"\s*:\s*\"UP\"|\"_links\"|actuator)", text[:4000]):
-            return "actuator JSON/body proof"
-        return None
-    if re.search(r"(?i)/server-status(?:/|$)", path):
-        if re.search(r"(?i)Apache Server Status|Server uptime|Current Time:", text[:4000]):
-            return "Apache server-status proof"
-        return None
-    if "openid-configuration" in path:
-        if re.search(r"(?i)\"issuer\"\s*:|\"jwks_uri\"\s*:", text[:4000]):
-            return "OIDC discovery document proof"
-        return None
-    if re.search(r"(?i)/(?:debug)(?:/|$)", path):
-        if re.search(r"(?i)(traceback|stack trace|DEBUG\s*=\s*True|django\.debug|Werkzeug)", text[:6000]):
-            return "debug/traceback body proof"
+    checks = (
+        (r"(?i)/phpinfo(?:\.php)?(?:/|$)", r"(?i)(?:phpinfo\s*\(|PHP Version\s*\d|PHP Credits)", "phpinfo() body proof"),
+        (r"(?i)/actuator", r"(?i)(\"status\"\s*:\s*\"UP\"|\"_links\"|actuator)", "actuator JSON/body proof"),
+        (r"(?i)/server-status(?:/|$)", r"(?i)Apache Server Status|Server uptime|Current Time:", "Apache server-status proof"),
+        (r"(?i)openid-configuration", r"(?i)\"issuer\"\s*:|\"jwks_uri\"\s*:", "OIDC discovery document proof"),
+        (r"(?i)/(?:debug)(?:/|$)", r"(?i)(traceback|stack trace|DEBUG\s*=\s*True|django\.debug|Werkzeug)", "debug/traceback body proof"),
+    )
+    for path_pat, body_pat, label in checks:
+        if not re.search(path_pat, path):
+            continue
+        m = re.search(body_pat, text[:6000] if "debug" in label else text[:4000])
+        if m:
+            return label, _match_evidence(m, text, label="api_leak_proof")
         return None
     return None
 
 
-def scan_api_leaks(url: str, body_text: str, headers: dict, content_type: str = "") -> List[Tuple[str, str, str]]:
-    findings = []
+def scan_api_leaks(url: str, body_text: str, headers: dict, content_type: str = "") -> List[Finding]:
+    findings: List[Finding] = []
     path = urlparse(url).path.lower()
-    # Path-segment markers require body proof (align with sensitive_path content gate)
     sensitive_segments = (
         r"(?:^|/)(?:debug|actuator|phpinfo(?:\.php)?|server-status)(?:/|$)",
         r"(?:^|/)\.well-known/openid-configuration(?:/|$)",
     )
     if any(re.search(pat, path) for pat in sensitive_segments):
-        proof = _api_debug_body_proof(path, body_text or "", content_type)
-        if proof:
+        proved = _api_debug_body_proof(path, body_text or "", content_type)
+        if proved:
+            proof, evidence = proved
             findings.append(
-                ("api_leak", "medium", f"Sensitive API/debug path confirmed: {path} ({proof})")
-            )
-    elif re.search(r"(?:^|/)(?:swagger|api-docs|openapi)(?:/|$)", path) and body_text:
-        if re.search(r"(?i)(\"swagger\"|openapi|paths\s*:)", body_text[:2000]):
-            findings.append(("api_leak", "low", f"API documentation exposed at {path}"))
-    # Body artifacts: require GraphQL path OR non-doc JSON evidence
-    if body_text and not _looks_like_code_listing(body_text):
-        if GRAPHQL_PATH_RE.search(path):
-            schema_json = bool(
-                re.search(
-                    r"(?i)(\"__schema\"\s*:|\"queryType\"\s*:|\"mutationType\"\s*:)",
-                    body_text[:8000],
+                (
+                    "api_leak",
+                    "medium",
+                    f"Sensitive API/debug path confirmed: {path} ({proof})",
+                    evidence,
                 )
             )
-            playground_ui = bool(
-                re.search(r"(?i)(GraphiQL|graphql playground|introspectionQuery)", body_text[:8000])
+    elif re.search(r"(?:^|/)(?:swagger|api-docs|openapi)(?:/|$)", path) and body_text:
+        m = re.search(r"(?i)(\"swagger\"|openapi|paths\s*:)", body_text[:2000])
+        if m:
+            findings.append(
+                (
+                    "api_leak",
+                    "low",
+                    f"API documentation exposed at {path}",
+                    _match_evidence(m, body_text[:2000], label="openapi"),
+                )
             )
-            if schema_json:
+    if body_text and not _looks_like_code_listing(body_text):
+        if GRAPHQL_PATH_RE.search(path):
+            schema_m = re.search(
+                r"(?i)(\"__schema\"\s*:|\"queryType\"\s*:|\"mutationType\"\s*:)",
+                body_text[:8000],
+            )
+            playground_m = re.search(
+                r"(?i)(GraphiQL|graphql playground|introspectionQuery)", body_text[:8000]
+            )
+            if schema_m:
                 findings.append(
                     (
                         "api_leak",
                         "high",
                         "GraphQL schema JSON disclosed (__schema/queryType) on GraphQL path",
+                        _match_evidence(schema_m, body_text[:8000], label="graphql_schema"),
                     )
                 )
-            elif playground_ui:
+            elif playground_m:
                 findings.append(
                     (
                         "api_leak",
                         "medium",
                         "GraphQL playground/UI indicators on GraphQL path (unverified introspection)",
+                        _match_evidence(playground_m, body_text[:8000], label="graphql_ui"),
                     )
                 )
         elif "/actuator" in path and (
@@ -1231,15 +1325,32 @@ def scan_api_leaks(url: str, body_text: str, headers: dict, content_type: str = 
                 and re.search(r"(?i)\"status\"\s*:\s*\"UP\"", body_text[:2000])
             )
         ):
-            findings.append(("api_leak", "high", "Actuator/health-style JSON exposed"))
-        elif re.search(r"(?i)[?&]debug=true(?:&|$)", url) and re.search(
-            r"(?i)(traceback|stack trace|DEBUG\s*=\s*True|exception)",
-            body_text[:6000],
-        ):
-            findings.append(("api_leak", "medium", "debug=true with debug/error body content"))
+            m = re.search(r"(?i)\"status\"\s*:\s*\"UP\"", body_text[:2000])
+            findings.append(
+                (
+                    "api_leak",
+                    "high",
+                    "Actuator/health-style JSON exposed",
+                    _match_evidence(m, body_text[:2000], label="actuator") if m else _text_evidence(path, label="actuator_path"),
+                )
+            )
+        else:
+            debug_m = re.search(r"(?i)[?&]debug=true(?:&|$)", url)
+            body_dbg = re.search(
+                r"(?i)(traceback|stack trace|DEBUG\s*=\s*True|exception)",
+                body_text[:6000],
+            )
+            if debug_m and body_dbg:
+                findings.append(
+                    (
+                        "api_leak",
+                        "medium",
+                        "debug=true with debug/error body content",
+                        f"{_text_evidence('debug=true', label='query')} | {_match_evidence(body_dbg, body_text[:6000], label='debug_body')}",
+                    )
+                )
     ct = (content_type or "").lower()
     path_l = path
-    # OAuth/token endpoints legitimately return access_token — do not mark critical
     oauthish = bool(re.search(r"(?i)(oauth|/token|/auth/|/login|/session)", path_l))
     if "json" in ct and body_text and not oauthish:
         try:
@@ -1249,7 +1360,14 @@ def scan_api_leaks(url: str, body_text: str, headers: dict, content_type: str = 
                     if not re.match(r"(?i)^(api_key|secret|password|private_key)$", str(key)):
                         continue
                     if isinstance(value, str) and len(value) >= 8 and _secret_looks_real(f"{key}={value}"):
-                        findings.append(("api_leak", "high", f"JSON field '{key}' may expose a secret value"))
+                        findings.append(
+                            (
+                                "api_leak",
+                                "high",
+                                f"JSON field '{key}' may expose a secret value",
+                                _text_evidence(f"{key}={mask_secret_value(value)}", label="json_secret_field"),
+                            )
+                        )
         except json.JSONDecodeError:
             pass
     return findings
@@ -1270,8 +1388,9 @@ def run_passive_vuln_scan(
     forms: Optional[List[dict]],
     headers: dict,
     content_type: str = "",
-) -> List[Tuple[str, str, str]]:
-    findings = []
+) -> List[Finding]:
+    """Run passive scanners. Each finding includes exact matched-pattern evidence."""
+    findings: List[Finding] = []
     findings.extend(scan_sql_injection(url, body_text, forms))
     findings.extend(scan_xss(url, body_text, forms))
     findings.extend(scan_rce(url, body_text, forms))
@@ -1286,6 +1405,41 @@ def run_passive_vuln_scan(
     return findings
 
 
+def _active_match_evidence(category: str, body: str, payload: str, marker: str, baseline: str = "") -> Optional[str]:
+    """Build exact matched-pattern evidence for an active probe hit."""
+    text = body or ""
+    if category == "sql_injection":
+        m = SQL_ERROR_RE.search(text)
+        return _match_evidence(m, text, label="sql_error") if m else _text_evidence(payload, label="sql_payload")
+    if category == "xss":
+        idx = text.find(marker)
+        if idx >= 0:
+            return _text_evidence(marker, label=f"reflected_marker@offset_{idx}")
+        return _text_evidence(marker, label="reflected_marker")
+    if category == "directory_traversal":
+        m = re.search(r"(?i)(root:x:0:0:|/bin/(?:ba)?sh\b)", text)
+        return (
+            _match_evidence(m, text, label="passwd_proof")
+            if m
+            else _text_evidence(payload, label="traversal_payload")
+        )
+    if category == "rce":
+        idx = text.find(marker)
+        if idx >= 0:
+            return _text_evidence(marker, label=f"rce_echo@offset_{idx}")
+        return _text_evidence(marker, label="rce_echo")
+    if category == "ssrf":
+        m = re.search(
+            r"(?i)(ami-[0-9a-f]{8,}|instance-id|meta-data/|computeMetadata|"
+            r"metadata\.google|169\.254\.169\.254)",
+            text,
+        )
+        if m:
+            return _match_evidence(m, text, label="ssrf_body")
+        return _text_evidence(payload, label="ssrf_payload")
+    return _text_evidence(payload or marker, label="probe")
+
+
 async def run_active_vuln_probes(
     client,
     url: str,
@@ -1293,23 +1447,24 @@ async def run_active_vuln_probes(
     *,
     max_params: int = 8,
     max_forms: int = 3,
-) -> List[Tuple[str, str, str]]:
+) -> List[Finding]:
     """Send minimal safe payloads on GET params and forms (authorized testing only).
 
     Compares probe responses against a baseline request to cut WAF/generic-error FPs.
+    Each finding includes the exact matched pattern / marker as evidence.
     """
     from urllib.parse import parse_qsl, urlparse
 
-    findings: List[Tuple[str, str, str]] = []
+    findings: List[Finding] = []
     seen: set = set()
     xss_marker = "<crawler-xss-probe>"
     rce_marker = "crawler-rce-probe-9f3a"
 
-    def add(category: str, severity: str, detail: str):
-        key = (category, detail)
+    def add(category: str, severity: str, detail: str, evidence: Optional[str] = None):
+        key = (category, detail, evidence or "")
         if key not in seen:
             seen.add(key)
-            findings.append((category, severity, detail))
+            findings.append((category, severity, detail, evidence))
 
     sql_names = re.compile(r"(?i)^(id|uid|user_id|cat|category|item|pid|order|sort|query|q|search|filter|name)$")
 
@@ -1406,10 +1561,14 @@ async def run_active_vuln_probes(
                     # XSS must not already be in baseline
                     if category == "xss" and marker in (baseline_body or ""):
                         continue
+                    evidence = _active_match_evidence(
+                        category, body, payload, marker, baseline_body
+                    )
                     add(
                         category,
                         severity,
                         f"Active {category} probe confirmed on {source} '{field_name}' at {target}",
+                        evidence,
                     )
             except Exception:
                 continue
@@ -1447,12 +1606,13 @@ async def run_active_vuln_probes(
                         timeout=8,
                         follow_redirects=False,
                     )
-                    location = (response.headers.get("location") or "").lower()
-                    if "crawler-open-redirect-probe.invalid" in location:
+                    location = response.headers.get("location") or ""
+                    if "crawler-open-redirect-probe.invalid" in location.lower():
                         add(
                             "open_redirect",
                             "high",
                             f"Active open redirect confirmed via Location on param '{name}' at {url.split('?', 1)[0]}",
+                            _text_evidence(f"Location: {location}", label="redirect_location"),
                         )
                 except Exception:
                     pass
@@ -1481,7 +1641,7 @@ async def run_active_vuln_probes(
     return findings
 
 
-async def confirm_graphql_introspection(client, url: str) -> List[Tuple[str, str, str]]:
+async def confirm_graphql_introspection(client, url: str) -> List[Finding]:
     """POST a minimal introspection probe when the URL looks like GraphQL."""
     path = urlparse(url).path or ""
     if not GRAPHQL_PATH_RE.search(path):
@@ -1490,14 +1650,16 @@ async def confirm_graphql_introspection(client, url: str) -> List[Tuple[str, str
     try:
         response = await client.post(url, json=query, timeout=10, follow_redirects=True)
         body = response.text or ""
-        if response.status_code < 500 and re.search(
+        m = re.search(
             r'(?i)"__schema"\s*:|"queryType"\s*:\s*\{\s*"name"', body
-        ):
+        )
+        if response.status_code < 500 and m:
             return [
                 (
                     "api_leak",
                     "high",
                     f"GraphQL introspection confirmed via POST at {url}",
+                    _match_evidence(m, body, label="graphql_introspection"),
                 )
             ]
     except Exception:
@@ -1505,9 +1667,9 @@ async def confirm_graphql_introspection(client, url: str) -> List[Tuple[str, str
     return []
 
 
-async def probe_http_methods(client, url: str) -> List[Tuple[str, str, str]]:
+async def probe_http_methods(client, url: str) -> List[Finding]:
     """Once-per-host OPTIONS/TRACE — emit only risky methods or TRACE echo proof."""
-    findings: List[Tuple[str, str, str]] = []
+    findings: List[Finding] = []
     allow = ""
     try:
         opt = await client.request("OPTIONS", url, timeout=8, follow_redirects=True)
@@ -1519,6 +1681,7 @@ async def probe_http_methods(client, url: str) -> List[Tuple[str, str, str]]:
                     "http_methods",
                     "medium",
                     f"Potentially risky methods advertised: {', '.join(dangerous)} (Allow/ACAM: {allow[:120]})",
+                    _text_evidence(allow[:160], label="Allow/ACAM"),
                 )
             )
         # Benign Allow lists stay out of findings (inventory via caller if needed)
@@ -1528,24 +1691,42 @@ async def probe_http_methods(client, url: str) -> List[Tuple[str, str, str]]:
         trace = await client.request("TRACE", url, timeout=8, follow_redirects=False)
         body = trace.text or ""
         # Require echo of TRACE method or request target — bare HTTP 200 is weak
+        echo_m = re.search(r"(?i)^\s*TRACE\s+", body)
+        path = urlparse(url).path or ""
         echoed = bool(
-            re.search(r"(?i)^\s*TRACE\s+", body)
+            echo_m
             or "TRACE" in body[:200]
-            or (urlparse(url).path and urlparse(url).path in body)
+            or (path and path in body)
         )
         if trace.status_code < 400 and echoed:
+            if echo_m:
+                evidence = _match_evidence(echo_m, body, label="trace_echo")
+            elif path and path in body:
+                evidence = _text_evidence(path, label="trace_echo_path")
+            else:
+                evidence = _text_evidence(body[:120], label="trace_body")
             findings.append(
-                ("http_methods", "high", f"TRACE enabled with request echo (HTTP {trace.status_code})")
+                (
+                    "http_methods",
+                    "high",
+                    f"TRACE enabled with request echo (HTTP {trace.status_code})",
+                    evidence,
+                )
             )
         elif trace.status_code == 200 and "TRACE" in (allow or "").upper():
             findings.append(
-                ("http_methods", "medium", f"TRACE advertised and returned HTTP {trace.status_code}")
+                (
+                    "http_methods",
+                    "medium",
+                    f"TRACE advertised and returned HTTP {trace.status_code}",
+                    _text_evidence(allow[:160], label="Allow/ACAM"),
+                )
             )
     except Exception:
         pass
     return findings
 
 
-async def probe_active_injection(client, url: str, max_params: int = 3) -> List[Tuple[str, str, str]]:
+async def probe_active_injection(client, url: str, max_params: int = 3) -> List[Finding]:
     """Backward-compatible wrapper."""
     return await run_active_vuln_probes(client, url, forms=None, max_params=max_params, max_forms=0)
