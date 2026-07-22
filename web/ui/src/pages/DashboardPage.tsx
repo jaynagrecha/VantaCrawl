@@ -36,39 +36,63 @@ export default function DashboardPage() {
           {jobs.length === 0 ? (
             <p className="muted">No jobs yet. Start your first authorized scan.</p>
           ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Title</th>
-                  <th>Target</th>
-                  <th>Status</th>
-                  <th>Mode</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
+            <>
+              <ul className="job-cards">
                 {jobs.map((job) => (
-                  <tr key={job.id}>
-                    <td>{job.title}</td>
-                    <td className="mono" style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {job.start_url}
-                    </td>
-                    <td>
+                  <li key={job.id} className="job-card">
+                    <div className="job-card-top">
+                      <div className="job-card-title">{job.title}</div>
                       <div className="status-cell">
                         <span className={`badge ${job.status}`}>{job.status}</span>
                         <ScanActivity status={job.status} compact />
                       </div>
-                    </td>
-                    <td className="muted">{job.mode}</td>
-                    <td>
+                    </div>
+                    <div className="job-card-url mono" title={job.start_url}>
+                      {job.start_url}
+                    </div>
+                    <div className="job-card-foot">
+                      <span className="muted">{job.mode}</span>
                       <Link className="btn" to={`/jobs/${job.id}`}>
                         Open
                       </Link>
-                    </td>
-                  </tr>
+                    </div>
+                  </li>
                 ))}
-              </tbody>
-            </table>
+              </ul>
+              <div className="table-wrap desktop-only">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Title</th>
+                      <th>Target</th>
+                      <th>Status</th>
+                      <th>Mode</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {jobs.map((job) => (
+                      <tr key={job.id}>
+                        <td>{job.title}</td>
+                        <td className="mono table-url">{job.start_url}</td>
+                        <td>
+                          <div className="status-cell">
+                            <span className={`badge ${job.status}`}>{job.status}</span>
+                            <ScanActivity status={job.status} compact />
+                          </div>
+                        </td>
+                        <td className="muted">{job.mode}</td>
+                        <td>
+                          <Link className="btn" to={`/jobs/${job.id}`}>
+                            Open
+                          </Link>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </section>
         <section className="card">
