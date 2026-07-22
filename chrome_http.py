@@ -163,7 +163,9 @@ class StealthAsyncClient:
         if self.evasion is not None and getattr(self.evasion.config, "enabled", True):
             try:
                 before = self.evasion._challenge_hits
-                self.evasion.after_request(final_url, response.status_code, body_preview)
+                self.evasion.after_request(
+                    final_url, response.status_code, body_preview, headers=header_map
+                )
                 if (
                     self.output_callback
                     and self.evasion._challenge_hits > before
