@@ -3,8 +3,10 @@
 # Concurrent scans: MAX_CONCURRENT_SCANS=8 (raise further in Dashboard if needed).
 # Per-user cap: MAX_CONCURRENT_SCANS_PER_USER=1.
 #
-# Production layout: vantacrawl-api (web + disk) + vantacrawl-worker (scans).
-# Keep EMBED_WORKER=false on the web service so the dedicated worker owns the queue.
+# Disk is attached only to vantacrawl-api. Render cannot share that disk with the
+# Background Worker, so production runs the queue consumer IN the web process
+# (EMBED_WORKER=true). Suspend vantacrawl-worker (or leave it unused) so jobs are
+# not double-consumed. Revisit a dedicated worker when reports/uploads use object storage.
 #
 # Set secret env vars in the Dashboard (do not commit real SMTP/admin secrets).
 # If the Live service is named differently (e.g. santascan-api), set the same
@@ -57,7 +59,7 @@ services:
       - key: PYTHONPATH
         value: /opt/render/project/src:/opt/render/project/src/web/api
       - key: EMBED_WORKER
-        value: "false"
+        value: "true"
       - key: MAX_CONCURRENT_SCANS
         value: "8"
       - key: MAX_CONCURRENT_SCANS_PER_USER
@@ -101,56 +103,18 @@ services:
         value: /opt/render/project/src/web/ui/dist
       - key: CHROME_INSTALL_DIR
         value: /opt/render/project/src/.cache/vantacrawl-chrome
-    # Optional: attach a disk so reports/jobs survive redeploys
-    # disk:
-    #   name: vantacrawl-data
-    #   mountPath: /opt/render/project/src/web/data
-    #   sizeGB: 1
+    # Disk is live on the web service above (10 GB at /opt/render/project/src/web/data).
 
-  # Dedicated scan consumer (optional on Standard). After this is Live,
-  # set the web service EMBED_WORKER=false.
-  - type: worker
-    name: vantacrawl-worker
-    runtime: python
-    plan: standard
-    maxShutdownDelaySeconds: 300
-    buildCommand: |
-      bash scripts/install_chrome_linux.sh
-      pip install -r web/requirements-render.txt -r web/api/requirements.txt
-    startCommand: |
-      if [ -f "${CHROME_INSTALL_DIR}/chrome_bin.path" ]; then
-        export CHROME_BIN="$(cat "${CHROME_INSTALL_DIR}/chrome_bin.path")"
-        export CHROMEDRIVER_PATH="$(cat "${CHROME_INSTALL_DIR}/chromedriver.path")"
-        export PATH="$(dirname "$CHROMEDRIVER_PATH"):$PATH"
-      fi
-      python web/worker/worker.py
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.11.11"
-      - key: PYTHONPATH
-        value: /opt/render/project/src:/opt/render/project/src/web/api
-      - key: MAX_CONCURRENT_SCANS
-        value: "8"
-      - key: MAX_CONCURRENT_SCANS_PER_USER
-        value: "1"
-      - key: APP_ENV
-        value: production
-      - key: DATABASE_URL
-        fromDatabase:
-          name: vantacrawl-db
-          property: connectionString
-      - key: REDIS_URL
-        fromService:
-          name: vantacrawl-redis
-          type: keyvalue
-          property: connectionString
-      - key: SECRET_KEY
-        generateValue: true
-      - key: DATA_DIR
-        value: /opt/render/project/src/web/data
-      - key: REPORTS_DIR
-        value: /opt/render/project/src/web/data/reports
-      - key: JOBS_DIR
-        value: /opt/render/project/src/web/data/jobs
-      - key: CHROME_INSTALL_DIR
-        value: /opt/render/project/src/.cache/vantacrawl-chrome
+  # Optional dedicated scan worker — DO NOT run alongside EMBED_WORKER=true.
+  # Render disks cannot be shared across services, so reports/uploads would land on
+  # the worker's ephemeral FS instead of the API disk. Re-enable only after reports
+  # and job uploads use object storage (S3/R2), then set EMBED_WORKER=false on the API.
+  #
+  # Until then: Suspend vantacrawl-worker in the Dashboard to avoid double consumers
+  # and an unused Standard instance charge.
+  #
+  # - type: worker
+  #   name: vantacrawl-worker
+  #   runtime: python
+  #   plan: standard
+  #   ...

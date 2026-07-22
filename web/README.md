@@ -65,40 +65,41 @@ docker compose up --build
 
 Live stack (Oregon):
 
-| Service | Role | Typical plan |
-|---------|------|----------------|
-| `vantacrawl-api` | FastAPI + SPA, job API, WebSockets | **Standard** (2 GB / 1 CPU) |
-| `vantacrawl-worker` | Queue consumer — runs crawls / enum / Chrome | **Standard** (2 GB / 1 CPU) |
+| Service | Role | Plan |
+|---------|------|------|
+| `vantacrawl-api` | FastAPI + SPA + **embedded scan worker** + 10 GB disk | **Standard** (2 GB / 1 CPU) |
+| `vantacrawl-worker` | Optional / suspended — see disk note below | Standard (idle = still billed) |
 | `vantacrawl-db` | Postgres 16 | Often still **Free** until upgraded |
 | `vantacrawl-redis` | Valkey / Redis queue + pub/sub | Often still **Free** until upgraded |
 
-`render.yaml` at repo root defines these. Blueprint-managed env vars sync on deploy; secrets marked `sync: false` stay in the Dashboard.
+### Why scans run on the API (not the Background Worker)
 
-### Worker handoff (important)
+Render attaches a persistent disk to **one** service only. Ours is on `vantacrawl-api` at `/opt/render/project/src/web/data`. A separate Background Worker cannot see that disk, so reports and job uploads would vanish or go missing from the UI.
 
-With `vantacrawl-worker` Live, the web service must **not** also consume the queue:
+**Production choice:** `EMBED_WORKER=true` on `vantacrawl-api`, and **Suspend** `vantacrawl-worker` in the Dashboard (stops double queue consumers and an unused Standard charge).
 
-- Set **`EMBED_WORKER=false`** on `vantacrawl-api` (blueprint default is now `false`).
-- If both are `true`, two consumers fight over the same Redis jobs.
+Later, with object storage for reports/uploads, you can revive the dedicated worker and set `EMBED_WORKER=false`.
 
-Confirm in Dashboard → `vantacrawl-api` → Environment after the next deploy.
+### Dashboard checklist
+
+1. `vantacrawl-api` → Environment → **`EMBED_WORKER=true`** (then Save / redeploy if needed).
+2. `vantacrawl-worker` → **Suspend Background Worker**.
+3. Confirm `REPORTS_DIR` / `JOBS_DIR` / `DATA_DIR` stay under `/opt/render/project/src/web/data` (the mounted disk).
 
 ### Persistent disk (web)
 
-`vantacrawl-api` mounts a **10 GB** disk at `/opt/render/project/src/web/data` (same as `DATA_DIR` / `REPORTS_DIR` / `JOBS_DIR`). Reports and job uploads survive redeploys. Disk size can grow later; it cannot shrink.
+**10 GB** at `/opt/render/project/src/web/data` — same paths as `DATA_DIR`, `REPORTS_DIR`, `JOBS_DIR`. Reports and uploads survive redeploys. Disk can grow later; it cannot shrink.
 
-Wordlist catalogs under repo `Wordlist/` are in the git checkout (not the disk).
+Catalog wordlists under repo `Wordlist/` live in the git checkout (not the disk).
 
 ### Browser / Selenium
 
-Both web and worker builds run `scripts/install_chrome_linux.sh` (Chrome for Testing). The **worker** is where scans actually run Chromium. On Standard (2 GB) headless Chrome is practical for normal pages; if the binary is missing, the worker logs one skip line and continues over HTTP.
+API build runs `scripts/install_chrome_linux.sh`. With Standard 2 GB, headless Chrome is practical for normal pages; if the binary is missing, scans log one skip line and continue over HTTP.
 
 ### Data-plane plans to watch
 
-Compute can be Standard while **Postgres / Redis stay Free**:
-
 - **Postgres Free** expires after ~30 days unless upgraded — upgrade before the Dashboard expiry date or you lose job history / users.
-- **Key Value Free** is tiny (e.g. ~25 MB, low connection limit). Fine for light queues; upgrade if you see Redis connection errors under concurrent scans.
+- **Key Value Free** is tiny (~25 MB). Fine for light queues; upgrade if you see Redis connection errors.
 
 ### Dashboard secrets (`sync: false`)
 
@@ -108,8 +109,8 @@ Compute can be Standard while **Postgres / Redis stay Free**:
 
 ### Security / ops notes
 
-- **SSRF guard:** job `start_url` / targets that resolve to loopback, private, link-local, or cloud metadata addresses are rejected.
-- **Health:** `GET /api/health` checks API, database, Redis, and (only if embedded) the in-process worker thread. With `EMBED_WORKER=false`, expect `embedded_worker: null` while Redis/DB stay green.
+- **SSRF guard:** job targets that resolve to loopback, private, link-local, or cloud metadata addresses are rejected.
+- **Health:** `GET /api/health` checks API, database, Redis, and the embedded worker thread when `EMBED_WORKER=true`.
 
 ## Gmail SMTP
 
