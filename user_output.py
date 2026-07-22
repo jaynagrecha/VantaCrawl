@@ -324,6 +324,10 @@ def simplify_log_line(message: str) -> str:
             "No clear bot-management fingerprint yet — continuing to measure catch vs gaps.",
         ),
         (
+            r"^Skipping folder enum under file hit (.+)$",
+            r"Found file \1 — not scanning inside it as a folder.",
+        ),
+        (
             r"^Defense report \(web page\): (.+)$",
             r"Defense report (web page): \1",
         ),

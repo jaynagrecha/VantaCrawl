@@ -25,6 +25,7 @@ from crawler_common import (
     log_to_file,
     response_length,
     enqueue_discovered_url,
+    looks_like_file_path_segment,
     save_enum_hit_async,
 )
 
@@ -669,8 +670,15 @@ async def run_pro_directory_enum(
                 if not result or isinstance(result, Exception):
                     continue
                 await handle_hit(result, depth)
-                if not config.enum_flat_scan:
-                    await enumerate_level(path_segments + [result.word], depth + 1)
+                if config.enum_flat_scan:
+                    continue
+                # Files (vite.svg, app.js, backup.zip, …) are hits — not folders.
+                if looks_like_file_path_segment(result.word):
+                    output_callback(
+                        f"Skipping folder enum under file hit {format_enum_path(path_segments + [result.word])}"
+                    )
+                    continue
+                await enumerate_level(path_segments + [result.word], depth + 1)
             next_index = index + batch_size
             if config.enum_checkpoint_interval and next_index and next_index % config.enum_checkpoint_interval == 0:
                 save_enum_checkpoint(
