@@ -1230,6 +1230,41 @@ async def download_file_async(
         return await _download()
 
 
+# Path segments that look like files — never recurse directory enum under these.
+_ENUM_FILE_EXT_RE = re.compile(
+    r"(?i)\.("
+    r"svg|png|jpe?g|gif|webp|ico|avif|bmp|"
+    r"js|mjs|cjs|css|map|wasm|"
+    r"woff2?|ttf|eot|otf|"
+    r"mp4|webm|mp3|wav|ogg|flac|"
+    r"pdf|zip|rar|7z|gz|tgz|tar|bz2|"
+    r"html?|xhtml|xml|json|txt|csv|md|"
+    r"php\d?|phtml|asp|aspx|jspx?|cgi|pl|"
+    r"exe|dll|bin|apk|dmg|iso|"
+    r"yml|yaml|toml|ini|cfg|conf|env|bak|old|orig|swp|tmp|log"
+    r")$"
+)
+_ENUM_VERSION_SEGMENT_RE = re.compile(r"(?i)^v?\d+(?:\.\d+)+$")
+
+
+def looks_like_file_path_segment(segment: str) -> bool:
+    """True when a path segment is almost certainly a file, not a folder to recurse into.
+
+    Keeps hits like ``/vite.svg`` or ``/assets/app.js`` recorded, but skips burning the
+    full wordlist under ``/vite.svg/…`` (useless on static file responses).
+    """
+    name = (segment or "").strip().strip("/")
+    if not name or name in (".", ".."):
+        return False
+    # Version folders (v1.2, 2.0.1) and dotted dir names without a file suffix
+    if _ENUM_VERSION_SEGMENT_RE.fullmatch(name):
+        return False
+    # ".well-known" is a directory; do not treat bare dotfiles without a real ext as files
+    if name.startswith(".") and name.count(".") == 1 and not _ENUM_FILE_EXT_RE.search(name):
+        return False
+    return bool(_ENUM_FILE_EXT_RE.search(name))
+
+
 def format_enum_path(path_segments):
     if not path_segments:
         return "/"
@@ -1492,7 +1527,13 @@ def enumerate_directories_sync(
                                 rewrite_local,
                                 save_server_side_as_txt,
                             )
-                        enumerate_level(path_segments + [word], depth + 1)
+                        if looks_like_file_path_segment(word):
+                            output_callback(
+                                f"Skipping folder enum under file hit "
+                                f"{format_enum_path(path_segments + [word])}"
+                            )
+                        else:
+                            enumerate_level(path_segments + [word], depth + 1)
                 except requests.RequestException as error:
                     output_callback(f"Error accessing {test_url}: {error}")
 
@@ -1587,7 +1628,13 @@ async def enumerate_directories_async(
                         save_server_side_as_txt,
                         download_semaphore,
                     )
-                await enumerate_level(path_segments + [word], depth + 1)
+                if looks_like_file_path_segment(word):
+                    output_callback(
+                        f"Skipping folder enum under file hit "
+                        f"{format_enum_path(path_segments + [word])}"
+                    )
+                else:
+                    await enumerate_level(path_segments + [word], depth + 1)
 
     await enumerate_level([], 0)
     output_callback("Directory brute force finished.")

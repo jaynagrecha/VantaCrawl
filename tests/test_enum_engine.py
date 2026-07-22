@@ -1,6 +1,7 @@
 import asyncio
 
 from crawl_config import CrawlConfig
+from crawler_common import looks_like_file_path_segment
 from enum_engine import (
     WildcardProfile,
     build_smart_wordlist,
@@ -23,6 +24,22 @@ def test_gobuster_word_variants():
     variants = iter_gobuster_word_variants("admin", config)
     assert variants == ["admin", "admin.php", "admin.txt"]
     assert iter_gobuster_word_variants("page.html", config) == ["page.html"]
+
+
+def test_looks_like_file_path_segment_skips_static_files():
+    """vite.svg / app.js are files — do not recurse a full wordlist under them."""
+    assert looks_like_file_path_segment("vite.svg")
+    assert looks_like_file_path_segment("index-z8FlXybG.js")
+    assert looks_like_file_path_segment("app.css")
+    assert looks_like_file_path_segment("backup.zip")
+    assert looks_like_file_path_segment("admin.php")
+    assert looks_like_file_path_segment("favicon.ico")
+    # Real directories / version folders must still recurse
+    assert not looks_like_file_path_segment("admin")
+    assert not looks_like_file_path_segment("api")
+    assert not looks_like_file_path_segment(".well-known")
+    assert not looks_like_file_path_segment("v1.2")
+    assert not looks_like_file_path_segment("2.0.1")
 
 
 def test_status_filter_blacklist():
