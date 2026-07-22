@@ -121,6 +121,30 @@ def assess_header_audit(detail: str, severity: str) -> ImpactResult:
 
 def assess_authentication(detail: str, severity: str, evidence: str = "") -> ImpactResult:
     d = _detail_l(detail)
+    if "password-reset deep-link" in d or "deep-link flow" in d:
+        return ImpactResult(
+            role="flow_identifier",
+            impact="informational",
+            severity="info",
+            summary=(
+                "Password-reset deep-link flow identifier observed — attack-surface only; "
+                "not an exposed credential."
+            ),
+            validation="unverified",
+            proof=evidence or None,
+        )
+    if "reset token arrives via url" in d or "reset token referenced from url" in d:
+        return ImpactResult(
+            role="auth_token_in_url",
+            impact="limited_impact" if "replaceState" in d or "address bar" in d else "informational",
+            severity=severity if severity in ("info", "low") else "low",
+            summary=(
+                "Reset token in URL query is a leakage risk (history, Referer, analytics) unless "
+                "single-use, short-lived, and cleared via replaceState."
+            ),
+            validation="unverified",
+            proof=evidence or None,
+        )
     if "stealable_credential" in d or "missing httponly" in d:
         return ImpactResult(
             role="auth_session",
@@ -212,6 +236,40 @@ def assess_secrets_static(detail: str, severity: str, evidence: str = "") -> Imp
         is_client_public_key = lambda *_a, **_k: False  # type: ignore
         is_browser_rum_telemetry_key = lambda *_a, **_k: False  # type: ignore
         is_google_browser_api_key = lambda *_a, **_k: False  # type: ignore
+
+    # Deep-link / flow identifiers must never enter credential remediation
+    try:
+        from security_scan import _KNOWN_FLOW_IDENTIFIERS, classify_secret_candidate
+
+        ev = (evidence or "").strip()
+        if ev:
+            role = classify_secret_candidate("", ev, detail or "")
+            if role or re.sub(r"[^a-z0-9]+", "", ev.lower()) in _KNOWN_FLOW_IDENTIFIERS:
+                return ImpactResult(
+                    role="flow_identifier",
+                    impact="no_impact",
+                    severity="info",
+                    summary=(
+                        f"`{ev}` is a frontend flow/deep-link identifier — "
+                        "not an exposed password or credential."
+                    ),
+                    validation="invalid",
+                    proof=evidence or None,
+                    suppress=True,
+                )
+        # Detail title like "Exposed Reset Password" with R3ResetPass in text
+        if re.search(r"(?i)\br3reset[-_]?pass\b", f"{detail or ''}\n{ev}"):
+            return ImpactResult(
+                role="flow_identifier",
+                impact="no_impact",
+                severity="info",
+                summary="R3ResetPass is a password-reset deep-link flow id — not a secret.",
+                validation="invalid",
+                proof=evidence or None,
+                suppress=True,
+            )
+    except Exception:
+        pass
     # Pure RUM/analytics keys (Boomr, mPulse, …) — intentional in browser, no report value
     if is_browser_rum_telemetry_key(detail):
         return ImpactResult(

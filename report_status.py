@@ -119,6 +119,8 @@ def assessment_state_for_finding(
         return "False positive / invalidated"
     if cat in ("file_upload", "rate_limit", "well_known", "cloud_url", "js_intel", "websocket"):
         return "Attack-surface observation"
+    if "deep-link flow" in detail_l or "password-reset deep-link" in detail_l:
+        return "Attack-surface observation"
     if kind == "hardening" or cat in ("header_audit", "bot_management", "http_methods"):
         return "Informational technology finding"
     if ver in ("exploitable", "confirmed") or val == "confirmed":

@@ -246,6 +246,41 @@ EXPLAINERS: List[Tuple[tuple, Dict[str, str]]] = [
         },
     ),
     (
+        ("password-reset deep-link", "deep-link flow", "r3resetpass", "flow identifier"),
+        {
+            "title": "Password-reset deep-link flow",
+            "what": (
+                "Client code maps a src/query deep-link identifier (for example R3ResetPass) to a "
+                "forgot/reset-password flow. That string is a routing label, not a credential."
+            ),
+            "attacker": (
+                "They cannot steal an account from the flow id alone. The real risk is a reset token "
+                "arriving in the URL query and leaking via history, Referer, or analytics."
+            ),
+            "fix": (
+                "Keep the flow id as a non-secret router key. Ensure reset tokens are single-use, "
+                "short-lived, cleared with history.replaceState/router.replace, and not sent to third parties."
+            ),
+        },
+    ),
+    (
+        ("reset token arrives", "reset token referenced", "address bar"),
+        {
+            "title": "Reset token in URL query",
+            "what": (
+                "A password-reset token is read from the URL query string. Deleting a JS property does "
+                "not remove it from the address bar."
+            ),
+            "attacker": (
+                "They harvest tokens from browser history, proxy logs, Referer headers, or analytics beacons."
+            ),
+            "fix": (
+                "Use single-use short-lived tokens; call history.replaceState/router.replace to strip the "
+                "token; set a restrictive Referrer-Policy; keep tokens out of third-party requests."
+            ),
+        },
+    ),
+    (
         ("stealable_credential", "missing httponly", "cookie `", "session/auth credential"),
         {
             "title": "Stealable session / auth cookie",

@@ -179,6 +179,61 @@ _FORM_FIELD_KEYWORDS = frozenset(
         "confirmpassword",
         "old_password",
         "oldpassword",
+        "forgot_password",
+        "forgotpassword",
+        "reset_password",
+        "resetpassword",
+    }
+)
+
+# LHS names that mean route/flow identifiers, not credentials — even when the
+# value contains PASSWORD (FORGOT_PASSWORD = "R3ResetPass").
+_NON_SECRET_LHS_KEYWORDS = frozenset(
+    {
+        "route",
+        "src",
+        "source",
+        "flow",
+        "action",
+        "event",
+        "page",
+        "screen",
+        "deeplink",
+        "deep_link",
+        "deep-link",
+        "forgot_password",
+        "forgotpassword",
+        "reset_password",
+        "resetpassword",
+        "changepassword",
+        "change_password",
+        "navigateto",
+        "navigate_to",
+        "screenname",
+        "screen_name",
+        "flowid",
+        "flow_id",
+        "flowkey",
+        "flow_key",
+        "deepLinkSrc",
+        "deeplinksrc",
+    }
+)
+
+# Known frontend deep-link / flow identifiers mistaken for passwords
+_KNOWN_FLOW_IDENTIFIERS = frozenset(
+    {
+        "r3resetpass",
+        "r3reset-pass",
+        "r3reset_pass",
+        "r3forgotpass",
+        "r3forgot-pass",
+        "verifier",
+        "vérifier",
+        "reinitialiser",
+        "réinitialiser",
+        "resetpass",
+        "forgotpass",
     }
 )
 
@@ -491,6 +546,63 @@ def _lhs_is_html_data_or_aria_attr(raw: str) -> bool:
     return lhs.startswith("data-") or lhs.startswith("aria-") or lhs.startswith("data_")
 
 
+def classify_secret_candidate(
+    name: str,
+    value: str,
+    surrounding_code: str = "",
+    *,
+    raw: str = "",
+) -> Optional[str]:
+    """Return a non-secret role when the candidate is a flow/route identifier.
+
+    Do not treat strings as passwords merely because their identifier contains PASSWORD.
+    """
+    name_l = _normalize_field_token(name or "")
+    # Also accept dotted / camelCase LHS tails
+    name_tail = (name or "").strip().rsplit(".", 1)[-1]
+    name_tail_l = name_tail.lower().replace("-", "_")
+    value_l = (value or "").strip().lower()
+    value_norm = re.sub(r"[^a-z0-9]+", "", value_l)
+    ctx = (surrounding_code or "") + "\n" + (raw or "")
+    ctx_l = ctx.lower()
+
+    non_secret_norms = {_normalize_field_token(k) for k in _NON_SECRET_LHS_KEYWORDS}
+    if name_l in non_secret_norms or name_tail_l.replace("_", "") in {
+        _normalize_field_token(k) for k in _NON_SECRET_LHS_KEYWORDS
+    }:
+        return "flow_or_route_identifier"
+    # FORGOT_PASSWORD / RESET_PASSWORD LHS assigned to a short identifier
+    if re.search(r"(?i)(?:forgot|reset|change)[_-]?pass(?:word)?$", name_tail):
+        if value_norm in _KNOWN_FLOW_IDENTIFIERS or (
+            _IDENT_LIKE_VALUE_RE.match(value or "") and len(value or "") <= 32
+        ):
+            return "flow_or_route_identifier"
+    if "switch" in ctx_l and re.search(r"(?i)query\.src|props\.query\.src|\.src\b", ctx):
+        if value_norm in _KNOWN_FLOW_IDENTIFIERS or re.search(
+            r"(?i)reset.?pass|forgot.?pass", value_l
+        ):
+            return "deep_link_identifier"
+    if value_norm in _KNOWN_FLOW_IDENTIFIERS or value_l in _KNOWN_FLOW_IDENTIFIERS:
+        return "known_non_secret_flow_identifier"
+    # Localization / UI verbs used as button labels
+    if value_l in {
+        "contraseña",
+        "contrasena",
+        "senha",
+        "mot de passe",
+        "passwort",
+        "password",
+        "passwd",
+        "default.password",
+        "verifier",
+        "vérifier",
+        "réinitialiser",
+        "reinitialiser",
+    }:
+        return "localization_or_ui_label"
+    return None
+
+
 def _should_skip_secret_match(
     *,
     label: str,
@@ -500,8 +612,13 @@ def _should_skip_secret_match(
     end: int,
     value: str,
 ) -> bool:
-    """Drop form-control / UI-schema / route-label false positives."""
+    """Drop form-control / UI-schema / route-label / deep-link false positives."""
     value_l = (value or "").strip().lower()
+    lhs = _lhs_from_raw(raw)
+    window = body_text[max(0, start - 220) : min(len(body_text), end + 220)]
+    role = classify_secret_candidate(lhs, value, window, raw=raw)
+    if role:
+        return True
     # Localization / UI labels are never passwords
     if value_l in {
         "contraseña",
@@ -1291,9 +1408,105 @@ def scan_directory_traversal(url: str) -> List[Finding]:
     return findings
 
 
+def scan_password_reset_deep_links(url: str, body_text: str) -> List[Finding]:
+    """Report password-reset deep-link flows as attack-surface — not secrets.
+
+    Distinguishes ``src=R3ResetPass`` (flow id) from ``query.token`` (real sensitive
+    value that should leave the address bar via replaceState).
+    """
+    findings: List[Finding] = []
+    text = body_text or ""
+    if not text:
+        return findings
+    # Detect known flow constants / switch(src) deep-link routing
+    flow_hit = None
+    for m in re.finditer(
+        r"""(?i)(?:FORGOT_PASSWORD|RESET_PASSWORD)\s*=\s*['"]([^'"]{3,48})['"]""",
+        text[:250000],
+    ):
+        val = m.group(1)
+        role = classify_secret_candidate("RESET_PASSWORD", val, text[m.start() : m.end() + 80])
+        if role or re.sub(r"[^a-z0-9]+", "", val.lower()) in _KNOWN_FLOW_IDENTIFIERS:
+            flow_hit = val
+            break
+    if not flow_hit:
+        m = re.search(
+            r"""(?i)(?:query\.src|props\.query\.src)\s*(?:\.toLowerCase\(\))?\s*(?:===|==)\s*['"]([^'"]{3,48})['"]""",
+            text[:250000],
+        )
+        if m and (
+            "reset" in m.group(1).lower()
+            or "forgot" in m.group(1).lower()
+            or re.sub(r"[^a-z0-9]+", "", m.group(1).lower()) in _KNOWN_FLOW_IDENTIFIERS
+        ):
+            flow_hit = m.group(1)
+    if flow_hit:
+        findings.append(
+            (
+                "authentication",
+                "info",
+                (
+                    f"Password-reset deep-link flow discovered (src={flow_hit}). "
+                    "Client uses this as a flow identifier; a separate token query parameter "
+                    "is required — attack-surface observation, not an exposed credential."
+                ),
+                _text_evidence(flow_hit, label="password_reset_deep_link"),
+            )
+        )
+    # Real security direction: reset token arrives via query and may linger in the URL bar
+    token_query = re.search(
+        r"(?i)(?:query|props\.query|searchParams)\.(?:token|resetToken|reset_token)\b",
+        text[:250000],
+    )
+    if token_query and (
+        flow_hit
+        or re.search(r"(?i)reset.?pass|forgot.?pass|navigateToReset", text[:250000])
+    ):
+        sanitizes = bool(
+            re.search(
+                r"(?i)history\.replaceState|router\.(?:replace|push)|replaceState\s*\(",
+                text[:250000],
+            )
+        )
+        deletes_only = bool(
+            re.search(
+                r"(?i)delete\s+(?:props\.)?query\.(?:token|src)|delete\s+[a-zA-Z_][\w.]*\.token",
+                text[:250000],
+            )
+        )
+        if deletes_only and not sanitizes:
+            findings.append(
+                (
+                    "authentication",
+                    "low",
+                    (
+                        "Reset token arrives via URL query parameter; client deletes the JS "
+                        "property but no history.replaceState/router.replace was observed — "
+                        "token may remain in the address bar, history, and Referer."
+                    ),
+                    _match_evidence(token_query, text[:250000], label="reset_token_query"),
+                )
+            )
+        elif not sanitizes:
+            findings.append(
+                (
+                    "authentication",
+                    "info",
+                    (
+                        "Reset token referenced from URL query — verify single-use/expiry, "
+                        "address-bar sanitization (replaceState), Referrer-Policy, and that "
+                        "analytics/third parties do not receive the token."
+                    ),
+                    _match_evidence(token_query, text[:250000], label="reset_token_query"),
+                )
+            )
+    return findings
+
+
 def scan_authentication_flaws(url: str, headers: dict, body_text: str = "") -> List[Finding]:
     """HTTP auth findings require a real login surface — not path keywords like /author."""
     findings: List[Finding] = []
+    findings.extend(scan_password_reset_deep_links(url, body_text))
     parsed = urlparse(url)
     scheme = parsed.scheme.lower()
     for name, values in _query_params(url).items():
