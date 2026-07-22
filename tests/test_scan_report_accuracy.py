@@ -237,10 +237,57 @@ def test_partial_assessment_not_high_risk_from_unverified_mass_assignment():
         }
     ]
     doc = build_assessment_document(stats, "https://lab.example/")
-    assert doc["risk_level"] in ("Partial", "Low", "Clear")
+    # Incomplete scan must not invent High risk; also must not misuse "Partial" as risk.
+    assert doc["risk_level"] in ("Low", "Clear")
     assert doc["risk_level"] != "High"
+    assert doc["risk_level"] != "Partial"
     assert doc["scan_status"] == "partial"
     assert "candidate" in doc["exec_headline"].lower() or "partial" in doc["exec_headline"].lower() or "validation" in doc["exec_headline"].lower()
+
+
+def test_completed_drained_crawl_is_final_not_partial_risk():
+    """NetEdge-style: UI completed, queue 0, enum off — report must not say Partial."""
+    stats = CrawlStats()
+    stats.pages_crawled = 41
+    stats.queue_size = 0
+    stats.enum_configured = False
+    stats.enum_complete = False
+    stats.enum_skip_reason = "directory_enum_disabled"
+    stats._directory_enum_enabled = False
+    stats._directory_enum_started = False
+    stats.findings = [
+        {
+            "severity": "info",
+            "category": "header_audit",
+            "detail": "Missing Strict-Transport-Security",
+            "url": "https://netedgetechnology.com/",
+            "validation": "unverified",
+            "finding_kind": "hardening",
+        }
+    ]
+    # Simulate end-of-run finalize (what orchestrator/runner now do)
+    stats.mark_finished()
+    stats._scan_status = "final"
+    meta = scan_status_from_stats(stats)
+    assert meta["scan_status"] == "final"
+    assert meta["is_final"] is True
+    assert meta["completion_percent"] == 100.0
+    doc = build_assessment_document(stats, "https://netedgetechnology.com/", mode="full")
+    assert doc["scan_status"] == "final"
+    assert doc["risk_level"] == "Low"
+    assert doc["risk_level"] != "Partial"
+    assert "exported during" not in doc["exec_headline"].lower()
+
+
+def test_stale_partial_stamp_cleared_when_finished_and_drained():
+    stats = CrawlStats()
+    stats.pages_crawled = 41
+    stats.queue_size = 0
+    stats.enum_configured = False
+    stats._scan_status = "partial"  # mid-scan snapshot left this behind
+    stats.mark_finished()
+    meta = scan_status_from_stats(stats)
+    assert meta["scan_status"] == "final"
 
 
 def test_expired_jwt_skipped_as_secret():

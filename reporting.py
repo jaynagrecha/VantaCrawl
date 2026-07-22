@@ -461,6 +461,20 @@ def write_stats_reports(
     Used on normal completion and on stop/cancel/fail so partial results still get a full report.
     """
     cb = output_callback or (lambda _msg: None)
+    # Ensure end-of-run reports freeze elapsed time and can resolve to final.
+    try:
+        if getattr(stats, "finished_at", None) is None and hasattr(stats, "mark_finished"):
+            # Only auto-finish when the frontier looks drained (or enum-only finished).
+            q = int(getattr(stats, "queue_size", 0) or 0)
+            pages = int(getattr(stats, "pages_crawled", 0) or 0)
+            enum_cfg = bool(getattr(stats, "enum_configured", False))
+            enum_done = bool(getattr(stats, "enum_complete", False)) or not enum_cfg
+            if (pages > 0 and q <= 0 and enum_done) or bool(getattr(stats, "enum_only_finished", False)):
+                stats.mark_finished()
+                if str(getattr(stats, "_scan_status", "") or "").lower() == "partial":
+                    stats._scan_status = "final"  # type: ignore[attr-defined]
+    except Exception:
+        pass
     reporter = ReportWriter(report_dir, start_url, title=title or "")
     config_meta: Dict[str, Any] = {}
     try:
@@ -742,15 +756,43 @@ def crawl_stats_from_partial(
                     pass
 
     # Attach scan-status metadata for report builders (not a CrawlStats field)
-    stats._scan_status = str(  # type: ignore[attr-defined]
-        snap.get("scan_status")
-        or prog.get("scan_status")
-        or ("partial" if not finished else "final")
+    # Prefer structural completeness: a drained finished crawl is final even if
+    # an older mid-scan snapshot still said "partial".
+    raw_status = str(
+        snap.get("scan_status") or prog.get("scan_status") or ""
+    ).strip().lower()
+    job_phase = str(prog.get("phase") or "").strip().lower()
+    q = int(getattr(stats, "queue_size", 0) or 0)
+    pages = int(getattr(stats, "pages_crawled", 0) or 0)
+    enum_cfg = bool(
+        snap.get("enum_configured")
+        if "enum_configured" in snap
+        else snap.get("directory_enum_enabled", stats.enum_words_total > 0)
     )
+    enum_done = bool(snap.get("enum_complete")) or not enum_cfg
+    if finished is None and job_phase in ("completed", "complete", "final"):
+        stats.mark_finished()
+        finished = stats.finished_at
+    work_complete = pages > 0 and q <= 0 and enum_done
+    if work_complete and (finished or job_phase in ("completed", "complete", "final")):
+        resolved = "final"
+    elif raw_status in ("partial", "final", "stopped"):
+        resolved = raw_status
+    elif finished:
+        resolved = "final" if work_complete else "stopped"
+    else:
+        resolved = "partial"
+    stats._scan_status = resolved  # type: ignore[attr-defined]
+    if resolved == "final" and getattr(stats, "finished_at", None) is None:
+        stats.mark_finished()
     stats._report_generated_during_scan = bool(  # type: ignore[attr-defined]
-        snap.get("report_generated_during_scan")
-        if "report_generated_during_scan" in snap
-        else (not finished)
+        False
+        if resolved == "final"
+        else (
+            snap.get("report_generated_during_scan")
+            if "report_generated_during_scan" in snap
+            else (not finished)
+        )
     )
     stats._directory_enum_enabled = bool(  # type: ignore[attr-defined]
         snap.get("directory_enum_enabled")
