@@ -455,6 +455,35 @@ a.btn:hover { text-decoration: none; }
   width: 100%; min-height: 70vh; border: 1px solid var(--line); border-radius: 14px; background: #000;
 }
 
+.artifact-block { margin-bottom: 1rem; min-width: 0; }
+.artifact-block-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: .75rem;
+  margin-bottom: .65rem;
+}
+.artifact-block-head h3 { margin: 0; font-size: 1rem; }
+.artifact-list {
+  list-style: none; margin: 0; padding: 0; display: grid; gap: .55rem; min-width: 0;
+}
+.artifact-row {
+  display: flex; align-items: center; gap: .75rem;
+  padding: .8rem .9rem; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--bg-soft); min-width: 0;
+}
+.artifact-info { min-width: 0; flex: 1 1 auto; }
+.artifact-name {
+  font-size: .84rem; line-height: 1.35; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.artifact-meta {
+  display: flex; flex-wrap: wrap; gap: .4rem .65rem; align-items: center;
+  margin-top: .3rem; font-size: .75rem; color: var(--muted);
+}
+.artifact-kind {
+  text-transform: uppercase; letter-spacing: .04em; font-weight: 800; font-size: .68rem;
+  border: 1px solid var(--line); border-radius: 999px; padding: .1rem .45rem;
+}
+.artifact-dl { flex: 0 0 auto; min-height: 40px; }
+
 /* Live scan activity */
 .scan-activity {
   display: flex; align-items: center; gap: .9rem; flex-wrap: wrap;
@@ -722,6 +751,15 @@ a.btn:hover { text-decoration: none; }
   .page-actions .btn { flex: 1 1 calc(50% - .5rem); text-align: center; justify-content: center; }
   .report-actions .btn { flex: 1 1 100%; }
   .section-head .btn { width: 100%; text-align: center; }
+
+  .artifact-row {
+    flex-direction: column; align-items: stretch; gap: .65rem; padding: .9rem .95rem;
+  }
+  .artifact-name {
+    white-space: normal; overflow: visible; text-overflow: unset;
+    overflow-wrap: anywhere; word-break: break-word; font-size: .82rem;
+  }
+  .artifact-dl { width: 100%; min-height: 44px; }
 
   .progress-head { flex-direction: column; align-items: flex-start; }
   .log { max-height: 260px; font-size: .74rem; padding: .75rem; }
