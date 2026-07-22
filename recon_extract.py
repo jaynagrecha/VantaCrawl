@@ -20,9 +20,20 @@ LOGIN_PATH_RE = re.compile(
 PASSWORD_FIELD_RE = re.compile(
     r"(?i)(<input[^>]+type\s*=\s*[\"']password[\"']|name\s*=\s*[\"']password[\"'])"
 )
-MIXED_CONTENT_RE = re.compile(
-    r"(?i)(?:src|href|action|data|poster)\s*=\s*[\"'](http://[^\"']+)[\"']"
+# Active mixed content only (script / iframe / stylesheet). Plain <a href=http://…>
+# and image/poster URLs are common and not exploitable the same way.
+MIXED_CONTENT_SCRIPT_RE = re.compile(
+    r"(?i)<script\b[^>]+src\s*=\s*[\"'](http://[^\"']+)[\"']"
 )
+MIXED_CONTENT_IFRAME_RE = re.compile(
+    r"(?i)<iframe\b[^>]+src\s*=\s*[\"'](http://[^\"']+)[\"']"
+)
+MIXED_CONTENT_STYLE_RE = re.compile(
+    r"(?i)<link\b[^>]+(?:rel\s*=\s*[\"'][^\"']*stylesheet[^\"']*[\"'][^>]+href\s*=\s*[\"'](http://[^\"']+)[\"']|"
+    r"href\s*=\s*[\"'](http://[^\"']+)[\"'][^>]+rel\s*=\s*[\"'][^\"']*stylesheet)"
+)
+# Kept for callers that still import the old name — active content only
+MIXED_CONTENT_RE = MIXED_CONTENT_SCRIPT_RE
 EMAIL_RE = re.compile(r"(?i)\b([a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,})\b")
 MAILTO_RE = re.compile(r"(?i)mailto:([a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,})")
 PHONE_RE = re.compile(r"(?<!\w)(\+?\d[\d\-\s().]{7,}\d)")
@@ -173,17 +184,23 @@ def extract_websocket_urls(text: str, base_url: str) -> Set[str]:
 
 
 def extract_mixed_content(url: str, body_text: str) -> List[str]:
+    """Return HTTP URLs loaded as active content on an HTTPS page."""
     if not body_text or not url.lower().startswith("https://"):
         return []
-    hits = []
-    for match in MIXED_CONTENT_RE.finditer(body_text[:200000]):
-        resource = match.group(1)
-        if resource.lower().startswith("http://"):
+    hits: List[str] = []
+    chunk = body_text[:200000]
+    for match in MIXED_CONTENT_SCRIPT_RE.finditer(chunk):
+        hits.append(match.group(1))
+    for match in MIXED_CONTENT_IFRAME_RE.finditer(chunk):
+        hits.append(match.group(1))
+    for match in MIXED_CONTENT_STYLE_RE.finditer(chunk):
+        resource = match.group(1) or match.group(2)
+        if resource:
             hits.append(resource)
     seen: Set[str] = set()
     out: List[str] = []
     for item in hits:
-        if item not in seen:
+        if item and item.lower().startswith("http://") and item not in seen:
             seen.add(item)
             out.append(item)
     return out[:40]
@@ -251,13 +268,62 @@ def inventory_cookies(headers: dict) -> List[Dict[str, str]]:
     return inventory
 
 
-def find_jwt_candidates(text: str, headers: Optional[dict] = None) -> List[Tuple[str, str]]:
-    """Return (source, full_token) for JWT-shaped strings."""
+_JWT_ALGS = frozenset(
+    {
+        "HS256",
+        "HS384",
+        "HS512",
+        "RS256",
+        "RS384",
+        "RS512",
+        "ES256",
+        "ES384",
+        "ES512",
+        "PS256",
+        "PS384",
+        "PS512",
+        "NONE",
+    }
+)
+
+
+def jwt_header_looks_valid(token: str) -> bool:
+    """True when the first JWT segment decodes to JSON with a recognized ``alg``."""
+    import base64
+    import json
+
+    parts = (token or "").split(".")
+    if len(parts) < 2:
+        return False
+    try:
+        pad = "=" * (-len(parts[0]) % 4)
+        header = json.loads(base64.urlsafe_b64decode(parts[0] + pad).decode("utf-8", "replace"))
+    except Exception:
+        return False
+    if not isinstance(header, dict):
+        return False
+    alg = header.get("alg")
+    return isinstance(alg, str) and alg.upper() in _JWT_ALGS
+
+
+def find_jwt_candidates(
+    text: str,
+    headers: Optional[dict] = None,
+    *,
+    include_body: bool = False,
+) -> List[Tuple[str, str]]:
+    """Return (source, full_token) for validated JWT-shaped strings.
+
+    Default: Authorization / Cookie / Set-Cookie only. Body matches are a major FP
+    source (base64 blobs, webpack chunks) and are opt-in via ``include_body``.
+    """
     hits: List[Tuple[str, str]] = []
     seen = set()
 
     def add(source: str, token: str):
         if token in seen:
+            return
+        if not jwt_header_looks_valid(token):
             return
         seen.add(token)
         hits.append((source, token))
@@ -268,9 +334,15 @@ def find_jwt_candidates(text: str, headers: Optional[dict] = None) -> List[Tuple
             if kl in ("authorization", "set-cookie", "cookie"):
                 for match in JWT_RE.finditer(str(value)):
                     add(kl, match.group(0))
-    if text:
+    if include_body and text:
+        # Only near auth-ish identifiers to cut random eyJ… body noise
         for match in JWT_RE.finditer(text[:150000]):
-            add("body", match.group(0))
+            window = text[max(0, match.start() - 64) : match.end() + 32]
+            if re.search(
+                r"(?i)(authorization|bearer|access[_-]?token|id[_-]?token|refresh[_-]?token|jwt)",
+                window,
+            ):
+                add("body", match.group(0))
     return hits[:20]
 
 

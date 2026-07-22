@@ -134,24 +134,26 @@ def parse_set_cookie(part: str) -> Dict[str, Any]:
 
 
 def classify_cookie(name: str, value: str = "") -> str:
-    """Return role: auth_session | csrf | analytics | preference | jwt | unknown."""
+    """Return role: auth_session | csrf | analytics | preference | jwt | unknown.
+
+    Analytics/preference exact matches run before auth substrings so names like
+    ``intercom-session-*`` / ``_ga`` are not misclassified as session credentials.
+    """
     n = (name or "").strip()
     v = (value or "").strip()
     if v and _JWT_RE.match(v):
         return "jwt"
-    if _AUTH_NAME_RE.match(n) or re.search(r"(?i)(session|auth|token|jwt|sid)", n):
-        # Avoid classifying pure CSRF names as auth even if they contain "token"
-        if _CSRF_NAME_RE.match(n):
-            return "csrf"
-        if re.search(r"(?i)csrf|xsrf|forgery", n):
-            return "csrf"
-        return "auth_session"
-    if _CSRF_NAME_RE.match(n):
-        return "csrf"
     if _ANALYTICS_NAME_RE.match(n):
         return "analytics"
     if _PREFERENCE_NAME_RE.match(n):
         return "preference"
+    if _CSRF_NAME_RE.match(n) or re.search(r"(?i)csrf|xsrf|forgery", n):
+        return "csrf"
+    if _AUTH_NAME_RE.match(n):
+        return "auth_session"
+    # Substring auth — after analytics/preference/csrf so tracking names win
+    if re.search(r"(?i)(session|auth|token|jwt|sid)", n):
+        return "auth_session"
     # High-entropy opaque values with auth-ish prefixes
     if re.search(r"(?i)^(sess|auth|token|jwt|sid)", n) and len(v) >= 16:
         return "auth_session"
@@ -340,15 +342,7 @@ def analyze_set_cookie_headers(
             if assessment["stealable"] and parsed.get("value"):
                 evidence = str(parsed["value"])
             findings.append(("authentication", str(assessment["severity"]), detail, evidence))
-        elif assessment["impact"] == "mitigated_credential" and name not in seen_names:
-            # Record once as informational so reports show "checked, mitigated"
-            seen_names.add(name)
-            detail = (
-                f"Cookie `{name}` — session/auth cookie with protective flags "
-                f"({row['flags']}). No practical JS cookie-theft path detected; "
-                f"residual non-JS theft risk remains. Impact: mitigated_credential."
-            )
-            findings.append(("authentication", "info", detail, row.get("value_masked")))
+        # mitigated_credential / analytics / preference → inventory only (no finding noise)
 
     return inventory, findings
 

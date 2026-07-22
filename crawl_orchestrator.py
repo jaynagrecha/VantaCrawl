@@ -616,19 +616,12 @@ async def run_full_crawl_async(
                                 link_depths=link_depths,
                             )
                         for wk in host_recon.get("well_known") or []:
+                            # Inventory only — well-known discovery is recon, not a vuln
                             stats.record_dict_rows(
                                 "well_known_hits",
                                 [wk],
                                 ("url", "status"),
                             )
-                            if wk.get("url"):
-                                stats.record_finding(
-                                    "well_known",
-                                    "info",
-                                    wk["url"],
-                                    f"{wk.get('evidence', 'well-known endpoint')} [HTTP {wk.get('status', '?')}]",
-                                    evidence=wk.get("evidence"),
-                                )
                         if host_recon.get("tls_sans"):
                             output_callback(
                                 f"TLS SAN inventory ({host_key}): {len(host_recon['tls_sans'])} name(s)"
@@ -1049,15 +1042,8 @@ def _collect_passive_recon(stats, url, body_text, headers, *, page_host: str, en
     for internal in extract_internal_hosts(text, page_host=host):
         stats.record_url("internal_host", internal)
     for cloud in extract_cloud_urls(text):
+        # Inventory only — cloud SDK URLs are almost never vulnerabilities by themselves
         stats.record_url("cloud", cloud)
-        # Target = cloud URL so host-page spam collapses via dedupe key
-        stats.record_finding(
-            "cloud_url",
-            "info",
-            cloud,
-            "Cloud service URL referenced in page/script content",
-            evidence=cloud,
-        )
     for comment in extract_interesting_comments(text):
         stats.record_url("comment", f"{url} :: {comment}")
     for sink in extract_dom_sinks(text):
@@ -1205,8 +1191,11 @@ async def _run_security_checks(
             from urllib.parse import urlparse as _urlparse
 
             scheme = (_urlparse(url).scheme or "").lower()
-            for source, token in find_jwt_candidates(body_text or "", headers or {}):
-                sev = "high" if scheme == "http" else "info"
+            # Auth/Cookie headers only — body JWT shapes are a major FP source
+            for source, token in find_jwt_candidates(
+                body_text or "", headers or {}, include_body=False
+            ):
+                sev = "high" if scheme == "http" else "medium"
                 await emit(
                     "secrets_exposure",
                     sev,
@@ -1218,20 +1207,18 @@ async def _run_security_checks(
             pass
     sensitive = scan_sensitive_path(url)
     if sensitive and config.sensitive_file_highlights:
-        confirmed = True
-        evidence = None
-        if needs_content_gate(url):
-            proof = validate_sensitive_content(
-                url, status=status_code, body=body_for_gate, content_type=content_type
-            )
-            if not proof:
-                confirmed = False
-            else:
-                evidence = proof
-        if confirmed:
+        # Always require body proof — ungated path matches stay inventory-only
+        proof = validate_sensitive_content(
+            url, status=status_code, body=body_for_gate, content_type=content_type
+        )
+        if proof and proof != "ok":
             if url not in stats.sensitive_urls:
                 stats.sensitive_urls.append(url)
-            await emit("sensitive_path", "high", url, sensitive, evidence=evidence)
+            await emit("sensitive_path", "high", url, sensitive, evidence=proof)
+        elif proof == "ok":
+            # Pattern matched but no content gate defined — inventory, not a finding
+            if url not in stats.sensitive_urls:
+                stats.sensitive_urls.append(url)
     if config.header_audit:
         for cat, severity, detail in audit_security_headers(headers or {}, url):
             await emit(cat, severity, url, detail)
@@ -1302,12 +1289,8 @@ async def _probe_form_actions(client, forms, output_callback, stats):
             continue
         try:
             response = await client.get(action, timeout=10)
-            stats.record_finding(
-                "form_probe",
-                "info",
-                action,
-                f"Form GET probe returned HTTP {response.status_code}",
-            )
+            # Inventory / log only — HTTP status of a GET form is not a vulnerability
+            stats.record_url("form_probe", f"{action} :: HTTP {response.status_code}")
             output_callback(f"Form probe: {action} -> {response.status_code}")
         except httpx.HTTPError as error:
             output_callback(f"Form probe failed: {action} ({error})")

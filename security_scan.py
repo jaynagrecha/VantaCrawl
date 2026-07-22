@@ -27,8 +27,11 @@ SECRET_PATTERNS = [
     (r"AIza[0-9A-Za-z\-_]{35}", "Google Cloud / Maps API Key", "high"),
     (r"xox[baprs]-[0-9A-Za-z-]{10,48}-[0-9A-Za-z-]{10,48}(?:-[0-9A-Za-z-]{10,48})?", "Slack API Token", "critical"),
     (r"SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}", "SendGrid API Key", "critical"),
-    (r"key-[0-9a-zA-Z]{32}", "Mailgun API Key", "high"),
-    (r"SK[0-9a-fA-F]{32}", "Twilio API Key SID", "high"),
+    # Mailgun keys are key-<32 hex>. Exclude hyphen before "key-" so webpack
+    # chunk names like chunk-key-<hex>.js do not match.
+    (r"(?<![A-Za-z0-9_-])key-[0-9a-f]{32}(?![A-Za-z0-9_.])", "Mailgun API Key", "high"),
+    # Twilio API Key SIDs need SK + 32 hex AND nearby twilio/account context (checked in scan_secrets)
+    (r"(?<![A-Za-z0-9])SK[0-9a-fA-F]{32}(?![A-Za-z0-9])", "Twilio API Key SID", "high"),
     (r"(?i)twilio[_-]?(?:auth[_-]?)?token['\"]?\s*[:=]\s*['\"][0-9a-fA-F]{32}", "Twilio Auth Token", "critical"),
     (r"shpat_[a-fA-F0-9]{32}", "Shopify Admin API Access Token", "critical"),
     (r"npm_[A-Za-z0-9]{36}", "npm Access Token", "critical"),
@@ -213,8 +216,8 @@ SENSITIVE_PATH_RE = re.compile(
     r"\.htpasswd|"
     r"config\.php|"
     r"wp-config(?:\.php)?|"
-    r"(?:backup|dump|site-backup|db-backup|www-backup)\.(?:zip|tar|gz|tgz|sql|bak|7z|rar)|"
-    r"(?:backup|dump)"
+    # Require archive/db extension — bare /backup|/dump pages are common CMS FPs
+    r"(?:backup|dump|site-backup|db-backup|www-backup)\.(?:zip|tar|gz|tgz|sql|bak|7z|rar)"
     r")(?:/|$|\?)",
 )
 
@@ -514,6 +517,14 @@ def scan_secrets(
                 value=value,
             ):
                 continue
+            # Twilio SK… SIDs collide with random hex — require nearby Twilio context
+            if label == "Twilio API Key SID":
+                window = body_text[max(0, match.start() - 96) : match.end() + 96]
+                if not re.search(
+                    r"(?i)(?:twilio|account[_-]?sid|AC[0-9a-fA-F]{32}|auth[_-]?token)",
+                    window,
+                ):
+                    continue
             typed = refine_secret_label(
                 label,
                 raw,
@@ -615,11 +626,23 @@ def extract_forms(html: str, page_url: str, content_type: str = "") -> List[Dict
         action = form.get("action") or page_url
         method = (form.get("method") or "GET").upper()
         fields = []
+        file_fields = []
         for inp in form.find_all(["input", "textarea", "select"]):
             name = inp.get("name")
             if name:
                 fields.append(name)
-        forms.append({"action": action, "method": method, "fields": fields, "page": page_url})
+            if (inp.name or "").lower() == "input" and (inp.get("type") or "").lower() == "file":
+                file_fields.append(name or "(unnamed-file)")
+        forms.append(
+            {
+                "action": action,
+                "method": method,
+                "fields": fields,
+                "file_fields": file_fields,
+                "has_file_input": bool(file_fields),
+                "page": page_url,
+            }
+        )
     return forms
 
 
@@ -763,29 +786,32 @@ def scan_rce(url: str, body_text: str, forms: Optional[List[dict]] = None) -> Li
 
 
 def scan_file_upload(forms: Optional[List[dict]], url: str) -> List[Tuple[str, str, str]]:
+    """Emit only when a real ``type=file`` input is present (not name=file alone)."""
     findings = []
     if not forms:
         return findings
     for form in forms:
         action = form.get("action") or url
-        fields = form.get("fields", [])
-        if not fields:
+        has_file = bool(form.get("has_file_input")) or bool(form.get("file_fields"))
+        if not has_file:
             continue
-        has_file = any(re.match(r"(?i)^(file|upload|attachment|document|image)$", f) for f in fields)
-        if has_file:
-            method = form.get("method", "GET")
-            findings.append(
-                (
-                    "file_upload",
-                    "medium" if method == "POST" else "high",
-                    f"File upload form at {action} (verify extension/MIME validation)",
-                ),
-            )
+        method = form.get("method", "GET")
+        findings.append(
+            (
+                "file_upload",
+                "medium" if method == "POST" else "high",
+                f"File upload form at {action} (verify extension/MIME validation)",
+            ),
+        )
     return findings
 
 
 def scan_ssrf(url: str, body_text: str = "") -> List[Tuple[str, str, str]]:
-    """Only report when a URL-like value is present (name-only next=/dashboard is not SSRF)."""
+    """Only report high-confidence internal/metadata URL targets (passive).
+
+    Public absolute URLs in redirect-style params are open-redirect noise, not SSRF.
+    Active probes still confirm SSRF separately.
+    """
     findings = []
     params = _query_params(url)
     for name, values in params.items():
@@ -794,7 +820,6 @@ def scan_ssrf(url: str, body_text: str = "") -> List[Tuple[str, str, str]]:
         for value in values:
             decoded = unquote(value or "")
             if re.match(r"(?i)^https?://", decoded) or decoded.startswith("//"):
-                # Internal / metadata targets are higher confidence
                 if re.search(
                     r"(?i)(127\.0\.0\.1|localhost|0\.0\.0\.0|169\.254\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|"
                     r"metadata\.google|169\.254\.169\.254)",
@@ -802,10 +827,6 @@ def scan_ssrf(url: str, body_text: str = "") -> List[Tuple[str, str, str]]:
                 ):
                     findings.append(
                         ("ssrf", "high", f"Parameter '{name}' points at internal/metadata URL (possible SSRF)"),
-                    )
-                else:
-                    findings.append(
-                        ("ssrf", "medium", f"Parameter '{name}' accepts absolute URL value (possible SSRF vector)"),
                     )
     return findings
 
@@ -850,22 +871,39 @@ def scan_authentication_flaws(url: str, headers: dict, body_text: str = "") -> L
 
 
 def scan_open_redirect(url: str) -> List[Tuple[str, str, str]]:
-    """Passive: absolute off-site URL in a redirect-style parameter."""
+    """Passive: absolute off-site URL in a redirect-style parameter.
+
+    OAuth ``redirect_uri`` on authorize endpoints is expected (not a finding).
+    Passive hits stay low severity — active probes confirm open redirects separately.
+    """
     findings = []
-    host = (urlparse(url).netloc or "").lower()
+    parsed = urlparse(url)
+    host = (parsed.netloc or "").lower()
+    path = (parsed.path or "").lower()
+    oauthish = bool(re.search(r"(?i)/(?:oauth|oidc|authorize|sso|connect)(?:/|$)", path))
     for name, values in _query_params(url).items():
         if not OPEN_REDIRECT_PARAM_RE.match(name):
+            continue
+        name_l = (name or "").lower()
+        # Legitimate OAuth / OIDC redirect_uri to registered clients
+        if oauthish and name_l in (
+            "redirect_uri",
+            "redirect_url",
+            "return_to",
+            "return",
+            "callback",
+        ):
             continue
         for value in values:
             decoded = unquote(value or "")
             if not re.match(r"(?i)^https?://", decoded) and not decoded.startswith("//"):
                 continue
             target_host = urlparse(decoded if "://" in decoded else f"https:{decoded}").netloc.lower()
-            if target_host and target_host != host:
+            if target_host and target_host != host and not target_host.endswith("." + host):
                 findings.append(
                     (
                         "open_redirect",
-                        "medium",
+                        "low",
                         f"Parameter '{name}' points off-site to {target_host} (possible open redirect)",
                     )
                 )
