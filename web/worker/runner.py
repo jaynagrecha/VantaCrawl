@@ -134,6 +134,31 @@ def _append_log(job_id: str, line: str, *, max_chars: int = 24000) -> str:
         return tail
 
 
+class _LogTailBuffer:
+    """Batch DB writes for live logs (flush every N lines or ~1s)."""
+
+    def __init__(self, job_id: str, *, max_lines: int = 40, max_interval_s: float = 1.0):
+        self.job_id = job_id
+        self.max_lines = max_lines
+        self.max_interval_s = max_interval_s
+        self._buf: List[str] = []
+        self._last_flush = time.time()
+
+    def append(self, line: str) -> None:
+        self._buf.append(line)
+        now = time.time()
+        if len(self._buf) >= self.max_lines or (now - self._last_flush) >= self.max_interval_s:
+            self.flush()
+
+    def flush(self) -> None:
+        if not self._buf:
+            return
+        chunk = "\n".join(self._buf)
+        self._buf.clear()
+        self._last_flush = time.time()
+        _append_log(self.job_id, chunk)
+
+
 def _build_crawl_config(job: ScanJob) -> CrawlConfig:
     settings = get_settings()
     job_dir = Path(settings.jobs_dir) / job.id
@@ -354,10 +379,11 @@ async def run_job(job_id: str) -> None:
         )
 
     stats_holder: Dict[str, Any] = {"stats": CrawlStats()}
+    log_buffer = _LogTailBuffer(job_id)
 
     def output_callback(message: str):
         text = str(message)
-        _append_log(job_id, text)
+        log_buffer.append(text)
         low = text.lower()
         phase = None
         if (
@@ -880,6 +906,10 @@ async def run_job(job_id: str) -> None:
         )
         publish_progress(job_id, {"status": "failed", "message": str(exc)})
     finally:
+        try:
+            log_buffer.flush()
+        except Exception:
+            pass
         stop_flag["stop"] = True
         if use_browser:
             try:

@@ -4,6 +4,7 @@ import asyncio
 import os
 import random
 import re
+import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -511,9 +512,13 @@ def is_plausible_href(href):
     return True
 
 
+_LOG_FILE_LOCK = threading.Lock()
+
+
 def log_to_file(output_file_path, url):
-    with open(output_file_path, "a", encoding="utf-8") as file:
-        file.write(url + "\n")
+    with _LOG_FILE_LOCK:
+        with open(output_file_path, "a", encoding="utf-8") as file:
+            file.write(url + "\n")
 
 
 def load_wordlist(wordlist_file, max_words: int = 0):
@@ -1285,6 +1290,7 @@ def log_enum_batch_progress(
     update_progress=None,
     progress_state=None,
     batch_words=None,
+    use_cumulative_tested: bool = False,
 ):
     batch_num = index // batch_size + 1
     total_batches = max(1, (total_words + batch_size - 1) // batch_size)
@@ -1300,7 +1306,15 @@ def log_enum_batch_progress(
 
     # Always refresh cockpit counters / current probe — even when we skip log spam
     if stats is not None:
-        if hasattr(stats, "note_enum_progress"):
+        if use_cumulative_tested and hasattr(stats, "note_enum_progress"):
+            # Probe counter is advanced in check_word; only refresh current probe label here
+            stats.note_enum_progress(
+                int(getattr(stats, "enum_words_tested", 0) or 0),
+                word=current_word,
+                path=base,
+                depth=depth,
+            )
+        elif hasattr(stats, "note_enum_progress"):
             stats.note_enum_progress(
                 words_done,
                 word=current_word,
@@ -1314,6 +1328,14 @@ def log_enum_batch_progress(
             if getattr(stats, "enum_started_at", None) is None:
                 stats.enum_started_at = progress_state["started_at"]
 
+    if stats is not None and use_cumulative_tested:
+        display_done = int(getattr(stats, "enum_words_tested", 0) or 0)
+        display_total = max(int(getattr(stats, "enum_words_total", 0) or 0), total_words, 1)
+    else:
+        display_done = words_done
+        display_total = total_words or 1
+    display_pct = min(100, int(display_done * 100 / display_total)) if display_total else 100
+
     if total_batches > 5000:
         log_every = 1
     elif total_batches > 500:
@@ -1321,11 +1343,11 @@ def log_enum_batch_progress(
     else:
         log_every = 10
     if batch_num != 1 and batch_num % log_every != 0:
-        if update_progress and total_words and stats is not None:
+        if update_progress and display_total and stats is not None:
             update_progress(
-                total_words,
-                words_done,
-                format_enum_progress(words_done, total_words, stats.enum_hits if stats else 0),
+                display_total,
+                display_done,
+                format_enum_progress(display_done, display_total, stats.enum_hits if stats else 0),
             )
         return
 
@@ -1340,11 +1362,11 @@ def log_enum_batch_progress(
             eta_sec = stats.enum_eta_seconds()
         if eta_sec is None:
             elapsed = max(now - progress_state["started_at"], 0.001)
-            rate = words_done / elapsed
+            rate = display_done / elapsed
             progress_state["rate"] = rate
-            if rate > 0 and words_done < total_words and (words_done >= 200 or elapsed >= 10):
-                eta_sec = int((total_words - words_done) / rate)
-        if eta_sec is not None and eta_sec >= 0 and words_done < total_words:
+            if rate > 0 and display_done < display_total and (display_done >= 200 or elapsed >= 10):
+                eta_sec = int((display_total - display_done) / rate)
+        if eta_sec is not None and eta_sec >= 0 and display_done < display_total:
             if eta_sec >= 3600:
                 eta_text = f" · ETA ~{eta_sec // 3600}h {(eta_sec % 3600) // 60}m"
             elif eta_sec >= 60:
@@ -1354,17 +1376,17 @@ def log_enum_batch_progress(
 
     probe_bit = f" · trying {current_word}" if current_word else ""
     output_callback(
-        f"Brute force depth {depth} ({word_pct}% · batch {batch_pct}%): "
-        f"{words_done:,}/{total_words:,} words · batch {batch_num:,}/{total_batches:,} "
+        f"Brute force depth {depth} ({display_pct}% · batch {batch_pct}%): "
+        f"{display_done:,}/{display_total:,} probes · batch {batch_num:,}/{total_batches:,} "
         f"under {base}{probe_bit}{eta_text}"
     )
     if stats is not None:
         output_callback(stats.format_friendly_line())
-    if update_progress and total_words:
+    if update_progress and display_total:
         update_progress(
-            total_words,
-            words_done,
-            format_enum_progress(words_done, total_words, stats.enum_hits if stats else 0),
+            display_total,
+            display_done,
+            format_enum_progress(display_done, display_total, stats.enum_hits if stats else 0),
         )
 
 

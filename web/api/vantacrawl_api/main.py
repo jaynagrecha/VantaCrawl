@@ -30,10 +30,12 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
 
 origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+# Browsers reject Access-Control-Allow-Origin: * together with credentials.
+_cors_wildcard = origins == ["*"] or not origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins if origins != ["*"] else ["*"],
-    allow_credentials=True,
+    allow_origins=["*"] if _cors_wildcard else origins,
+    allow_credentials=not _cors_wildcard,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -47,12 +49,51 @@ app.include_router(meta.router, prefix=PREFIX)
 
 @app.get("/api/health")
 def health():
+    checks: dict = {"api": True}
+    try:
+        from sqlalchemy import text
+        from sqlmodel import Session
+
+        from .database import engine
+
+        with Session(engine) as session:
+            session.execute(text("SELECT 1"))
+        checks["database"] = True
+    except Exception as exc:
+        checks["database"] = False
+        checks["database_error"] = str(exc)[:160]
+
+    try:
+        from .services.queue import redis_client
+
+        redis_client().ping()
+        checks["redis"] = True
+    except Exception as exc:
+        checks["redis"] = False
+        checks["redis_error"] = str(exc)[:160]
+
+    if settings.embed_worker:
+        from .services import embedded_worker
+
+        alive = bool(
+            getattr(embedded_worker, "_thread", None)
+            and embedded_worker._thread is not None
+            and embedded_worker._thread.is_alive()
+        )
+        checks["embedded_worker"] = alive
+    else:
+        checks["embedded_worker"] = None
+
+    ok = bool(checks.get("api") and checks.get("database") and checks.get("redis"))
+    if settings.embed_worker and checks.get("embedded_worker") is False:
+        ok = False
     return {
-        "ok": True,
+        "ok": ok,
         "app": settings.app_name,
         "embed_worker": settings.embed_worker,
         "max_concurrent_scans": settings.max_concurrent_scans,
         "max_concurrent_scans_per_user": settings.max_concurrent_scans_per_user,
+        "checks": checks,
     }
 
 

@@ -304,6 +304,20 @@ class CrawlStats:
             return None
         return max(0, int((total - done) / rate))
 
+    def enum_words_per_minute(self) -> float:
+        samples = self._enum_rate_samples
+        if len(samples) < 2:
+            elapsed = self.enum_elapsed_seconds()
+            done = int(self.enum_words_tested or 0)
+            if elapsed <= 0 or done <= 0:
+                return 0.0
+            return done / elapsed * 60.0
+        t0, n0 = samples[0]
+        t1, n1 = samples[-1]
+        if t1 <= t0 or n1 <= n0:
+            return 0.0
+        return (n1 - n0) / (t1 - t0) * 60.0
+
     def enum_probing_label(self) -> str:
         word = (self.enum_current_word or "").strip()
         if not word:
@@ -427,6 +441,7 @@ class CrawlStats:
             "enum_started_at": self.enum_started_at,
             "enum_elapsed_seconds": round(self.enum_elapsed_seconds(), 1),
             "enum_eta_seconds": self.enum_eta_seconds(),
+            "enum_words_per_minute": round(self.enum_words_per_minute(), 1),
             "enum_current_word": self.enum_current_word,
             "enum_current_path": self.enum_current_path,
             "enum_current_depth": self.enum_current_depth,

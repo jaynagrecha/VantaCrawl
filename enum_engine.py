@@ -613,6 +613,14 @@ async def run_pro_directory_enum(
                 follow_redirects=bool(getattr(config, "enum_follow_redirects", True)),
                 max_redirect_hops=int(getattr(config, "enum_redirect_max_hops", 5) or 5),
             )
+            stats.enum_words_tested = int(getattr(stats, "enum_words_tested", 0) or 0) + 1
+            if hasattr(stats, "note_enum_progress"):
+                stats.note_enum_progress(
+                    stats.enum_words_tested,
+                    word=variant,
+                    path=format_enum_path(path_segments),
+                    depth=depth,
+                )
             if config.status_code_report and status:
                 stats.record_status(status, enum=True)
             # Cap retained body so hit follow-up can reuse it without huge memory use
@@ -647,7 +655,9 @@ async def run_pro_directory_enum(
         max_d = 0 if config.enum_flat_scan else (config.branch_depth_limit or config.max_depth)
         if depth > max_d or not await is_running(running):
             return
+        # Recursive levels expand planned work so ETA does not freeze on the root wordlist
         if path_segments:
+            stats.enum_words_total = int(stats.enum_words_total or 0) + max(0, len(words) - start_index)
             output_callback(f"Enum under {format_enum_path(path_segments)} (depth {depth})")
 
         index = start_index if path_segments == resume_segments and depth == resume_depth else 0
@@ -672,11 +682,18 @@ async def run_pro_directory_enum(
                 update_progress=update_progress,
                 progress_state=enum_progress,
                 batch_words=batch,
+                use_cumulative_tested=True,
             )
             tasks = [asyncio.create_task(check_word(path_segments, word, depth)) for word in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for result in results:
-                if not result or isinstance(result, Exception):
+                if isinstance(result, Exception):
+                    stats.errors += 1
+                    from user_output import sanitize_error_message
+
+                    output_callback(f"Enum probe error: {sanitize_error_message(result)}")
+                    continue
+                if not result:
                     continue
                 await handle_hit(result, depth)
                 if config.enum_flat_scan:
@@ -705,6 +722,9 @@ async def run_pro_directory_enum(
     auto = extract_auto_prefixes(seed_urls) if config.auto_prefix_enum and not manual else []
     for prefix in manual or auto:
         prefix_roots.append([prefix])
+
+    stats.enum_words_total = total_words * max(1, len(prefix_roots))
+    stats.enum_words_tested = 0
 
     for roots in prefix_roots:
         await enumerate_level(roots, len(roots), resume_index if roots == resume_segments else 0)

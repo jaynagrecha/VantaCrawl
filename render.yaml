@@ -102,6 +102,11 @@ services:
         value: /opt/render/project/src/web/ui/dist
       - key: CHROME_INSTALL_DIR
         value: /opt/render/project/src/.cache/vantacrawl-chrome
+    # Optional: attach a disk so reports/jobs survive redeploys
+    # disk:
+    #   name: vantacrawl-data
+    #   mountPath: /opt/render/project/src/web/data
+    #   sizeGB: 1
 
   # Dedicated scan consumer (optional on Standard). After this is Live,
   # set the web service EMBED_WORKER=false.

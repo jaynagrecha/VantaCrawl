@@ -77,7 +77,13 @@ Set in Dashboard (sync: false):
 - `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`
 - `PUBLIC_BASE_URL` = your `https://….onrender.com`
 
-**Note:** free disks are ephemeral — reports/job files reset on redeploy unless you attach a persistent disk later.
+**Storage:** free Render filesystems are ephemeral — `DATA_DIR` / `REPORTS_DIR` / `JOBS_DIR` reset on redeploy or spin-down. Attach a persistent disk (paid) mounting at `web/data`, or sync reports to object storage. Wordlist catalogs under repo `Wordlist/` survive deploys.
+
+**Browser render:** the build runs `scripts/install_chrome_linux.sh` (Chrome for Testing). If Chrome is missing at runtime, scans continue over HTTP and log one skip line. Free-tier RAM may still OOM on heavy JS pages.
+
+**SSRF guard:** job `start_url` / targets that resolve to loopback, private, link-local, or cloud metadata addresses are rejected.
+
+**Health:** `GET /api/health` checks API, database, Redis, and the embedded worker thread.
 
 ## Gmail SMTP
 

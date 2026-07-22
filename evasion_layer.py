@@ -605,14 +605,14 @@ def make_httpx_hooks(session: Optional[EvasionSession] = None, output_callback=N
     async def on_response(response):
         url = str(response.request.url)
         header_map = dict(response.headers)
-        # Real body peek for challenge detection — never invent "cf-challenge" from
-        # CDN headers alone (that caused false backoff on every Cloudflare 200).
+        # Real body peek only when status can be a challenge/error — skip decoding every 200.
         body_preview = ""
-        try:
-            raw = response.content or b""
-            body_preview = raw[:2400].decode("utf-8", errors="ignore")
-        except Exception:
-            body_preview = ""
+        if response.status_code in CHALLENGE_STATUS or response.status_code >= 400:
+            try:
+                raw = response.content or b""
+                body_preview = raw[:2400].decode("utf-8", errors="ignore")
+            except Exception:
+                body_preview = ""
 
         if defense_tracker is not None:
             # Headers fingerprint protections; body used for challenge/block scoring
