@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+_COOKIE_FINDING_NAME_RE = re.compile(r"(?i)cookie\s+`([^`]+)`")
 
 
 @dataclass
@@ -184,8 +187,11 @@ class CrawlStats:
         detail_key = (detail or "").strip().lower()
         evidence_key = (evidence or "").strip().lower()
         sev_l = (severity or "").strip().lower()
+        impact_l = (impact or "").strip().lower()
         # Evidence label prefix: "js_env_leak: `…`" → "js_env_leak"
         evidence_label = evidence_key.split(":", 1)[0].strip() if evidence_key else ""
+        cookie_name_match = _COOKIE_FINDING_NAME_RE.search(detail or "")
+        cookie_name = (cookie_name_match.group(1) or "").strip().lower() if cookie_name_match else ""
         # Host-level dedupe for site-wide / inventory noise
         if category == "header_audit":
             dedupe_key = f"{category}|{detail_key}|{host}"
@@ -195,6 +201,16 @@ class CrawlStats:
         elif category == "secrets_exposure" and evidence_key:
             # Same secret value = one finding even when product labels differ (Ript vs Text)
             dedupe_key = f"{category}|{host}|{evidence_key}"
+        elif category == "authentication" and cookie_name:
+            # Same Set-Cookie on every HTML page → one finding per host+cookie name
+            dedupe_key = f"authentication|cookie|{host}|{cookie_name}"
+        elif (
+            category == "authentication"
+            and evidence_key
+            and impact_l in ("possible_credential", "stealable_credential", "mitigated_credential")
+        ):
+            # Fallback when detail lacks Cookie `name` — same token value per host
+            dedupe_key = f"authentication|cred|{host}|{evidence_key}"
         elif category in ("js_intel", "business_logic", "bot_management") or (
             category == "mass_assignment" and sev_l == "info"
         ):
