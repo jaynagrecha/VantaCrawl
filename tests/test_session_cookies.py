@@ -31,13 +31,15 @@ def test_cookie_store_per_host_and_header():
         "https://www.westernunion.com/",
     )
     header = store.header_for("https://www.westernunion.com/us/en/home.html")
+    # Paste-seed binds to the first request host (WU), not every origin
     assert "seed=1" in header
     assert "session=abc" in header
     assert "ak_bmsc=tok" in header
-    # Unrelated host should not get WU host cookies
+    # Unrelated host must not receive WU or seed cookies (host-scoped hygiene)
     other = store.header_for("https://example.com/")
     assert "session=abc" not in other
-    assert "seed=1" in other
+    assert "seed=1" not in other
+    assert "ak_bmsc" not in other
 
 
 def test_apply_to_dict_headers_client():

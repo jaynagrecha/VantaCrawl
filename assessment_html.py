@@ -45,6 +45,17 @@ def render_assessment_html(doc: Dict[str, Any], *, technical_report_name: str = 
         for r in roadmap
     ) or "<tr><td colspan='3' class='muted'>No remediation items queued.</td></tr>"
 
+    suppressed = doc.get("suppressed_observations") or []
+    suppressed_rows = "".join(
+        "<tr>"
+        f"<td>{escape(str(s.get('id') or ''))}</td>"
+        f"<td>{escape(str(s.get('title') or ''))}</td>"
+        f"<td>{escape(str(s.get('assessment_state') or s.get('reason') or ''))}</td>"
+        f"<td>{escape(str(s.get('detail') or '')[:180])}</td>"
+        "</tr>"
+        for s in suppressed
+    ) or "<tr><td colspan='4' class='muted'>No suppressed observations.</td></tr>"
+
     def _render_finding(f: Dict[str, Any]) -> str:
         sev_l = _sev_class(str(f.get("severity")))
         evidence = f.get("evidence") or []
@@ -477,6 +488,15 @@ footer {{ margin-top: 2rem; color: var(--muted); font-size: .8rem; }}
     <table>
       <thead><tr><th>Priority</th><th>Item</th><th>Fix direction</th></tr></thead>
       <tbody>{roadmap_rows}</tbody>
+    </table>
+  </section>
+
+  <section class="section" id="suppressed">
+    <h2>6b. Suppressed and invalidated scanner observations</h2>
+    <p class="muted">These items were recorded by heuristics but invalidated or skipped — they do not generate remediation instructions.</p>
+    <table>
+      <thead><tr><th>ID</th><th>Title</th><th>State</th><th>Detail</th></tr></thead>
+      <tbody>{suppressed_rows}</tbody>
     </table>
   </section>
 

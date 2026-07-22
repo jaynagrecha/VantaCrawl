@@ -665,9 +665,23 @@ def extract_urls_from_css(text, base_url):
 
 
 def extract_urls_from_js(text, base_url):
+    """Extract URLs from JS using safer classification (no relative-to-chunk resolve)."""
     urls = set()
-    for match in JS_URL_RE.finditer(text):
-        add_url_to_set(urls, match.group(1), base_url)
+    try:
+        from crawl_url_policy import js_candidate_enqueue_url, origin_of
+
+        origin = origin_of(base_url)
+        for match in JS_URL_RE.finditer(text or ""):
+            raw = match.group(1)
+            enq = js_candidate_enqueue_url(raw, base_url, origin)
+            if enq:
+                urls.add(enq)
+            elif raw.startswith(("http://", "https://", "/")):
+                # Still allow absolute / root-relative via legacy normalize when safe
+                add_url_to_set(urls, raw, origin or base_url)
+    except Exception:
+        for match in JS_URL_RE.finditer(text or ""):
+            add_url_to_set(urls, match.group(1), base_url)
     return urls
 
 
@@ -1751,9 +1765,13 @@ def enqueue_discovered_url(
     from crawl_url_policy import (
         discovery_kind,
         host_in_exact_origin_scope,
+        is_analytics_like_path,
         is_html_crawl_candidate,
         is_page_data_json_url,
+        is_protection_artifact_path,
         is_static_asset_url,
+        normalize_route_template,
+        path_has_route_placeholder,
         resolve_http_target,
         strip_tracking_params,
     )
@@ -1772,6 +1790,35 @@ def enqueue_discovered_url(
         )
     except Exception:
         url = resolved
+
+    # Literal route placeholders / protection / analytics — inventory only, never enqueue
+    try:
+        path_only = urlparse(url).path or ""
+    except Exception:
+        path_only = ""
+    if path_has_route_placeholder(path_only):
+        if stats is not None:
+            if hasattr(stats, "route_templates"):
+                tmpl = normalize_route_template(path_only)
+                if tmpl not in stats.route_templates and len(stats.route_templates) < 2000:
+                    stats.route_templates.append(tmpl)
+            if hasattr(stats, "discovered_urls"):
+                stats.discovered_urls.add(f"template:{normalize_route_template(path_only)}")
+            if hasattr(stats, "route_variants_skipped"):
+                stats.route_variants_skipped += 1
+        return False
+    if is_protection_artifact_path(path_only):
+        if stats is not None:
+            if hasattr(stats, "protection_artifacts"):
+                if path_only not in stats.protection_artifacts and len(stats.protection_artifacts) < 500:
+                    stats.protection_artifacts.append(path_only)
+            if hasattr(stats, "route_variants_skipped"):
+                stats.route_variants_skipped += 1
+        return False
+    if is_analytics_like_path(path_only):
+        if stats is not None and hasattr(stats, "route_variants_skipped"):
+            stats.route_variants_skipped += 1
+        return False
 
     mode = (scope_mode or "allowed-subdomains").strip().lower()
     if start_url and mode in ("exact-origin", "exact_origin"):

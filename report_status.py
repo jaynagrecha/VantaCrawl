@@ -119,6 +119,8 @@ def assessment_state_for_finding(
         return "False positive / invalidated"
     if cat in ("file_upload", "rate_limit", "well_known", "cloud_url", "js_intel", "websocket"):
         return "Attack-surface observation"
+    if "deep-link flow" in detail_l or "password-reset deep-link" in detail_l:
+        return "Attack-surface observation"
     if kind == "hardening" or cat in ("header_audit", "bot_management", "http_methods"):
         return "Informational technology finding"
     if ver in ("exploitable", "confirmed") or val == "confirmed":
@@ -188,3 +190,36 @@ def merge_status_into_snapshot(snap: Dict[str, Any], status: Dict[str, Any]) -> 
     out = dict(snap or {})
     out.update({k: status[k] for k in status})
     return out
+
+
+def include_in_remediation(finding: Dict[str, Any]) -> bool:
+    """Remediation roadmap eligibility — never include invalidated / skipped / surface-only noise."""
+    if not isinstance(finding, dict):
+        return False
+    val = str(finding.get("validation") or "").lower()
+    ver = str(finding.get("verification") or "").lower()
+    state = str(finding.get("assessment_state") or "").lower()
+    if val in {"skipped", "unverified", "invalid"}:
+        return False
+    if state in {
+        "false positive / invalidated",
+        "attack-surface observation",
+    }:
+        return False
+    if "false positive" in state or "invalidated" in state:
+        return False
+    return ver in {"confirmed", "verified", "exploitable"}
+
+
+def is_suppressed_or_invalidated(finding: Dict[str, Any]) -> bool:
+    if not isinstance(finding, dict):
+        return False
+    state = str(finding.get("assessment_state") or "").lower()
+    val = str(finding.get("validation") or "").lower()
+    impact = str(finding.get("impact") or "").lower()
+    if state == "false positive / invalidated":
+        return True
+    if val in {"invalid", "skipped"} or impact in {"no_impact", "invalid"}:
+        return True
+    detail = str(finding.get("detail") or "").lower()
+    return "false positive" in detail or "invalidated" in detail

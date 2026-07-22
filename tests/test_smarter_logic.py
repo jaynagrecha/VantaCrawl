@@ -51,6 +51,12 @@ def test_xss_inline_with_reflected_param_high():
     assert any(f[0] == "xss" and f[1] == "high" for f in findings)
 
 
+def test_xss_document_cookie_alone_not_xss():
+    body = "<html><script>document.cookie='session=1';</script></html>"
+    findings = scan_xss("https://x.com/", body)
+    assert not any(f[0] == "xss" for f in findings)
+
+
 def test_ssrf_rfc1918_is_low():
     findings = scan_ssrf("https://app.example/fetch?url=http://10.0.0.5/admin")
     assert findings and findings[0][1] == "low"
@@ -123,4 +129,7 @@ def test_file_upload_profile_vs_risky():
         "text/html",
     )
     findings = scan_file_upload(risky, "https://x.com/admin")
-    assert findings and findings[0][1] == "medium"
+    # Attack-surface observation — not a confirmed Medium vulnerability
+    assert findings and findings[0][1] == "info"
+    assert "server-side validation not assessed" in findings[0][2].lower()
+    assert "risky accept" in findings[0][2].lower() or "admin" in findings[0][2].lower()

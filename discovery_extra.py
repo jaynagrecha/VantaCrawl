@@ -11,7 +11,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 JS_ROUTE_RE = re.compile(
-    r"""['"](/[a-zA-Z0-9_\-./?=&]{2,120})['"]""",
+    r"""['"](/[a-zA-Z0-9_\-./?=&\[\]{}:<>]{2,160})['"]""",
 )
 OPENAPI_PATH_RE = re.compile(r"(?i)(swagger\.json|openapi\.json|api-docs|/v[0-9]+/api-docs)")
 RSS_LINK_RE = re.compile(r"(?i)<link[^>]+type=[\"']application/(rss|atom)\+xml[\"'][^>]+href=[\"']([^\"']+)")
@@ -148,21 +148,57 @@ async def enumerate_subdomains(
 
 
 def extract_js_routes(js_text: str, base_url: str) -> Set[str]:
-    urls = set()
+    """Extract crawlable routes from JS without resolving relatives against chunk dirs.
+
+    Literal placeholders become inventory-only templates (not returned for enqueue).
+    Absolute and root-relative paths are resolved against the page/script origin.
+    """
+    urls: Set[str] = set()
     if not js_text:
         return urls
+    from crawl_url_policy import (
+        classify_js_candidate,
+        js_candidate_enqueue_url,
+        origin_of,
+        path_has_route_placeholder,
+    )
+
+    origin = origin_of(base_url)
     for match in JS_ROUTE_RE.findall(js_text):
-        if match.startswith("/") and not match.startswith("//"):
-            full = urljoin(base_url, match)
-            if is_plausible_route(full):
-                urls.add(full)
+        if path_has_route_placeholder(match):
+            # Inventory as template via side channel when stats available — skip enqueue set
+            continue
+        enq = js_candidate_enqueue_url(match, base_url, origin)
+        if enq and is_plausible_route(enq):
+            urls.add(enq)
+            continue
+        kind, payload = classify_js_candidate(match, base_url, origin)
+        if kind == "root_relative_url" and payload and is_plausible_route(payload):
+            urls.add(payload)
     return urls
+
+
+def extract_js_route_templates(js_text: str) -> Set[str]:
+    """Return normalized route templates (``{param}``) found as literal placeholders."""
+    from crawl_url_policy import normalize_route_template, path_has_route_placeholder
+
+    out: Set[str] = set()
+    if not js_text:
+        return out
+    for match in JS_ROUTE_RE.findall(js_text):
+        if path_has_route_placeholder(match):
+            out.add(normalize_route_template(match if match.startswith("/") else f"/{match}"))
+    return out
 
 
 def is_plausible_route(url: str) -> bool:
     if "${" in url or " " in url:
         return False
+    from crawl_url_policy import path_has_route_placeholder
+
     path = urlparse(url).path
+    if path_has_route_placeholder(path):
+        return False
     return 1 < len(path) < 200
 
 

@@ -41,8 +41,14 @@ _ANALYTICS_NAME_RE = re.compile(
     r"intercom-.*|__cfruid|__cf_bm|_cfuvid|cf_clearance|"
     r"_clck|_clsk|CLID|MR|MUID|SRM_B|ANONCHK|"
     r"NID|1P_JAR|AEC|CONSENT|SOCS|"
-    r"bm_sz|ak_bmsc|bm_sv|bm_mi|bm_lso|bm_so|abck|_abck|akamai.*|akzip|"
     r"datadome|reese84|_px(?:vid|hd|3|de)?|__cfwaitingroom"
+    r")$"
+)
+
+# Akamai / edge bot-management — not analytics; no credential impact for CORS analysis
+_EDGE_PROTECTION_NAME_RE = re.compile(
+    r"(?i)^(?:"
+    r"bm_sz|ak_bmsc|bm_sv|bm_mi|bm_lso|bm_so|abck|_abck|akamai.*|akzip"
     r")$"
 )
 
@@ -135,15 +141,17 @@ def parse_set_cookie(part: str) -> Dict[str, Any]:
 
 
 def classify_cookie(name: str, value: str = "") -> str:
-    """Return role: auth_session | csrf | analytics | preference | jwt | unknown.
+    """Return role: auth_session | csrf | analytics | preference | jwt | edge_protection | unknown.
 
-    Analytics/preference exact matches run before auth substrings so names like
-    ``intercom-session-*`` / ``_ga`` are not misclassified as session credentials.
+    Analytics/preference/edge exact matches run before auth substrings so names like
+    ``intercom-session-*`` / ``_ga`` / ``_abck`` are not misclassified as session credentials.
     """
     n = (name or "").strip()
     v = (value or "").strip()
     if v and _JWT_RE.match(v):
         return "jwt"
+    if _EDGE_PROTECTION_NAME_RE.match(n):
+        return "edge_protection"
     if _ANALYTICS_NAME_RE.match(n):
         return "analytics"
     if _PREFERENCE_NAME_RE.match(n):
@@ -191,13 +199,20 @@ def assess_cookie_impact(
     severity = "info"
     summary = ""
 
-    if role in ("analytics", "preference"):
+    if role in ("analytics", "preference", "edge_protection"):
         impact = "no_credential_impact"
         severity = "info"
-        summary = (
-            f"`{name}` looks like a {role} cookie — not a login/session credential. "
-            "Stealing it does not grant account access."
-        )
+        if role == "edge_protection":
+            summary = (
+                f"`{name}` is an Akamai bot-management/protection cookie "
+                "(role=edge_protection) — not analytics and not a login credential. "
+                "Stealing it does not grant account access."
+            )
+        else:
+            summary = (
+                f"`{name}` looks like a {role} cookie — not a login/session credential. "
+                "Stealing it does not grant account access."
+            )
     elif role == "csrf":
         impact = "limited_impact"
         severity = "info"

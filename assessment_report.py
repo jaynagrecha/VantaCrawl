@@ -197,8 +197,25 @@ def build_assessment_document(
         top_exec = ["No prioritized findings in this run."]
 
     recommendations = list(conclusion.get("recommendations") or [])
+    from report_status import include_in_remediation, is_suppressed_or_invalidated
+
     roadmap = []
+    suppressed_appendix = []
+    for f in findings_dual:
+        if is_suppressed_or_invalidated(f):
+            suppressed_appendix.append(
+                {
+                    "id": f.get("id"),
+                    "title": f.get("title"),
+                    "severity": f.get("severity"),
+                    "assessment_state": f.get("assessment_state"),
+                    "detail": f.get("detail"),
+                    "reason": "Invalidated / false-positive / skipped observation",
+                }
+            )
     for f in vulnerabilities:
+        if not include_in_remediation(f):
+            continue
         if f["severity"] in ("critical", "high"):
             roadmap.append({"priority": "P1 — Immediate", "item": f"{f['id']}: {f['title']}", "fix": f["fix"]})
         elif f["severity"] == "medium":
@@ -206,6 +223,8 @@ def build_assessment_document(
         elif f["severity"] == "low":
             roadmap.append({"priority": "P3 — Backlog", "item": f"{f['id']}: {f['title']}", "fix": f["fix"]})
     for f in hardening_issues[:8]:
+        if not include_in_remediation(f):
+            continue
         roadmap.append(
             {
                 "priority": "P4 — Hardening backlog",
@@ -289,6 +308,7 @@ def build_assessment_document(
         "hardening_issues": hardening_issues,
         "recommendations": recommendations,
         "roadmap": roadmap,
+        "suppressed_observations": suppressed_appendix[:40],
         "protections": protections,
         "defense": defense,
         "block_journal": list(defense.get("block_journal") or [])[:30],

@@ -29,7 +29,7 @@ class ImpactResult:
     severity: Optional[str] = None  # override original severity when set
     summary: str = ""
     validation: str = "n/a"  # active|invalid|confirmed|unverified|skipped|n/a|error
-    proof: Optional[str] = None
+    proof: Optional[Any] = None
     suppress: bool = False
     detail_suffix: str = ""
     issues: List[str] = field(default_factory=list)
@@ -121,6 +121,30 @@ def assess_header_audit(detail: str, severity: str) -> ImpactResult:
 
 def assess_authentication(detail: str, severity: str, evidence: str = "") -> ImpactResult:
     d = _detail_l(detail)
+    if "password-reset deep-link" in d or "deep-link flow" in d:
+        return ImpactResult(
+            role="flow_identifier",
+            impact="informational",
+            severity="info",
+            summary=(
+                "Password-reset deep-link flow identifier observed — attack-surface only; "
+                "not an exposed credential."
+            ),
+            validation="unverified",
+            proof=evidence or None,
+        )
+    if "reset token arrives via url" in d or "reset token referenced from url" in d:
+        return ImpactResult(
+            role="auth_token_in_url",
+            impact="limited_impact" if "replaceState" in d or "address bar" in d else "informational",
+            severity=severity if severity in ("info", "low") else "low",
+            summary=(
+                "Reset token in URL query is a leakage risk (history, Referer, analytics) unless "
+                "single-use, short-lived, and cleared via replaceState."
+            ),
+            validation="unverified",
+            proof=evidence or None,
+        )
     if "stealable_credential" in d or "missing httponly" in d:
         return ImpactResult(
             role="auth_session",
@@ -212,6 +236,40 @@ def assess_secrets_static(detail: str, severity: str, evidence: str = "") -> Imp
         is_client_public_key = lambda *_a, **_k: False  # type: ignore
         is_browser_rum_telemetry_key = lambda *_a, **_k: False  # type: ignore
         is_google_browser_api_key = lambda *_a, **_k: False  # type: ignore
+
+    # Deep-link / flow identifiers must never enter credential remediation
+    try:
+        from security_scan import _KNOWN_FLOW_IDENTIFIERS, classify_secret_candidate
+
+        ev = (evidence or "").strip()
+        if ev:
+            role = classify_secret_candidate("", ev, detail or "")
+            if role or re.sub(r"[^a-z0-9]+", "", ev.lower()) in _KNOWN_FLOW_IDENTIFIERS:
+                return ImpactResult(
+                    role="flow_identifier",
+                    impact="no_impact",
+                    severity="info",
+                    summary=(
+                        f"`{ev}` is a frontend flow/deep-link identifier — "
+                        "not an exposed password or credential."
+                    ),
+                    validation="invalid",
+                    proof=evidence or None,
+                    suppress=True,
+                )
+        # Detail title like "Exposed Reset Password" with R3ResetPass in text
+        if re.search(r"(?i)\br3reset[-_]?pass\b", f"{detail or ''}\n{ev}"):
+            return ImpactResult(
+                role="flow_identifier",
+                impact="no_impact",
+                severity="info",
+                summary="R3ResetPass is a password-reset deep-link flow id — not a secret.",
+                validation="invalid",
+                proof=evidence or None,
+                suppress=True,
+            )
+    except Exception:
+        pass
     # Pure RUM/analytics keys (Boomr, mPulse, …) — intentional in browser, no report value
     if is_browser_rum_telemetry_key(detail):
         return ImpactResult(
@@ -418,19 +476,37 @@ def assess_cors(
     url: str = "",
     cookies: Optional[Sequence[Dict[str, Any]]] = None,
     login_surfaces: Optional[Sequence[str]] = None,
+    proof: Optional[Any] = None,
 ) -> ImpactResult:
-    """CORS impact considering observed cookies + endpoint nature — not just ACAO/ACAC."""
+    """CORS impact considering observed cookies + endpoint nature — not just ACAO/ACAC.
+
+    Confirmation requires raw request/response proof (ACAO/ACAC headers). Without it the
+    finding is an unverified configuration signal only.
+    """
     from urllib.parse import urlparse
+
+    from finding_proof import proof_has_http_exchange
 
     d = _detail_l(detail)
     creds = "credential" in d
+    has_proof = proof_has_http_exchange(proof)
+    if not has_proof:
+        return ImpactResult(
+            role="cors",
+            impact="limited_impact" if creds else "informational",
+            severity="info",
+            summary="CORS configuration signal — impact unverified (no raw ACAO/ACAC proof stored).",
+            validation="unverified",
+            proof=None,
+        )
     if not creds:
         return ImpactResult(
             role="cors",
             impact="possible",
-            severity=severity or "medium",
+            severity="info",
             summary="CORS configuration may be overly open (no credentials flag observed).",
-            validation="confirmed",
+            validation="unverified",
+            proof=proof if isinstance(proof, (str, dict)) else None,
         )
 
     path = (urlparse(url).path or "/").lower()
@@ -481,7 +557,7 @@ def assess_cors(
             "mitigated_credential",
         ):
             auth_cookies.append(name)
-        elif role in ("analytics", "preference", "cdn") or impact in (
+        elif role in ("analytics", "preference", "cdn", "edge_protection") or impact in (
             "possible_credential",
             "no_credential_impact",
         ):
@@ -518,6 +594,17 @@ def assess_cors(
     if static_like_path and not auth_cookies and not auth_like_path:
         issues.append("Path looks like a static asset — credential impact may be lower here")
 
+    def _cors_proof_out():
+        """Keep raw HTTP exchange when provided; attach cookie/path context as evidence."""
+        ctx = "; ".join(issues[:4]) if issues else ""
+        if isinstance(proof, dict) and proof_has_http_exchange(proof):
+            out = dict(proof)
+            if ctx:
+                prev = str(out.get("evidence") or "")
+                out["evidence"] = f"{prev}; {ctx}".strip("; ") if prev else ctx
+            return out
+        return ctx or None
+
     # Credentialed CORS is always a real misconfig; severity depends on likely session cookies.
     if auth_cookies or auth_like_path or login_on_host:
         summary = (
@@ -532,7 +619,7 @@ def assess_cors(
             summary=summary,
             validation="confirmed",
             issues=issues,
-            proof="; ".join(issues[:4]) if issues else None,
+            proof=_cors_proof_out(),
         )
 
     if static_like_path and tracking_cookies and not other_cookies:
@@ -548,7 +635,7 @@ def assess_cors(
             summary=summary,
             validation="confirmed",
             issues=issues,
-            proof="; ".join(issues[:4]) if issues else None,
+            proof=_cors_proof_out(),
         )
 
     if static_like_path and not auth_cookies and not auth_like_path:
@@ -563,7 +650,7 @@ def assess_cors(
             summary=summary,
             validation="unverified",
             issues=issues,
-            proof="; ".join(issues[:4]) if issues else None,
+            proof=_cors_proof_out(),
         )
 
     # No auth cookies / auth path / login surface observed → do not default to high.
@@ -581,7 +668,7 @@ def assess_cors(
             summary=summary,
             validation="confirmed",
             issues=issues,
-            proof="; ".join(issues[:4]) if issues else None,
+            proof=_cors_proof_out(),
         )
 
     summary = (
@@ -597,7 +684,7 @@ def assess_cors(
         # "unverified" here previously confused report readers about probe status.
         validation="confirmed",
         issues=issues,
-        proof="; ".join(issues[:4]) if issues else None,
+        proof=_cors_proof_out(),
     )
 
 
@@ -721,6 +808,16 @@ def assess_api_leak(detail: str, severity: str) -> ImpactResult:
             impact="possible",
             severity=severity or "low",
             summary="Sensitive client-side route reference — verify authz on the live endpoint.",
+            validation="unverified",
+        )
+    if "client-side api route reference" in d or (
+        "graphql" in d and "schema not disclosed" in d
+    ):
+        return ImpactResult(
+            role="api_leak",
+            impact="informational",
+            severity="info",
+            summary="Client-side GraphQL/API route reference — not information disclosure without schema proof.",
             validation="unverified",
         )
     if "graphql" in d and ("schema json" in d or "__schema" in d or "querytype" in d):
@@ -874,6 +971,20 @@ def assess_tier_category(category: str, detail: str, severity: str, evidence: st
     """Impact for Tier 2–6 categories (OAuth/JWT/GraphQL/mass-assignment/etc.)."""
     d = _detail_l(detail)
     cat = (category or "").lower()
+    if cat == "cloud" and (
+        "cloudfront" in d or "cdn dependency" in d or "security status not assessed" in d
+    ):
+        return ImpactResult(
+            role="cloud_cdn",
+            impact="informational",
+            severity="info",
+            summary=(
+                "Cloud/CDN dependency observed — intentionally public CDN resources are not "
+                "misconfigurations until anonymous list/read of private objects is proven."
+            ),
+            validation="unverified",
+            proof=evidence or None,
+        )
     if cat == "mass_assignment":
         # HTML shell / non-API handlers are never confirmed high
         if "html" in d and ("shell" in d or "doctype" in d or "application content" in d):
@@ -1076,6 +1187,7 @@ async def assess_finding(
     validate_secrets_live: bool = False,
     cookies: Optional[Sequence[Dict[str, Any]]] = None,
     login_surfaces: Optional[Sequence[str]] = None,
+    proof: Optional[Any] = None,
 ) -> ImpactResult:
     """Route a finding through the matching impact checker."""
     cat = (category or "").strip().lower()
@@ -1102,6 +1214,7 @@ async def assess_finding(
             url=url,
             cookies=cookies,
             login_surfaces=login_surfaces,
+            proof=proof,
         )
     if cat == "sensitive_path":
         return assess_sensitive_path(detail, severity, ev)

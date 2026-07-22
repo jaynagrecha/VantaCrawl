@@ -157,13 +157,34 @@ def test_maps_live_active_not_suppressed():
 
 
 def test_cors_credentialed_always_confirmed():
+    proof = {
+        "request": "GET https://example.com/\nHost: example.com\nOrigin: https://evil.example",
+        "response": (
+            "HTTP/1.1 200\nAccess-Control-Allow-Origin: https://evil.example\n"
+            "Access-Control-Allow-Credentials: true"
+        ),
+        "evidence": "ACAO=https://evil.example; ACAC=true",
+        "impact": "",
+    }
+    result = assess_cors(
+        "CORS reflects arbitrary Origin (https://evil.example) with credentials — high risk",
+        "high",
+        url="https://example.com/",
+        proof=proof,
+    )
+    assert result.validation == "confirmed"
+    assert result.severity == "medium"
+
+
+def test_cors_without_proof_is_unverified():
     result = assess_cors(
         "CORS reflects arbitrary Origin (https://evil.example) with credentials — high risk",
         "high",
         url="https://example.com/",
     )
-    assert result.validation == "confirmed"
-    assert result.severity == "medium"
+    assert result.validation == "unverified"
+    assert result.severity == "info"
+    assert "unverified" in result.summary.lower()
 
 
 def test_cors_host_dedupe():

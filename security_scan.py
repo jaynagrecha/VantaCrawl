@@ -179,6 +179,61 @@ _FORM_FIELD_KEYWORDS = frozenset(
         "confirmpassword",
         "old_password",
         "oldpassword",
+        "forgot_password",
+        "forgotpassword",
+        "reset_password",
+        "resetpassword",
+    }
+)
+
+# LHS names that mean route/flow identifiers, not credentials — even when the
+# value contains PASSWORD (FORGOT_PASSWORD = "R3ResetPass").
+_NON_SECRET_LHS_KEYWORDS = frozenset(
+    {
+        "route",
+        "src",
+        "source",
+        "flow",
+        "action",
+        "event",
+        "page",
+        "screen",
+        "deeplink",
+        "deep_link",
+        "deep-link",
+        "forgot_password",
+        "forgotpassword",
+        "reset_password",
+        "resetpassword",
+        "changepassword",
+        "change_password",
+        "navigateto",
+        "navigate_to",
+        "screenname",
+        "screen_name",
+        "flowid",
+        "flow_id",
+        "flowkey",
+        "flow_key",
+        "deepLinkSrc",
+        "deeplinksrc",
+    }
+)
+
+# Known frontend deep-link / flow identifiers mistaken for passwords
+_KNOWN_FLOW_IDENTIFIERS = frozenset(
+    {
+        "r3resetpass",
+        "r3reset-pass",
+        "r3reset_pass",
+        "r3forgotpass",
+        "r3forgot-pass",
+        "verifier",
+        "vérifier",
+        "reinitialiser",
+        "réinitialiser",
+        "resetpass",
+        "forgotpass",
     }
 )
 
@@ -491,6 +546,63 @@ def _lhs_is_html_data_or_aria_attr(raw: str) -> bool:
     return lhs.startswith("data-") or lhs.startswith("aria-") or lhs.startswith("data_")
 
 
+def classify_secret_candidate(
+    name: str,
+    value: str,
+    surrounding_code: str = "",
+    *,
+    raw: str = "",
+) -> Optional[str]:
+    """Return a non-secret role when the candidate is a flow/route identifier.
+
+    Do not treat strings as passwords merely because their identifier contains PASSWORD.
+    """
+    name_l = _normalize_field_token(name or "")
+    # Also accept dotted / camelCase LHS tails
+    name_tail = (name or "").strip().rsplit(".", 1)[-1]
+    name_tail_l = name_tail.lower().replace("-", "_")
+    value_l = (value or "").strip().lower()
+    value_norm = re.sub(r"[^a-z0-9]+", "", value_l)
+    ctx = (surrounding_code or "") + "\n" + (raw or "")
+    ctx_l = ctx.lower()
+
+    non_secret_norms = {_normalize_field_token(k) for k in _NON_SECRET_LHS_KEYWORDS}
+    if name_l in non_secret_norms or name_tail_l.replace("_", "") in {
+        _normalize_field_token(k) for k in _NON_SECRET_LHS_KEYWORDS
+    }:
+        return "flow_or_route_identifier"
+    # FORGOT_PASSWORD / RESET_PASSWORD LHS assigned to a short identifier
+    if re.search(r"(?i)(?:forgot|reset|change)[_-]?pass(?:word)?$", name_tail):
+        if value_norm in _KNOWN_FLOW_IDENTIFIERS or (
+            _IDENT_LIKE_VALUE_RE.match(value or "") and len(value or "") <= 32
+        ):
+            return "flow_or_route_identifier"
+    if "switch" in ctx_l and re.search(r"(?i)query\.src|props\.query\.src|\.src\b", ctx):
+        if value_norm in _KNOWN_FLOW_IDENTIFIERS or re.search(
+            r"(?i)reset.?pass|forgot.?pass", value_l
+        ):
+            return "deep_link_identifier"
+    if value_norm in _KNOWN_FLOW_IDENTIFIERS or value_l in _KNOWN_FLOW_IDENTIFIERS:
+        return "known_non_secret_flow_identifier"
+    # Localization / UI verbs used as button labels
+    if value_l in {
+        "contraseña",
+        "contrasena",
+        "senha",
+        "mot de passe",
+        "passwort",
+        "password",
+        "passwd",
+        "default.password",
+        "verifier",
+        "vérifier",
+        "réinitialiser",
+        "reinitialiser",
+    }:
+        return "localization_or_ui_label"
+    return None
+
+
 def _should_skip_secret_match(
     *,
     label: str,
@@ -500,8 +612,13 @@ def _should_skip_secret_match(
     end: int,
     value: str,
 ) -> bool:
-    """Drop form-control / UI-schema / route-label false positives."""
+    """Drop form-control / UI-schema / route-label / deep-link false positives."""
     value_l = (value or "").strip().lower()
+    lhs = _lhs_from_raw(raw)
+    window = body_text[max(0, start - 220) : min(len(body_text), end + 220)]
+    role = classify_secret_candidate(lhs, value, window, raw=raw)
+    if role:
+        return True
     # Localization / UI labels are never passwords
     if value_l in {
         "contraseña",
@@ -698,29 +815,70 @@ def discover_parameters(url: str, body_text: str = "", forms: Optional[List[dict
     return params
 
 
-async def check_cors(client, url: str, origin: str = "https://evil.example") -> Optional[str]:
-    """Report only high-confidence CORS misconfigurations (credentials + open origin)."""
+async def check_cors(
+    client, url: str, origin: str = "https://evil.example"
+) -> Optional[tuple]:
+    """Probe CORS; return (detail, proof_dict) only for credentialed open/reflected Origin.
+
+    Proof always includes raw request/response header lines so confirmation is evidence-backed.
+    """
     try:
+        from finding_proof import FindingProof
+
         response = await client.get(
             url,
             headers={"Origin": origin},
             timeout=10,
         )
         acao = (response.headers.get("access-control-allow-origin") or "").strip()
-        acac = (response.headers.get("access-control-allow-credentials") or "").lower()
-        creds = acac == "true"
+        acac = (response.headers.get("access-control-allow-credentials") or "").strip()
+        acac_l = acac.lower()
+        creds = acac_l == "true"
+        detail = None
         if acao == "*" and creds:
-            return "CORS allows any origin (*) with credentials — high risk"
-        if acao == origin and creds:
-            return f"CORS reflects arbitrary Origin ({origin}) with credentials — high risk"
-        # Reflection without credentials is common for public assets; keep as low-noise info only
-        if acao == origin and not creds:
+            detail = "CORS allows any origin (*) with credentials — high risk"
+        elif acao == origin and creds:
+            detail = f"CORS reflects arbitrary Origin ({origin}) with credentials — high risk"
+        else:
+            # Reflection without credentials is common for public assets; keep quiet
             return None
-        if acao == "*" and not creds:
-            return None
+
+        host = ""
+        try:
+            from urllib.parse import urlparse
+
+            host = urlparse(url).netloc or ""
+        except Exception:
+            host = ""
+        cookie_hdr = ""
+        try:
+            cookie_hdr = (response.request.headers.get("cookie") or "")[:120]
+        except Exception:
+            cookie_hdr = ""
+        req_lines = [
+            f"GET {url} HTTP/1.1",
+            f"Host: {host}" if host else "",
+            f"Origin: {origin}",
+        ]
+        if cookie_hdr:
+            req_lines.append(f"Cookie: {cookie_hdr}")
+        resp_lines = [
+            f"HTTP/1.1 {int(getattr(response, 'status_code', 0) or 0)}",
+            f"Access-Control-Allow-Origin: {acao}",
+            f"Access-Control-Allow-Credentials: {acac or 'true'}",
+        ]
+        vary = (response.headers.get("vary") or "").strip()
+        if vary:
+            resp_lines.append(f"Vary: {vary}")
+        proof = FindingProof(
+            request="\n".join(x for x in req_lines if x),
+            response="\n".join(resp_lines),
+            evidence=f"ACAO={acao}; ACAC={acac or 'true'}",
+            impact="Cross-origin credentialed reads possible if session cookies are present",
+        )
+        return detail, proof.as_dict()
     except Exception:
         return None
-    return None
 
 
 def extract_forms(html: str, page_url: str, content_type: str = "") -> List[Dict[str, Any]]:
@@ -990,18 +1148,35 @@ def scan_sql_injection(url: str, body_text: str, forms: Optional[List[dict]] = N
 
 
 def scan_xss(url: str, body_text: str, forms: Optional[List[dict]] = None) -> List[Finding]:
-    """Precise passive XSS with second-signal gating for inline cookie/eval scripts."""
+    """Precise passive XSS — only dangerous executable sinks (not document.cookie assignment)."""
     findings: List[Finding] = []
     if not body_text:
         return findings
     params = _query_params(url)
+    # document.cookie = is standard browser API usage; report as cookie manipulation only,
+    # never as XSS and never as a reason to elevate CSP.
     if not _looks_like_code_listing(body_text):
+        cookie_assign = re.search(
+            r"(?is)<script[^>]*>.*?document\.cookie\s*=.*?</script>",
+            body_text[:200000],
+        )
+        if cookie_assign and not re.search(
+            r"(?i)(eval\s*\(|new\s+Function\s*\(|\.innerHTML\s*=|\.outerHTML\s*=|"
+            r"document\.write\s*\(|insertAdjacentHTML\s*\()",
+            cookie_assign.group(0),
+        ):
+            # Observation only — do not create an XSS finding from cookie assignment alone
+            pass
         for match in re.finditer(
             r"(?is)<script[^>]*>(.*?)</script>",
             body_text[:200000],
         ):
             block = match.group(1) or ""
-            sink = re.search(r"(?i)(document\.cookie\s*=|eval\s*\()", block)
+            sink = re.search(
+                r"(?i)(eval\s*\(|new\s+Function\s*\(|\.innerHTML\s*=|\.outerHTML\s*=|"
+                r"document\.write\s*\(|insertAdjacentHTML\s*\()",
+                block,
+            )
             if not sink:
                 continue
             sink_ev = _match_evidence(sink, block, label="xss_sink")
@@ -1021,7 +1196,7 @@ def scan_xss(url: str, body_text: str, forms: Optional[List[dict]] = None) -> Li
                     (
                         "xss",
                         "high",
-                        "Inline script with cookie/eval sink and reflected parameter (precise passive XSS)",
+                        "Inline script with executable sink and reflected parameter (precise passive XSS)",
                         f"{sink_ev} | reflected_param: {reflected_name}",
                     )
                 )
@@ -1030,7 +1205,7 @@ def scan_xss(url: str, body_text: str, forms: Optional[List[dict]] = None) -> Li
                     (
                         "xss",
                         "low",
-                        "Inline script with cookie/eval sink (no reflected input; verify ownership)",
+                        "Inline script with executable sink (no reflected input; verify source→sink ownership)",
                         sink_ev,
                     )
                 )
@@ -1233,9 +1408,105 @@ def scan_directory_traversal(url: str) -> List[Finding]:
     return findings
 
 
+def scan_password_reset_deep_links(url: str, body_text: str) -> List[Finding]:
+    """Report password-reset deep-link flows as attack-surface — not secrets.
+
+    Distinguishes ``src=R3ResetPass`` (flow id) from ``query.token`` (real sensitive
+    value that should leave the address bar via replaceState).
+    """
+    findings: List[Finding] = []
+    text = body_text or ""
+    if not text:
+        return findings
+    # Detect known flow constants / switch(src) deep-link routing
+    flow_hit = None
+    for m in re.finditer(
+        r"""(?i)(?:FORGOT_PASSWORD|RESET_PASSWORD)\s*=\s*['"]([^'"]{3,48})['"]""",
+        text[:250000],
+    ):
+        val = m.group(1)
+        role = classify_secret_candidate("RESET_PASSWORD", val, text[m.start() : m.end() + 80])
+        if role or re.sub(r"[^a-z0-9]+", "", val.lower()) in _KNOWN_FLOW_IDENTIFIERS:
+            flow_hit = val
+            break
+    if not flow_hit:
+        m = re.search(
+            r"""(?i)(?:query\.src|props\.query\.src)\s*(?:\.toLowerCase\(\))?\s*(?:===|==)\s*['"]([^'"]{3,48})['"]""",
+            text[:250000],
+        )
+        if m and (
+            "reset" in m.group(1).lower()
+            or "forgot" in m.group(1).lower()
+            or re.sub(r"[^a-z0-9]+", "", m.group(1).lower()) in _KNOWN_FLOW_IDENTIFIERS
+        ):
+            flow_hit = m.group(1)
+    if flow_hit:
+        findings.append(
+            (
+                "authentication",
+                "info",
+                (
+                    f"Password-reset deep-link flow discovered (src={flow_hit}). "
+                    "Client uses this as a flow identifier; a separate token query parameter "
+                    "is required — attack-surface observation, not an exposed credential."
+                ),
+                _text_evidence(flow_hit, label="password_reset_deep_link"),
+            )
+        )
+    # Real security direction: reset token arrives via query and may linger in the URL bar
+    token_query = re.search(
+        r"(?i)(?:query|props\.query|searchParams)\.(?:token|resetToken|reset_token)\b",
+        text[:250000],
+    )
+    if token_query and (
+        flow_hit
+        or re.search(r"(?i)reset.?pass|forgot.?pass|navigateToReset", text[:250000])
+    ):
+        sanitizes = bool(
+            re.search(
+                r"(?i)history\.replaceState|router\.(?:replace|push)|replaceState\s*\(",
+                text[:250000],
+            )
+        )
+        deletes_only = bool(
+            re.search(
+                r"(?i)delete\s+(?:props\.)?query\.(?:token|src)|delete\s+[a-zA-Z_][\w.]*\.token",
+                text[:250000],
+            )
+        )
+        if deletes_only and not sanitizes:
+            findings.append(
+                (
+                    "authentication",
+                    "low",
+                    (
+                        "Reset token arrives via URL query parameter; client deletes the JS "
+                        "property but no history.replaceState/router.replace was observed — "
+                        "token may remain in the address bar, history, and Referer."
+                    ),
+                    _match_evidence(token_query, text[:250000], label="reset_token_query"),
+                )
+            )
+        elif not sanitizes:
+            findings.append(
+                (
+                    "authentication",
+                    "info",
+                    (
+                        "Reset token referenced from URL query — verify single-use/expiry, "
+                        "address-bar sanitization (replaceState), Referrer-Policy, and that "
+                        "analytics/third parties do not receive the token."
+                    ),
+                    _match_evidence(token_query, text[:250000], label="reset_token_query"),
+                )
+            )
+    return findings
+
+
 def scan_authentication_flaws(url: str, headers: dict, body_text: str = "") -> List[Finding]:
     """HTTP auth findings require a real login surface — not path keywords like /author."""
     findings: List[Finding] = []
+    findings.extend(scan_password_reset_deep_links(url, body_text))
     parsed = urlparse(url)
     scheme = parsed.scheme.lower()
     for name, values in _query_params(url).items():

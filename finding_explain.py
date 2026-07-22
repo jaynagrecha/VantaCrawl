@@ -246,6 +246,41 @@ EXPLAINERS: List[Tuple[tuple, Dict[str, str]]] = [
         },
     ),
     (
+        ("password-reset deep-link", "deep-link flow", "r3resetpass", "flow identifier"),
+        {
+            "title": "Password-reset deep-link flow",
+            "what": (
+                "Client code maps a src/query deep-link identifier (for example R3ResetPass) to a "
+                "forgot/reset-password flow. That string is a routing label, not a credential."
+            ),
+            "attacker": (
+                "They cannot steal an account from the flow id alone. The real risk is a reset token "
+                "arriving in the URL query and leaking via history, Referer, or analytics."
+            ),
+            "fix": (
+                "Keep the flow id as a non-secret router key. Ensure reset tokens are single-use, "
+                "short-lived, cleared with history.replaceState/router.replace, and not sent to third parties."
+            ),
+        },
+    ),
+    (
+        ("reset token arrives", "reset token referenced", "address bar"),
+        {
+            "title": "Reset token in URL query",
+            "what": (
+                "A password-reset token is read from the URL query string. Deleting a JS property does "
+                "not remove it from the address bar."
+            ),
+            "attacker": (
+                "They harvest tokens from browser history, proxy logs, Referer headers, or analytics beacons."
+            ),
+            "fix": (
+                "Use single-use short-lived tokens; call history.replaceState/router.replace to strip the "
+                "token; set a restrictive Referrer-Policy; keep tokens out of third-party requests."
+            ),
+        },
+    ),
+    (
         ("stealable_credential", "missing httponly", "cookie `", "session/auth credential"),
         {
             "title": "Stealable session / auth cookie",
@@ -521,7 +556,7 @@ EXPLAINERS: List[Tuple[tuple, Dict[str, str]]] = [
         },
     ),
     (
-        ("cloud", "s3", "blob", "lambda-url", "cloudfront"),
+        ("cloud", "s3", "blob", "lambda-url"),
         {
             "title": "Cloud misconfiguration",
             "what": (
@@ -532,6 +567,24 @@ EXPLAINERS: List[Tuple[tuple, Dict[str, str]]] = [
             ),
             "fix": (
                 "Block anonymous list/read; tighten IAM/ACLs; keep Function URLs private or authenticated."
+            ),
+        },
+    ),
+    (
+        ("cloudfront", "cdn dependency", "cloud/cdn dependency"),
+        {
+            "title": "Cloud/CDN dependency observed",
+            "what": (
+                "Client assets reference a CloudFront or similar CDN hostname. This is typically an "
+                "intentional third-party dependency, not evidence of a cloud misconfiguration."
+            ),
+            "attacker": (
+                "CDN hostnames alone do not grant access; treat as infrastructure inventory unless "
+                "anonymous list/read of private objects is proven."
+            ),
+            "fix": (
+                "No action required for intentionally public CDN resources. Assess only if private "
+                "buckets or signed-URL bypasses are demonstrated."
             ),
         },
     ),
@@ -610,7 +663,7 @@ def explain_finding(category: str = "", detail: str = "") -> Dict[str, str]:
         "idor": ("idor", "insecure direct object"),
         "well_known": ("well_known",),
         "cloud_url": ("cloud_url", "firebase", "supabase", "azure"),
-        "cloud": ("cloud", "s3", "blob", "lambda-url", "cloudfront"),
+        "cloud": ("cloud", "s3", "blob", "lambda-url", "cloudfront", "cdn dependency"),
         "file_metadata": ("file_metadata", "gps", "exif", "author"),
         "oauth": ("oauth", "redirect_uri", "missing state", "token leakage", "sso"),
         "jwt": ("jwt", "alg=none", "alg confusion"),
@@ -639,6 +692,13 @@ def explain_finding(category: str = "", detail: str = "") -> Dict[str, str]:
 
     preferred = category_aliases.get(cat)
     if preferred:
+        # CloudFront CDN references are infrastructure observations, not S3 misconfigs
+        if cat == "cloud" and (
+            "cloudfront" in detail_l or "cdn dependency" in detail_l or "not assessed" in detail_l
+        ):
+            for keys, payload in EXPLAINERS:
+                if "cloudfront" in keys or "cdn dependency" in keys:
+                    return dict(payload)
         # Cookie impact findings share category=authentication — match on detail first.
         if cat == "authentication":
             cookie_detail_keys = (
