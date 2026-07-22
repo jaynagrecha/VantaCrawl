@@ -94,9 +94,9 @@ def test_sensitive_path_backup_guide_still_clean():
     assert scan_sensitive_path("https://x.com/.git/config") is not None
 
 
-def test_open_redirect_passive_offsite_suppressed():
+def test_open_redirect_passive_offsite():
     findings = scan_open_redirect("https://app.example/login?next=https://evil.example/phish")
-    assert findings == []
+    assert any(f[0] == "open_redirect" for f in findings)
 
 
 def test_open_redirect_same_host_not_flagged():

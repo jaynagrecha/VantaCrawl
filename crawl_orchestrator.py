@@ -76,6 +76,7 @@ from recon_extract import (
 )
 from reporting import ReportWriter
 from security_scan import (
+    audit_security_headers,
     check_cors,
     discover_parameters,
     extract_forms,
@@ -1227,8 +1228,25 @@ async def _run_security_checks(
             # Pattern matched but no content gate defined — inventory, not a finding
             if url not in stats.sensitive_urls:
                 stats.sensitive_urls.append(url)
-    # header_audit: inventory via inventory_security_headers in _collect_passive_recon
-    # — do not emit missing-header findings (universal noise on almost every host)
+    # Header inventory always; emit only precise hardening gaps (HSTS on HTTPS,
+    # CSP/X-Frame when a login surface is present). Hygiene stays inventory-only.
+    if config.header_audit:
+        try:
+            from recon_extract import detect_login_surface
+
+            login_why = detect_login_surface(url, body_text or "", forms)
+        except Exception:
+            login_why = None
+        scheme = (urlparse(url).scheme or "").lower()
+        for cat, severity, detail in audit_security_headers(headers or {}, url):
+            d = (detail or "").lower()
+            if "hsts" in d or "strict-transport" in d:
+                if scheme == "https":
+                    await emit(cat, severity, url, detail)
+            elif login_why and (
+                "x-frame" in d or "csp" in d or "content-security" in d
+            ):
+                await emit(cat, severity, url, detail)
     if forms:
         for form in forms:
             if form.get("has_file_input") or form.get("file_fields"):
