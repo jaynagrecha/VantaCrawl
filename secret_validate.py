@@ -220,14 +220,24 @@ async def _google_api_key(http, token: str) -> ValidationResult:
     status = str(data.get("status") or "")
     if status == "OK" or status == "ZERO_RESULTS":
         return _result("active", "Google Maps API key accepted — active (possibly production)")
-    if status in ("REQUEST_DENIED", "INVALID_REQUEST") and "API key" in str(data.get("error_message") or ""):
-        # Could be referrer-restricted but still a real key
-        msg = str(data.get("error_message") or status)
-        if "invalid" in msg.lower() or "not valid" in msg.lower():
-            return _result("invalid", f"Google rejected key ({msg[:120]})")
-        return _result("unknown", f"Google key present but restricted ({msg[:120]})")
+    err = str(data.get("error_message") or "")
+    if status in ("REQUEST_DENIED", "INVALID_REQUEST"):
+        # Could be referrer/API-restricted but still a real browser key
+        msg = err or status
+        low = msg.lower()
+        if "invalid" in low and "referer" not in low and "referrer" not in low:
+            if "not authorized" not in low and "not permitted" not in low:
+                return _result("invalid", f"Google rejected key ({msg[:120]})")
+        return _result(
+            "unknown",
+            f"Google key present but restricted ({msg[:120]})",
+        )
     if resp2.status_code in (400, 403):
-        return _result("unknown", f"Google returned HTTP {resp2.status_code} — key may be restricted")
+        return _result(
+            "unknown",
+            f"Google returned HTTP {resp2.status_code} — key may be restricted "
+            f"(referrer/API allow-list)",
+        )
     return _result("unknown", f"Google returned status={status or resp2.status_code}")
 
 

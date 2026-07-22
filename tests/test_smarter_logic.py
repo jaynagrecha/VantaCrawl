@@ -79,7 +79,7 @@ def test_open_redirect_unknown_stays_low():
 
 def test_client_public_key_severity():
     assert is_client_public_key("Stripe Live Publishable Key", "pk_live_" + "a" * 24)
-    assert severity_for_kind("Google Cloud / Maps API Key", "high", "AIza" + "x" * 35) == "medium"
+    assert severity_for_kind("Google Cloud / Maps API Key", "high", "AIza" + "x" * 35) == "low"
     static = assess_secrets_static(
         "Exposed Google Cloud / Maps API Key in response body",
         "high",
@@ -87,7 +87,7 @@ def test_client_public_key_severity():
     )
     assert static.role == "client_public_key"
     assert static.impact == "limited_impact"
-    assert static.severity == "medium"
+    assert static.severity == "low"
 
 
 def test_graphql_schema_vs_playground_impact():

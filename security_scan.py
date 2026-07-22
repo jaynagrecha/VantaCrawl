@@ -318,8 +318,28 @@ _PREFIX_LOCKED_LABELS = frozenset(
         "DigitalOcean Personal Access Token",
         "HashiCorp Vault Token",
         "Private Key (PEM)",
+        # AIza… shape is unambiguous — never rename from nearby setItem/storage noise
+        "Google Cloud / Maps API Key",
+        "Google Maps API Key",
+        "Firebase API Key",
     }
 )
+
+
+def _google_browser_key_label(value: str, body_text: str, start: int, end: int) -> Optional[str]:
+    """Stable label for AIza browser keys (Firebase / Maps / generic Google)."""
+    if not (value or "").startswith("AIza"):
+        return None
+    window = body_text[max(0, start - 500) : min(len(body_text), end + 500)]
+    if re.search(
+        r"(?i)(firebase|identitytoolkit\.googleapis|securetoken\.googleapis|"
+        r"firestore\.googleapis|firebaseio\.com)",
+        window,
+    ):
+        return "Firebase API Key"
+    if re.search(r"(?i)(maps\.googleapis|maps\.google|places\.googleapis|geocode)", window):
+        return "Google Maps API Key"
+    return "Google Cloud / Maps API Key"
 
 
 def refine_secret_label(
@@ -335,6 +355,10 @@ def refine_secret_label(
     from secret_classify import classify_credential
 
     value = extract_secret_value(raw)
+    google_label = _google_browser_key_label(value or "", body_text, start, end)
+    if google_label:
+        return google_label
+
     classified = classify_credential(
         base_label=label,
         raw=raw,

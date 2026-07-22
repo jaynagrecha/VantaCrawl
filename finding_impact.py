@@ -190,10 +190,14 @@ def assess_secrets_static(detail: str, severity: str, evidence: str = "") -> Imp
     except Exception:
         is_client_public_key = lambda *_a, **_k: False  # type: ignore
     if is_client_public_key(detail, evidence):
+        sev = severity if severity in ("info", "low", "medium") else "low"
+        # Google/Firebase browser keys stay low until a live probe proves broad usability
+        if (evidence or "").startswith("AIza") and sev == "medium":
+            sev = "low"
         return ImpactResult(
             role="client_public_key",
             impact="limited_impact",
-            severity=severity if severity in ("low", "medium", "info") else "medium",
+            severity=sev,
             summary="Client/publishable key observed — often intentional in browser apps; verify API restrictions.",
             validation="unverified",
             proof=evidence or None,
@@ -258,9 +262,11 @@ async def assess_secrets_live(
             detail_suffix=suffix,
             issues=["Live check: vendor accepted this credential"],
         )
+    client_key = is_client_public_key(typed, evidence) or is_client_public_key(detail, evidence)
+
     if result.status == "invalid":
         return ImpactResult(
-            role="credential",
+            role="client_public_key" if client_key else "credential",
             impact="no_impact",
             severity="info",
             summary=result.summary,
@@ -271,12 +277,44 @@ async def assess_secrets_live(
             issues=["Live check: vendor rejected this credential"],
         )
     if result.status in ("skipped", "unknown"):
+        # Restricted / unverified browser Google keys are informational — not stealable creds
+        if client_key:
+            summary_l = (result.summary or "").lower()
+            restricted = any(
+                x in summary_l
+                for x in ("restrict", "referer", "referrer", "denied", "http 400", "http 403")
+            )
+            return ImpactResult(
+                role="client_public_key",
+                impact="limited_impact",
+                severity="info" if restricted else "low",
+                summary=result.summary
+                + (
+                    " — typically acceptable when HTTP referrer / API restrictions are in place"
+                    if restricted
+                    else " — verify Google Cloud key restrictions (HTTP referrers + API allow-list)"
+                ),
+                validation="unverified" if result.status == "unknown" else "skipped",
+                proof=evidence or None,
+                detail_suffix=suffix,
+                issues=["Live check: client/publishable key not proven unrestricted"],
+            )
         return ImpactResult(
             role="credential",
             impact="possible_credential",
             severity=severity or "high",
             summary=result.summary,
             validation="unverified" if result.status == "unknown" else "skipped",
+            proof=evidence or None,
+            detail_suffix=suffix,
+        )
+    if client_key:
+        return ImpactResult(
+            role="client_public_key",
+            impact="limited_impact",
+            severity="low",
+            summary=result.summary,
+            validation="error" if result.status == "error" else "unverified",
             proof=evidence or None,
             detail_suffix=suffix,
         )
