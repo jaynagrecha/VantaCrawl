@@ -62,7 +62,7 @@ UserAuth = Annotated[User, Depends(resolve_user)]
 
 
 def _owned_job(session: Session, job_id: str, user: User) -> ScanJob:
-    """Owner-only — reports/logs are never shared across users (including admins)."""
+    """Owner-only for regular users; admins may open any job's reports/logs."""
     job = assert_job_owner(session.get(ScanJob, job_id), user)
     return heal_job_report_paths(session, job)
 

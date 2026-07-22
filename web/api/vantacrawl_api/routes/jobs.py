@@ -45,7 +45,7 @@ def _to_out(job: ScanJob) -> JobOut:
 
 
 def _owned(job: Optional[ScanJob], user) -> ScanJob:
-    """Owner-only access — admins do not see or open other users' jobs."""
+    """Owner-only for regular users; admins may access any job."""
     return assert_job_owner(job, user)
 
 

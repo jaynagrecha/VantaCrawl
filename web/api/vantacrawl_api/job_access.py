@@ -1,7 +1,7 @@
-"""Strict per-user job ownership.
+"""Job access control: owner-only for regular users; admins see all.
 
-Jobs are visible/accessible only to the owning user. Admin status does not
-grant cross-tenant access to another user's scan jobs, reports, or logs.
+Non-admin users can only list/open jobs they created. Admin users retain
+full visibility and access across all tenants.
 """
 
 from __future__ import annotations
@@ -15,9 +15,11 @@ from .models import ScanJob, User
 
 
 def assert_job_owner(job: Optional[ScanJob], user: User) -> ScanJob:
-    """Return job if ``user`` owns it; otherwise 404 (no existence leak)."""
+    """Return job if ``user`` owns it, or if ``user`` is admin; else 404."""
     if not job or not user or not getattr(user, "id", None):
         raise HTTPException(status_code=404, detail="Job not found")
+    if getattr(user, "is_admin", False):
+        return job
     owner = (job.user_id or "").strip()
     if not owner or owner != str(user.id):
         raise HTTPException(status_code=404, detail="Job not found")
@@ -25,7 +27,9 @@ def assert_job_owner(job: Optional[ScanJob], user: User) -> ScanJob:
 
 
 def select_jobs_for_user(user: User):
-    """SQLModel select for jobs owned by ``user`` only (newest first)."""
+    """Jobs for the dashboard: own jobs only, or all jobs when admin."""
+    if getattr(user, "is_admin", False):
+        return select(ScanJob).order_by(ScanJob.created_at.desc())
     return select(ScanJob).where(ScanJob.user_id == user.id).order_by(ScanJob.created_at.desc())
 
 
