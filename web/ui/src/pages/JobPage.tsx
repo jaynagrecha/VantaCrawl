@@ -617,7 +617,7 @@ export default function JobPage() {
                     : "None yet"}
                 </p>
               ) : (
-                <ul className="mono" style={{ fontSize: ".8rem", maxHeight: 240, overflow: "auto" }}>
+                <ul className="hits-list mono">
                   {enumHits.slice(0, 60).map((url) => (
                     <li key={url}>
                       <a href={url} target="_blank" rel="noreferrer">
@@ -628,12 +628,12 @@ export default function JobPage() {
                 </ul>
               )}
             </div>
-            <div>
+            <div className="findings-panel">
               <h3 style={{ marginTop: 0 }}>Findings</h3>
               {findings.length === 0 ? (
                 <p className="muted">None yet</p>
               ) : (
-                <ul style={{ fontSize: ".85rem", maxHeight: 240, overflow: "auto", paddingLeft: "1.1rem" }}>
+                <ul className="findings-list">
                   {findings.map((f, i) => {
                     const secretKey = `${f.url || ""}-${i}`;
                     const isSecretCategory =
@@ -646,32 +646,26 @@ export default function JobPage() {
                       ? f.evidence_full || f.evidence_masked || ""
                       : f.evidence_masked || (f.evidence_full ? "••••" : "");
                     return (
-                      <li key={secretKey}>
-                        <strong>{f.severity || "info"}</strong>
-                        {f.impact ? (
-                          <>
-                            {" "}
+                      <li key={secretKey} className="finding-item">
+                        <div className="finding-meta">
+                          <strong className={`badge ${f.severity || "info"}`}>
+                            {f.severity || "info"}
+                          </strong>
+                          {f.impact ? (
                             <span className="secret-type-pill" title={f.impact_summary || ""}>
                               {f.impact}
                               {f.validation ? `/${f.validation}` : ""}
                             </span>
-                          </>
-                        ) : null}
-                        {f.secret_type ? (
-                          <>
-                            {" "}
+                          ) : null}
+                          {f.secret_type ? (
                             <span className="secret-type-pill">{f.secret_type}</span>
-                          </>
-                        ) : null}
-                        {" — "}
-                        {f.title || "Finding"}
+                          ) : null}
+                        </div>
+                        <div className="finding-title">{f.title || "Finding"}</div>
                         {f.url ? (
-                          <>
-                            {" "}
-                            <a className="mono" href={f.url} target="_blank" rel="noreferrer">
-                              {f.url}
-                            </a>
-                          </>
+                          <a className="finding-url mono" href={f.url} target="_blank" rel="noreferrer">
+                            {f.url}
+                          </a>
                         ) : null}
                         {isSecretCategory && hasEvidence ? (
                           <div className="secret-reveal-row">
@@ -694,9 +688,7 @@ export default function JobPage() {
                         ) : null}
                         {!isSecretCategory && patternEvidence ? (
                           <div className="secret-reveal-row">
-                            <span className="muted" style={{ marginRight: ".35rem" }}>
-                              matched:
-                            </span>
+                            <span className="muted">matched:</span>
                             <code className="mono">{patternEvidence}</code>
                           </div>
                         ) : null}
