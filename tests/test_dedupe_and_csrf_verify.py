@@ -41,6 +41,36 @@ def test_record_finding_dedupes_secrets_by_evidence():
     assert len(stats.findings) == 1
 
 
+def test_record_finding_dedupes_cookie_auth_per_host():
+    """Same Set-Cookie on every page must not flood Findings with N clones."""
+    stats = CrawlStats()
+    detail = (
+        "Cookie `AKZip` — unclassified but looks like an opaque token readable by JavaScript. "
+        "Impact: possible_credential."
+    )
+    for path in ("/", "/us/en", "/us/es", "/send-money", "/track"):
+        stats.record_finding(
+            "authentication",
+            "low",
+            f"https://westernunion.com{path}",
+            detail,
+            evidence="9810abcdef0123456789abcdef8199",
+            impact="possible_credential",
+        )
+    assert len(stats.findings) == 1
+    assert stats.finding_repeat_suppressed == 4
+    # Different cookie name on same host is a separate finding
+    stats.record_finding(
+        "authentication",
+        "high",
+        "https://westernunion.com/login",
+        "Cookie `sessionid` — appears to be a session/auth credential. Impact: stealable_credential.",
+        evidence="abc123def456ghi789jkl012",
+        impact="stealable_credential",
+    )
+    assert len(stats.findings) == 2
+
+
 def test_report_groups_same_evidence_once():
     ev = "key_live_eoeHYdsFNAm8LodH26Sjlcxugv1Rh2"
     findings = [
