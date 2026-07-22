@@ -201,14 +201,18 @@ async def _shodan(http, token: str) -> ValidationResult:
 
 
 async def _google_api_key(http, token: str) -> ValidationResult:
-    # Minimal metadata call; many keys are restricted by API/referrer so 403 ≠ dead key
+    """Identify provider surface + restriction/abuse signals before severity assignment.
+
+    Ladder: Geocode → Places (quota/billing abuse) → restricted/unknown.
+    """
     resp = await http.get(
         "https://www.googleapis.com/oauth2/v1/tokeninfo",
         params={"access_token": token},
     )
-    # tokeninfo is for OAuth access tokens; for API keys try a light discovery call
     if resp.status_code == 200:
         return _result("active", "Google tokeninfo accepted value — appears active")
+
+    # 1) Maps Geocode — common client Maps surface
     resp2 = await http.get(
         "https://maps.googleapis.com/maps/api/geocode/json",
         params={"address": "test", "key": token},
@@ -219,10 +223,28 @@ async def _google_api_key(http, token: str) -> ValidationResult:
         data = {}
     status = str(data.get("status") or "")
     if status == "OK" or status == "ZERO_RESULTS":
-        return _result("active", "Google Maps API key accepted — active (possibly production)")
+        # 2) Places — stronger billing/quota abuse signal when unrestricted
+        try:
+            places = await http.get(
+                "https://maps.googleapis.com/maps/api/place/textsearch/json",
+                params={"query": "cafe", "key": token},
+            )
+            pdata = places.json() or {}
+        except Exception:
+            pdata = {}
+        pstatus = str(pdata.get("status") or "")
+        if pstatus in ("OK", "ZERO_RESULTS"):
+            return _result(
+                "active",
+                "Unrestricted Google Places API accepted key — quota/billing abuse possible",
+            )
+        return _result(
+            "active",
+            "Google Maps Geocode accepted key — active (verify API allow-list + referrer restrictions)",
+        )
+
     err = str(data.get("error_message") or "")
     if status in ("REQUEST_DENIED", "INVALID_REQUEST"):
-        # Could be referrer/API-restricted but still a real browser key
         msg = err or status
         low = msg.lower()
         if "invalid" in low and "referer" not in low and "referrer" not in low:

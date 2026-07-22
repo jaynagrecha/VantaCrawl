@@ -84,19 +84,36 @@ def assess_header_audit(detail: str, severity: str) -> ImpactResult:
             validation="confirmed",
             suppress=True,
         )
-    # HSTS / CSP / X-Frame — real hardening gaps when the orchestrator chooses to emit
+    # HSTS / CSP / X-Frame — hardening misconfigurations, not demonstrated vulns
     if _HARDENING_HEADERS.search(d):
+        sev = severity if severity in ("info", "low") else "info"
+        if "csp" in d or "content-security" in d:
+            summary = (
+                "Missing CSP — hardening only unless XSS/script injection is also demonstrated."
+            )
+        elif "hsts" in d or "strict-transport" in d:
+            summary = (
+                "Missing HSTS — usually informational on HTTPS-only hosts unless HTTP "
+                "downgrade is proven."
+            )
+        elif "x-frame" in d:
+            summary = (
+                "Missing X-Frame-Options — hardening only without a clickjacking PoC "
+                "(frameable page + sensitive authenticated action)."
+            )
+        else:
+            summary = "Missing transport/framing control — hardening gap, not an active exploit."
         return ImpactResult(
             role="hardening",
             impact="informational",
-            severity=severity if severity in ("high", "medium") else "medium",
-            summary="Missing transport/framing control — hardening gap, not an active exploit by itself.",
+            severity=sev,
+            summary=summary,
             validation="confirmed",
         )
     return ImpactResult(
         role="hardening",
         impact="informational",
-        severity=severity or "low",
+        severity=severity if severity in ("info", "low") else "info",
         summary="Security header finding — verify against your policy baseline.",
         validation="confirmed",
     )

@@ -99,6 +99,7 @@ def test_aiza_live_active_stays_medium():
         side_effect=[
             FakeResp(400),
             FakeResp(200, {"status": "OK", "results": []}),
+            FakeResp(200, {"status": "OK", "results": []}),  # Places abuse probe
         ]
     )
 
@@ -115,3 +116,4 @@ def test_aiza_live_active_stays_medium():
     assert result.impact == "limited_impact"
     assert result.severity == "medium"
     assert result.validation == "active"
+    assert "Places" in result.summary or "Maps" in result.summary

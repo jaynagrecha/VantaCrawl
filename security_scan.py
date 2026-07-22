@@ -223,10 +223,12 @@ SENSITIVE_PATH_RE = re.compile(
 )
 
 SECURITY_HEADERS = {
-    "strict-transport-security": ("missing HSTS", "medium"),
-    "content-security-policy": ("missing CSP", "low"),
-    "x-frame-options": ("missing X-Frame-Options (clickjacking)", "medium"),
-    "x-content-type-options": ("missing X-Content-Type-Options", "low"),
+    # Hardening observations — not standalone Medium vulnerabilities.
+    # CSP may be elevated later when XSS is co-observed on the same host.
+    "strict-transport-security": ("missing HSTS", "info"),
+    "content-security-policy": ("missing CSP", "info"),
+    "x-frame-options": ("missing X-Frame-Options (clickjacking)", "info"),
+    "x-content-type-options": ("missing X-Content-Type-Options", "info"),
     "referrer-policy": ("missing Referrer-Policy", "info"),
     "permissions-policy": ("missing Permissions-Policy", "info"),
 }

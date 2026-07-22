@@ -58,12 +58,22 @@ def build_assessment_document(
     host = urlparse(start_url).netloc or start_url
 
     findings_dual: List[Dict[str, Any]] = []
-    for index, group in enumerate(groups, 1):
+    vuln_i = 0
+    hard_i = 0
+    for group in groups:
         severity = str(group.get("severity") or "info")
         title = str(group.get("title") or group.get("detail") or "Finding")
+        kind = str(group.get("finding_kind") or "vulnerability")
+        if kind == "hardening":
+            hard_i += 1
+            fid = f"H-{hard_i:02d}"
+        else:
+            vuln_i += 1
+            fid = f"V-{vuln_i:02d}"
         findings_dual.append(
             {
-                "id": f"F-{index:02d}",
+                "id": fid,
+                "finding_kind": kind,
                 "severity": severity,
                 "category": str(group.get("category") or "other"),
                 "title": title,
@@ -72,6 +82,10 @@ def build_assessment_document(
                 "unique_hosts": int(group.get("unique_hosts") or 0),
                 "urls": list(group.get("urls") or [])[:40],
                 "evidence": list(group.get("evidence") or [])[:12],
+                "role": str(group.get("role") or ""),
+                "impact": str(group.get("impact") or ""),
+                "validation": str(group.get("validation") or ""),
+                "impact_summary": str(group.get("impact_summary") or ""),
                 "executive": _plain_severity_blurb(severity, title),
                 "what": str(group.get("what") or ""),
                 "attacker": str(group.get("attacker") or ""),
@@ -79,31 +93,39 @@ def build_assessment_document(
             }
         )
 
-    critical = int(sev.get("critical", 0))
-    high = int(sev.get("high", 0))
-    medium = int(sev.get("medium", 0))
-    low = int(sev.get("low", 0))
-    info = int(sev.get("info", 0))
+    vulnerabilities = [f for f in findings_dual if f.get("finding_kind") != "hardening"]
+    hardening_issues = [f for f in findings_dual if f.get("finding_kind") == "hardening"]
+
+    # Overall risk ignores hardening noise — only demonstrated vulnerabilities drive Medium+
+    vuln_sev = Counter(str(f.get("severity") or "info") for f in vulnerabilities)
+    hard_sev = Counter(str(f.get("severity") or "info") for f in hardening_issues)
+    critical = int(vuln_sev.get("critical", 0))
+    high = int(vuln_sev.get("high", 0))
+    medium = int(vuln_sev.get("medium", 0))
+    low = int(vuln_sev.get("low", 0)) + int(hard_sev.get("low", 0))
+    info = int(vuln_sev.get("info", 0)) + int(hard_sev.get("info", 0)) + int(hard_sev.get("medium", 0))
 
     if critical:
         risk_level = "Critical"
         exec_headline = (
-            f"This assessment identified critical issues on {host} that should be addressed immediately."
+            f"This assessment identified critical vulnerabilities on {host} that should be addressed immediately."
         )
     elif high:
         risk_level = "High"
         exec_headline = (
-            f"This assessment identified high-severity issues on {host} that deserve prompt remediation."
+            f"This assessment identified high-severity vulnerabilities on {host} that deserve prompt remediation."
         )
     elif medium:
         risk_level = "Medium"
         exec_headline = (
-            f"This assessment found medium-severity hardening gaps on {host}; plan fixes in the next cycle."
+            f"This assessment found demonstrated medium-severity vulnerabilities on {host}; "
+            "plan fixes in the next cycle."
         )
-    elif low or info:
+    elif vulnerabilities or hardening_issues:
         risk_level = "Low"
         exec_headline = (
-            f"No critical or high issues were recorded for {host}; remaining items are lower urgency."
+            f"No demonstrated medium+ vulnerabilities on {host}. "
+            f"Remaining items are hardening / informational ({len(hardening_issues)} hardening observation(s))."
         )
     else:
         risk_level = "Clear"
@@ -114,23 +136,38 @@ def build_assessment_document(
 
     top_exec = [
         f"{f['id']} [{f['severity'].upper()}] {f['executive']}"
-        for f in findings_dual
+        for f in vulnerabilities
         if f["severity"] in ("critical", "high", "medium")
     ][:6]
-    if not top_exec:
-        top_exec = [f"{f['id']} [{f['severity'].upper()}] {f['executive']}" for f in findings_dual[:4]]
+    if not top_exec and vulnerabilities:
+        top_exec = [
+            f"{f['id']} [{f['severity'].upper()}] {f['executive']}" for f in vulnerabilities[:4]
+        ]
+    if not top_exec and hardening_issues:
+        top_exec = [
+            f"Hardening only: {hardening_issues[0]['id']} [{hardening_issues[0]['severity'].upper()}] "
+            f"{hardening_issues[0]['title']} — not a demonstrated vulnerability."
+        ]
     if not top_exec:
         top_exec = ["No prioritized findings in this run."]
 
     recommendations = list(conclusion.get("recommendations") or [])
     roadmap = []
-    for f in findings_dual:
+    for f in vulnerabilities:
         if f["severity"] in ("critical", "high"):
             roadmap.append({"priority": "P1 — Immediate", "item": f"{f['id']}: {f['title']}", "fix": f["fix"]})
         elif f["severity"] == "medium":
             roadmap.append({"priority": "P2 — Next sprint", "item": f"{f['id']}: {f['title']}", "fix": f["fix"]})
         elif f["severity"] == "low":
             roadmap.append({"priority": "P3 — Backlog", "item": f"{f['id']}: {f['title']}", "fix": f["fix"]})
+    for f in hardening_issues[:8]:
+        roadmap.append(
+            {
+                "priority": "P4 — Hardening backlog",
+                "item": f"{f['id']}: {f['title']}",
+                "fix": f["fix"],
+            }
+        )
     roadmap = roadmap[:18]
 
     protections = list(defense.get("protections_detected") or [])
@@ -191,6 +228,8 @@ def build_assessment_document(
         },
         "methodology": methodology,
         "findings": findings_dual,
+        "vulnerabilities": vulnerabilities,
+        "hardening_issues": hardening_issues,
         "recommendations": recommendations,
         "roadmap": roadmap,
         "protections": protections,
