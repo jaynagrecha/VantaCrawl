@@ -185,6 +185,19 @@ def assess_authentication(detail: str, severity: str, evidence: str = "") -> Imp
 
 
 def assess_secrets_static(detail: str, severity: str, evidence: str = "") -> ImpactResult:
+    try:
+        from secret_classify import is_client_public_key
+    except Exception:
+        is_client_public_key = lambda *_a, **_k: False  # type: ignore
+    if is_client_public_key(detail, evidence):
+        return ImpactResult(
+            role="client_public_key",
+            impact="limited_impact",
+            severity=severity if severity in ("low", "medium", "info") else "medium",
+            summary="Client/publishable key observed — often intentional in browser apps; verify API restrictions.",
+            validation="unverified",
+            proof=evidence or None,
+        )
     return ImpactResult(
         role="credential",
         impact="possible_credential",
@@ -217,7 +230,24 @@ async def assess_secrets_live(
     result = await validate_secret(typed, evidence or "", client=client)
     suffix = format_validation_suffix(result)
 
+    try:
+        from secret_classify import is_client_public_key
+    except Exception:
+        is_client_public_key = lambda *_a, **_k: False  # type: ignore
+
     if result.status == "active":
+        # Never promote intentional client/publishable keys to critical
+        if is_client_public_key(typed, evidence) or is_client_public_key(detail, evidence):
+            return ImpactResult(
+                role="client_public_key",
+                impact="limited_impact",
+                severity="medium",
+                summary=result.summary + " (client/publishable key — verify API restrictions)",
+                validation="active",
+                proof=evidence or None,
+                detail_suffix=suffix,
+                issues=["Live check: vendor accepted this client/publishable key"],
+            )
         return ImpactResult(
             role="credential",
             impact="stealable_credential",
@@ -526,13 +556,29 @@ def assess_active_vuln(category: str, detail: str, severity: str) -> ImpactResul
 
 def assess_api_leak(detail: str, severity: str) -> ImpactResult:
     d = _detail_l(detail)
-    if "graphql" in d and ("introspection" in d or "playground" in d):
+    if "graphql" in d and ("schema json" in d or "__schema" in d or "querytype" in d):
         return ImpactResult(
             role="api_leak",
             impact="confirmed",
             severity=severity or "high",
-            summary="GraphQL introspection/playground indicators on a GraphQL path.",
+            summary="GraphQL schema JSON disclosed on a GraphQL path.",
             validation="confirmed",
+        )
+    if "graphql" in d and ("playground" in d or "unverified" in d or "graphiql" in d):
+        return ImpactResult(
+            role="api_leak",
+            impact="possible",
+            severity=severity or "medium",
+            summary="GraphQL playground/UI indicators — introspection not proven from schema JSON.",
+            validation="unverified",
+        )
+    if "graphql" in d and ("introspection" in d or "playground" in d):
+        return ImpactResult(
+            role="api_leak",
+            impact="possible",
+            severity=severity or "medium",
+            summary="GraphQL introspection/playground indicators on a GraphQL path.",
+            validation="unverified",
         )
     if "json field" in d and "secret" in d:
         return ImpactResult(

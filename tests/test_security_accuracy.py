@@ -28,7 +28,8 @@ def test_sql_error_with_injectable_param_detected():
         "https://x.com/page?id=1",
         "Warning: mysql_fetch_array(): SQL syntax error near",
     )
-    assert any(f[0] == "sql_injection" and f[1] == "high" for f in findings)
+    # Name-only + SQL error is medium; payload chars escalate to high
+    assert any(f[0] == "sql_injection" and f[1] == "medium" for f in findings)
 
 
 def test_ssrf_relative_next_not_fp():

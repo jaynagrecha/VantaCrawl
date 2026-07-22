@@ -24,7 +24,8 @@ SECRET_PATTERNS = [
     (r"rk_live_[0-9a-zA-Z]{24,}", "Stripe Restricted Live Key", "critical"),
     (r"pk_live_[0-9a-zA-Z]{24,}", "Stripe Live Publishable Key", "medium"),
     (r"sk-(?:proj-)?[A-Za-z0-9_\-]{20,}", "OpenAI API Key", "critical"),
-    (r"AIza[0-9A-Za-z\-_]{35}", "Google Cloud / Maps API Key", "high"),
+    # Browser-embeddable Maps keys are client/public by design — start medium, escalate only with evidence
+    (r"AIza[0-9A-Za-z\-_]{35}", "Google Cloud / Maps API Key", "medium"),
     (r"xox[baprs]-[0-9A-Za-z-]{10,48}-[0-9A-Za-z-]{10,48}(?:-[0-9A-Za-z-]{10,48})?", "Slack API Token", "critical"),
     (r"SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}", "SendGrid API Key", "critical"),
     # Mailgun keys are key-<32 hex>. Exclude hyphen before "key-" so webpack
@@ -539,7 +540,9 @@ def scan_secrets(
             seen.add(key)
             note = assignment_note(body_text, match.start(), match.end(), value)
             detail = f"Exposed {typed} in response body{note}"
-            findings.append((typed, severity_for_kind(typed, severity), detail, value or None))
+            findings.append(
+                (typed, severity_for_kind(typed, severity, value or ""), detail, value or None)
+            )
     return findings
 
 
@@ -627,18 +630,23 @@ def extract_forms(html: str, page_url: str, content_type: str = "") -> List[Dict
         method = (form.get("method") or "GET").upper()
         fields = []
         file_fields = []
+        file_accepts: List[str] = []
         for inp in form.find_all(["input", "textarea", "select"]):
             name = inp.get("name")
             if name:
                 fields.append(name)
             if (inp.name or "").lower() == "input" and (inp.get("type") or "").lower() == "file":
                 file_fields.append(name or "(unnamed-file)")
+                accept = (inp.get("accept") or "").strip()
+                if accept:
+                    file_accepts.append(accept)
         forms.append(
             {
                 "action": action,
                 "method": method,
                 "fields": fields,
                 "file_fields": file_fields,
+                "file_accepts": file_accepts,
                 "has_file_input": bool(file_fields),
                 "page": page_url,
             }
@@ -741,58 +749,119 @@ _TRAVERSAL_FILE_PARAM_RE = re.compile(
 _XSS_PAYLOAD_RE = re.compile(
     r"(?i)(<\s*script|<\s*img|<\s*svg|<\s*iframe|onerror\s*=|onload\s*=|javascript:)"
 )
+_SQL_PAYLOAD_RE = re.compile(r"[\"'`;]|--|/\*|\bunion\b|\bselect\b", re.I)
+_ANALYTICS_SCRIPT_RE = re.compile(
+    r"(?i)(google-analytics|googletagmanager|gtag\(|fbq\(|analytics\.js|"
+    r"hotjar|segment\.com|mixpanel|clarity\.ms|newrelic|datadoghq|"
+    r"cdn\.segment|static\.hotjar|_gaq|_gat)"
+)
+_PARTNER_REDIRECT_HOST_RE = re.compile(
+    r"(?i)(?:^|\.)("
+    r"facebook\.com|fb\.com|twitter\.com|x\.com|t\.co|linkedin\.com|lnkd\.in|"
+    r"google\.com|accounts\.google\.com|youtube\.com|youtu\.be|"
+    r"apple\.com|microsoft\.com|live\.com|paypal\.com|stripe\.com|"
+    r"shopify\.com|amazon\.com|okta\.com|auth0\.com|cloudflare\.com|"
+    r"github\.com|gitlab\.com|bitbucket\.org|slack\.com|zoom\.us"
+    r")$"
+)
+_PROFILE_UPLOAD_RE = re.compile(
+    r"(?i)/(?:avatar|profile|account|settings|user|me|photo|picture|image)(?:/|$)"
+)
+# Bare */* or * is risky; image/* / .pdf are normal. Executable extensions in accept are risky.
+_UPLOAD_RISKY_ACCEPT_RE = re.compile(
+    r"(?i)(?:^|,)\s*(?:\*/\*|\*)(?:\s|,|$)|application/octet-stream|"
+    r"\.(?:php|phtml|aspx?|jsp|exe|sh|cgi)\b"
+)
 
 
 def scan_sql_injection(url: str, body_text: str, forms: Optional[List[dict]] = None) -> List[Tuple[str, str, str]]:
-    """Precise passive SQLi: SQL error body + injectable request signal (not bare error pages)."""
+    """Tiered passive SQLi: SQL error + request signal (payload-shaped → high, name-only → medium)."""
     if not body_text or not SQL_ERROR_RE.search(body_text):
         return []
     if _looks_like_code_listing(body_text):
         return []
     params = _query_params(url)
-    injectable = any(SQL_PARAM_RE.match(name) for name in params)
-    if not injectable:
-        injectable = any(
-            re.search(r"[\"'`;]|--|/\*|\bunion\b|\bselect\b", v or "", re.I)
-            for values in params.values()
-            for v in values
-        )
-    if not injectable and forms:
+    payload_params = [
+        name
+        for name, values in params.items()
+        if any(_SQL_PAYLOAD_RE.search(v or "") for v in values)
+    ]
+    named_params = [name for name in params if SQL_PARAM_RE.match(name)]
+    form_named = False
+    if forms:
         for form in forms:
             for field in form.get("fields") or []:
                 if SQL_PARAM_RE.match(str(field)):
-                    injectable = True
+                    form_named = True
                     break
-    if not injectable:
-        return []
-    return [
-        (
-            "sql_injection",
-            "high",
-            "SQL error in response with injectable parameter signal (precise passive SQLi)",
-        )
-    ]
+    if payload_params:
+        return [
+            (
+                "sql_injection",
+                "high",
+                f"SQL error with payload-shaped value in parameter(s) "
+                f"{', '.join(payload_params[:5])} (precise passive SQLi)",
+            )
+        ]
+    if named_params or form_named:
+        who = ", ".join((named_params or ["form field"])[:5])
+        return [
+            (
+                "sql_injection",
+                "medium",
+                f"SQL error near SQL-named parameter(s) {who} without payload chars (precise passive SQLi)",
+            )
+        ]
+    return []
 
 
 def scan_xss(url: str, body_text: str, forms: Optional[List[dict]] = None) -> List[Tuple[str, str, str]]:
-    """Precise passive XSS: HTML/JS payload chars reflected unescaped (not quote-only noise)."""
+    """Precise passive XSS with second-signal gating for inline cookie/eval scripts."""
     findings = []
     if not body_text:
         return findings
-    if not _looks_like_code_listing(body_text):
-        if re.search(r"(?i)<script[^>]*>[^<]{0,200}(document\.cookie\s*=|eval\s*\()", body_text):
-            findings.append(("xss", "medium", "Inline script with sensitive DOM access in response"))
     params = _query_params(url)
+    if not _looks_like_code_listing(body_text):
+        for match in re.finditer(
+            r"(?is)<script[^>]*>(.*?)</script>",
+            body_text[:200000],
+        ):
+            block = match.group(1) or ""
+            if not re.search(r"(?i)(document\.cookie\s*=|eval\s*\()", block):
+                continue
+            # Second signal: reflected param inside this script, or non-analytics ownership
+            reflected = any(
+                v and len(v) >= 3 and v in block
+                for values in params.values()
+                for v in values
+            )
+            analytics = bool(_ANALYTICS_SCRIPT_RE.search(block) or _ANALYTICS_SCRIPT_RE.search(match.group(0)))
+            if reflected:
+                findings.append(
+                    (
+                        "xss",
+                        "high",
+                        "Inline script with cookie/eval sink and reflected parameter (precise passive XSS)",
+                    )
+                )
+            elif not analytics:
+                findings.append(
+                    (
+                        "xss",
+                        "low",
+                        "Inline script with cookie/eval sink (no reflected input; verify ownership)",
+                    )
+                )
+            # analytics cookie/eval → skip (expected)
+            break
     for name, values in params.items():
         for value in values:
             if len(value) < 3 or len(value) > 200:
                 continue
-            # Payload-shaped or tag-shaped only — bare quotes / breadcrumb text are FPs
             payload_hit = bool(_XSS_PAYLOAD_RE.search(value))
             tag_hit = bool(re.search(r"<\s*[a-zA-Z][^>]{0,80}>", value))
             if not payload_hit and not tag_hit:
                 continue
-            # Unescaped only: raw value must appear (escaped &lt;…&gt; will not match)
             if value not in body_text:
                 continue
             findings.append(
@@ -846,31 +915,54 @@ def scan_rce(url: str, body_text: str, forms: Optional[List[dict]] = None) -> Li
 
 
 def scan_file_upload(forms: Optional[List[dict]], url: str) -> List[Tuple[str, str, str]]:
-    """Precise: real type=file control. Info for POST surfaces; low for unusual GET uploads."""
+    """Precise type=file surfaces with severity by accept/path risk (not blind medium)."""
     findings = []
     if not forms:
         return findings
+    seen_actions: set = set()
     for form in forms:
         action = form.get("action") or url
         has_file = bool(form.get("has_file_input")) or bool(form.get("file_fields"))
         if not has_file:
             continue
+        action_key = str(action)
+        if action_key in seen_actions:
+            continue
+        seen_actions.add(action_key)
         method = (form.get("method") or "GET").upper()
+        accepts = [str(a) for a in (form.get("file_accepts") or []) if a]
+        accept_blob = ",".join(accepts)
+        path = urlparse(action).path or urlparse(url).path or ""
+        risky_accept = bool(accepts) and bool(_UPLOAD_RISKY_ACCEPT_RE.search(accept_blob))
+        missing_accept = not accepts
+        adminish = bool(
+            re.search(r"(?i)/(?:admin(?:/|$)|import(?:/|$)|api/[^?\s]*upload)", path)
+        )
+        profileish = bool(_PROFILE_UPLOAD_RE.search(path))
+        if risky_accept or adminish:
+            sev = "medium" if method == "POST" else "high"
+            why = "risky accept/admin upload path"
+        elif profileish and not missing_accept:
+            sev = "info"
+            why = "profile/avatar-style upload"
+        elif missing_accept:
+            sev = "low"
+            why = "type=file without accept restriction"
+        else:
+            sev = "info"
+            why = "type=file upload surface"
         findings.append(
             (
                 "file_upload",
-                "info" if method == "POST" else "low",
-                f"File upload form (type=file) at {action} via {method}",
+                sev,
+                f"File upload form at {action} via {method} ({why})",
             )
         )
     return findings
 
 
 def scan_ssrf(url: str, body_text: str = "") -> List[Tuple[str, str, str]]:
-    """Precise passive SSRF: fetch-style params pointing at metadata/loopback/RFC1918.
-
-    ``next``/``redirect``/``return`` internal URLs are open-redirect territory, not SSRF.
-    """
+    """Precise passive SSRF with severity ladder: metadata > loopback > RFC1918."""
     findings = []
     params = _query_params(url)
     for name, values in params.items():
@@ -900,7 +992,7 @@ def scan_ssrf(url: str, body_text: str = "") -> List[Tuple[str, str, str]]:
                 findings.append(
                     (
                         "ssrf",
-                        "medium",
+                        "low",
                         f"Parameter '{name}' points at private-network URL (precise passive SSRF)",
                     )
                 )
@@ -951,6 +1043,19 @@ def scan_authentication_flaws(url: str, headers: dict, body_text: str = "") -> L
                 continue
             if len(set(value)) < 5:
                 continue
+            # Client/public key shapes in URLs stay lower (intentional embeds / share links)
+            if value.startswith(("pk_live_", "pk_test_", "AIza")) or re.fullmatch(
+                r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value
+            ):
+                sev = "low" if scheme == "https" else "medium"
+                findings.append(
+                    (
+                        "authentication",
+                        sev,
+                        f"Client/public-style credential in URL query parameter '{name}'",
+                    )
+                )
+                break
             sev = "high" if scheme == "https" else "critical"
             findings.append(
                 (
@@ -1009,11 +1114,18 @@ def scan_open_redirect(url: str) -> List[Tuple[str, str, str]]:
             ).netloc.lower()
             if not target_host or target_host == host or target_host.endswith("." + host):
                 continue
+            # Known partner/share hosts are usually intentional outbound links
+            if _PARTNER_REDIRECT_HOST_RE.search(target_host):
+                sev = "info"
+                note = "partner/share host"
+            else:
+                sev = "low"
+                note = "unfamiliar off-site host"
             findings.append(
                 (
                     "open_redirect",
-                    "low",
-                    f"Parameter '{name}' points off-site to {target_host} (precise passive open redirect)",
+                    sev,
+                    f"Parameter '{name}' points off-site to {target_host} ({note}; precise passive open redirect)",
                 )
             )
     return findings
@@ -1086,10 +1198,32 @@ def scan_api_leaks(url: str, body_text: str, headers: dict, content_type: str = 
             findings.append(("api_leak", "low", f"API documentation exposed at {path}"))
     # Body artifacts: require GraphQL path OR non-doc JSON evidence
     if body_text and not _looks_like_code_listing(body_text):
-        if GRAPHQL_PATH_RE.search(path) and re.search(
-            r"(?i)(__schema|introspectionQuery|GraphiQL|graphql playground)", body_text
-        ):
-            findings.append(("api_leak", "high", "GraphQL introspection/playground indicators on GraphQL path"))
+        if GRAPHQL_PATH_RE.search(path):
+            schema_json = bool(
+                re.search(
+                    r"(?i)(\"__schema\"\s*:|\"queryType\"\s*:|\"mutationType\"\s*:)",
+                    body_text[:8000],
+                )
+            )
+            playground_ui = bool(
+                re.search(r"(?i)(GraphiQL|graphql playground|introspectionQuery)", body_text[:8000])
+            )
+            if schema_json:
+                findings.append(
+                    (
+                        "api_leak",
+                        "high",
+                        "GraphQL schema JSON disclosed (__schema/queryType) on GraphQL path",
+                    )
+                )
+            elif playground_ui:
+                findings.append(
+                    (
+                        "api_leak",
+                        "medium",
+                        "GraphQL playground/UI indicators on GraphQL path (unverified introspection)",
+                    )
+                )
         elif "/actuator" in path and (
             re.search(r"(?i)actuator/health", path)
             or (
@@ -1372,31 +1506,40 @@ async def confirm_graphql_introspection(client, url: str) -> List[Tuple[str, str
 
 
 async def probe_http_methods(client, url: str) -> List[Tuple[str, str, str]]:
-    """Once-per-host OPTIONS/TRACE surface check."""
+    """Once-per-host OPTIONS/TRACE — emit only risky methods or TRACE echo proof."""
     findings: List[Tuple[str, str, str]] = []
+    allow = ""
     try:
         opt = await client.request("OPTIONS", url, timeout=8, follow_redirects=True)
         allow = opt.headers.get("allow") or opt.headers.get("Access-Control-Allow-Methods") or ""
-        if allow:
-            findings.append(
-                ("http_methods", "info", f"OPTIONS Allow/ACAM: {allow[:160]}")
-            )
         dangerous = [m for m in ("TRACE", "TRACK", "DEBUG") if m in allow.upper()]
         if dangerous:
             findings.append(
-                ("http_methods", "medium", f"Potentially risky methods advertised: {', '.join(dangerous)}")
+                (
+                    "http_methods",
+                    "medium",
+                    f"Potentially risky methods advertised: {', '.join(dangerous)} (Allow/ACAM: {allow[:120]})",
+                )
             )
+        # Benign Allow lists stay out of findings (inventory via caller if needed)
     except Exception:
         pass
     try:
         trace = await client.request("TRACE", url, timeout=8, follow_redirects=False)
-        if trace.status_code < 400 and (trace.text or "") and urlparse(url).path in (trace.text or ""):
+        body = trace.text or ""
+        # Require echo of TRACE method or request target — bare HTTP 200 is weak
+        echoed = bool(
+            re.search(r"(?i)^\s*TRACE\s+", body)
+            or "TRACE" in body[:200]
+            or (urlparse(url).path and urlparse(url).path in body)
+        )
+        if trace.status_code < 400 and echoed:
             findings.append(
-                ("http_methods", "high", f"TRACE appears enabled (HTTP {trace.status_code})")
+                ("http_methods", "high", f"TRACE enabled with request echo (HTTP {trace.status_code})")
             )
-        elif trace.status_code == 200:
+        elif trace.status_code == 200 and "TRACE" in (allow or "").upper():
             findings.append(
-                ("http_methods", "medium", f"TRACE returned HTTP {trace.status_code}")
+                ("http_methods", "medium", f"TRACE advertised and returned HTTP {trace.status_code}")
             )
     except Exception:
         pass

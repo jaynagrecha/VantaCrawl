@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import heapq
 import os
+import re
 import shutil
 import time
 from collections import deque
@@ -1228,8 +1229,9 @@ async def _run_security_checks(
             # Pattern matched but no content gate defined — inventory, not a finding
             if url not in stats.sensitive_urls:
                 stats.sensitive_urls.append(url)
-    # Header inventory always; emit only precise hardening gaps (HSTS on HTTPS,
+    # Header inventory always; emit hardening once per host (HSTS on HTTPS,
     # CSP/X-Frame when a login surface is present). Hygiene stays inventory-only.
+    host_key = (urlparse(url).netloc or "").lower()
     if config.header_audit:
         try:
             from recon_extract import detect_login_surface
@@ -1238,22 +1240,31 @@ async def _run_security_checks(
         except Exception:
             login_why = None
         scheme = (urlparse(url).scheme or "").lower()
+        header_once = host_key and host_key not in getattr(stats, "_header_hardening_hosts", set())
         for cat, severity, detail in audit_security_headers(headers or {}, url):
             d = (detail or "").lower()
+            emit_header = False
             if "hsts" in d or "strict-transport" in d:
-                if scheme == "https":
-                    await emit(cat, severity, url, detail)
+                emit_header = scheme == "https" and bool(header_once)
             elif login_why and (
                 "x-frame" in d or "csp" in d or "content-security" in d
             ):
+                emit_header = bool(header_once) or bool(login_why)
+            if emit_header:
+                if host_key:
+                    stats._header_hardening_hosts.add(host_key)
                 await emit(cat, severity, url, detail)
     if forms:
         for form in forms:
             if form.get("has_file_input") or form.get("file_fields"):
-                stats.record_url(
-                    "file_upload",
-                    f"{form.get('action') or url} :: {form.get('method', 'GET')}",
-                )
+                action = form.get("action") or url
+                action_key = str(action)
+                if action_key not in getattr(stats, "_file_upload_actions", set()):
+                    stats._file_upload_actions.add(action_key)
+                    stats.record_url(
+                        "file_upload",
+                        f"{action} :: {form.get('method', 'GET')}",
+                    )
     try:
         from cookie_impact import analyze_response_cookies
 
@@ -1287,10 +1298,31 @@ async def _run_security_checks(
     if config.param_discovery:
         stats.parameters.extend(discover_parameters(url, body_text, forms))
     if config.cors_check:
-        cors_issue = await check_cors(client, url)
-        if cors_issue:
-            sev = "high" if "credentials" in cors_issue.lower() else "medium"
-            await emit("cors", sev, url, cors_issue)
+        # Once per host, plus re-check on auth-like paths (session cookies matter there)
+        path_l = (urlparse(url).path or "").lower()
+        auth_like = bool(
+            re.search(
+                r"(?i)/(?:login|signin|auth|oauth|account|api(?:/|$)|graphql|dashboard)",
+                path_l,
+            )
+        )
+        static_like = bool(
+            re.search(
+                r"(?i)\.(?:css|js|mjs|map|png|jpe?g|gif|svg|ico|woff2?|ttf|webp)(?:$|\?)",
+                path_l,
+            )
+        )
+        cors_hosts = getattr(stats, "_cors_hosts", set())
+        should_cors = (not static_like) and (
+            auth_like or (host_key and host_key not in cors_hosts)
+        )
+        if should_cors:
+            if host_key and not auth_like:
+                stats._cors_hosts.add(host_key)
+            cors_issue = await check_cors(client, url)
+            if cors_issue:
+                sev = "high" if "credentials" in cors_issue.lower() else "medium"
+                await emit("cors", sev, url, cors_issue)
     # OPTIONS/TRACE once per host
     host = urlparse(url).netloc.lower()
     if host and host not in stats._http_methods_hosts and config.security_scan and config.vuln_scan:
