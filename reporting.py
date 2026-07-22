@@ -409,13 +409,75 @@ def write_findings_snapshot(report_dir: str | Path, stats: CrawlStats) -> str:
     root = _Path(report_dir)
     root.mkdir(parents=True, exist_ok=True)
     path = root / FINDINGS_SNAPSHOT_NAME
+    elapsed = 0.0
+    try:
+        elapsed = float(stats.elapsed_seconds()) if hasattr(stats, "elapsed_seconds") else 0.0
+    except Exception:
+        elapsed = 0.0
+    queue_size = int(getattr(stats, "queue_size", 0) or 0)
+    enum_total = int(getattr(stats, "enum_words_total", 0) or 0)
+    enum_done = int(getattr(stats, "enum_words_tested", 0) or 0)
+    directory_enum_enabled = enum_total > 0 or bool(getattr(stats, "enum_started_at", None))
+    crawl_complete = queue_size <= 0 and int(getattr(stats, "pages_crawled", 0) or 0) > 0
+    enum_complete = (not directory_enum_enabled) or (
+        enum_total > 0 and enum_done >= enum_total
+    )
+    finished = bool(getattr(stats, "finished_at", None))
+    if finished and crawl_complete and enum_complete:
+        scan_status = "final"
+    elif finished:
+        scan_status = "stopped"
+    else:
+        scan_status = "partial"
+    try:
+        from report_status import scan_status_from_stats
+
+        status_meta = scan_status_from_stats(stats)
+        scan_status = str(status_meta.get("scan_status") or scan_status)
+    except Exception:
+        status_meta = {
+            "scan_status": scan_status,
+            "phase": "crawl" if not finished else "complete",
+            "completion_percent": 100.0 if scan_status == "final" else 0.0,
+            "remaining_jobs": queue_size,
+            "report_generated_during_scan": scan_status == "partial",
+            "directory_enum_enabled": directory_enum_enabled,
+            "directory_enum_started": bool(getattr(stats, "enum_started_at", None)),
+            "directory_enum_message": "",
+            "is_final": scan_status == "final",
+        }
+
     payload = {
         "pages_crawled": int(getattr(stats, "pages_crawled", 0) or 0),
+        "links_found": int(getattr(stats, "links_found", 0) or 0),
+        "errors": int(getattr(stats, "errors", 0) or 0),
+        "bytes_downloaded": int(getattr(stats, "bytes_downloaded", 0) or 0),
+        "queue_size": queue_size,
+        "started_at": float(getattr(stats, "started_at", 0) or 0) or None,
+        "finished_at": float(getattr(stats, "finished_at", 0) or 0) or None,
+        "elapsed_seconds": round(elapsed, 1),
+        "discovered_url_count": len(getattr(stats, "discovered_urls", set()) or set()),
+        "discovered_urls": list(getattr(stats, "discovered_urls", set()) or set())[:5000],
         "enum_hits": int(getattr(stats, "enum_hits", 0) or 0),
+        "enum_words_tested": enum_done,
+        "enum_words_total": enum_total,
         "enum_hit_urls": list(getattr(stats, "enum_hit_urls", []) or [])[:200],
+        "route_variants_skipped": int(getattr(stats, "route_variants_skipped", 0) or 0),
+        "out_of_scope_skipped": int(getattr(stats, "out_of_scope_skipped", 0) or 0),
+        "status_codes": dict(getattr(stats, "status_codes", {}) or {}),
         "findings": list(getattr(stats, "findings", []) or []),
         "technologies": dict(getattr(stats, "technologies", {}) or {}),
         "sensitive_urls": list(getattr(stats, "sensitive_urls", []) or [])[:100],
+        "cookie_inventory": list(getattr(stats, "cookie_inventory", []) or [])[:200],
+        "scan_status": status_meta.get("scan_status") or scan_status,
+        "phase": status_meta.get("phase") or "crawl",
+        "completion_percent": float(status_meta.get("completion_percent") or 0),
+        "report_generated_during_scan": bool(status_meta.get("report_generated_during_scan")),
+        "directory_enum_enabled": bool(status_meta.get("directory_enum_enabled")),
+        "directory_enum_started": bool(status_meta.get("directory_enum_started")),
+        "directory_enum_message": str(status_meta.get("directory_enum_message") or ""),
+        "remaining_jobs": int(status_meta.get("remaining_jobs") or queue_size),
+        "is_final": bool(status_meta.get("is_final")),
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, default=str), encoding="utf-8")
     return str(path)
@@ -441,18 +503,58 @@ def crawl_stats_from_partial(
     progress: Optional[Dict[str, Any]] = None,
 ) -> CrawlStats:
     """Rebuild CrawlStats from a snapshot file and/or live progress JSON."""
+    import time as _time
+
     stats = CrawlStats()
     snap = snapshot or {}
     prog = progress or {}
 
+    started = float(snap.get("started_at") or prog.get("started_at") or 0) or None
+    if started:
+        stats.started_at = started
+    else:
+        # Prefer restoring elapsed rather than pretending the scan just started
+        elapsed = float(snap.get("elapsed_seconds") or prog.get("elapsed_seconds") or 0)
+        if elapsed > 0:
+            stats.started_at = _time.time() - elapsed
+    finished = float(snap.get("finished_at") or prog.get("finished_at") or 0) or None
+    if finished:
+        stats.finished_at = finished
+
     stats.pages_crawled = int(snap.get("pages_crawled") or prog.get("pages_crawled") or 0)
+    stats.links_found = int(snap.get("links_found") or prog.get("links_found") or 0)
+    stats.errors = int(snap.get("errors") or prog.get("errors") or 0)
+    stats.bytes_downloaded = int(
+        snap.get("bytes_downloaded") or prog.get("bytes_downloaded") or 0
+    )
+    stats.queue_size = int(snap.get("queue_size") or prog.get("queue_size") or 0)
     stats.enum_hits = int(snap.get("enum_hits") or prog.get("enum_hits") or 0)
+    stats.enum_words_tested = int(
+        snap.get("enum_words_tested") or prog.get("enum_words_tested") or 0
+    )
+    stats.enum_words_total = int(
+        snap.get("enum_words_total") or prog.get("enum_words_total") or 0
+    )
+    stats.route_variants_skipped = int(
+        snap.get("route_variants_skipped") or prog.get("route_variants_skipped") or 0
+    )
+    stats.out_of_scope_skipped = int(
+        snap.get("out_of_scope_skipped") or prog.get("out_of_scope_skipped") or 0
+    )
     urls = list(snap.get("enum_hit_urls") or prog.get("enum_hit_urls") or [])
     if urls:
         try:
             stats.enum_hit_urls = list(urls)[:200]
         except Exception:
             pass
+    discovered = list(snap.get("discovered_urls") or [])
+    disc_count = int(snap.get("discovered_url_count") or prog.get("discovered_url_count") or 0)
+    if discovered:
+        stats.discovered_urls.update(str(u) for u in discovered if u)
+    elif disc_count > 0 and stats.pages_crawled:
+        # Preserve count for reports when URL list was truncated out of the snapshot
+        for i in range(min(disc_count, 50)):
+            stats.discovered_urls.add(f"snapshot://discovered/{i}")
     techs = snap.get("technologies") or {}
     if isinstance(techs, dict):
         for k, v in techs.items():
@@ -463,6 +565,44 @@ def crawl_stats_from_partial(
     for u in list(snap.get("sensitive_urls") or [])[:100]:
         if u and u not in stats.sensitive_urls:
             stats.sensitive_urls.append(str(u))
+    for row in list(snap.get("cookie_inventory") or [])[:200]:
+        if isinstance(row, dict):
+            stats.cookie_inventory.append(row)
+    codes = snap.get("status_codes") or prog.get("status_codes") or {}
+    if isinstance(codes, dict):
+        for k, v in codes.items():
+            try:
+                stats.status_codes[int(k)] += int(v)
+            except Exception:
+                try:
+                    stats.status_codes[str(k)] += int(v)
+                except Exception:
+                    pass
+
+    # Attach scan-status metadata for report builders (not a CrawlStats field)
+    stats._scan_status = str(  # type: ignore[attr-defined]
+        snap.get("scan_status")
+        or prog.get("scan_status")
+        or ("partial" if not finished else "final")
+    )
+    stats._report_generated_during_scan = bool(  # type: ignore[attr-defined]
+        snap.get("report_generated_during_scan")
+        if "report_generated_during_scan" in snap
+        else (not finished)
+    )
+    stats._directory_enum_enabled = bool(  # type: ignore[attr-defined]
+        snap.get("directory_enum_enabled")
+        if "directory_enum_enabled" in snap
+        else (stats.enum_words_total > 0 or bool(stats.enum_started_at))
+    )
+    stats._directory_enum_started = bool(  # type: ignore[attr-defined]
+        snap.get("directory_enum_started")
+        if "directory_enum_started" in snap
+        else bool(stats.enum_started_at)
+    )
+    stats._remaining_jobs = int(  # type: ignore[attr-defined]
+        snap.get("remaining_jobs") or prog.get("queue_size") or stats.queue_size or 0
+    )
 
     rows = list(snap.get("findings") or [])
     if not rows:
@@ -481,7 +621,21 @@ def crawl_stats_from_partial(
         if not detail and not evidence:
             continue
         try:
-            stats.record_finding(category, severity, url, detail, evidence=evidence or None)
+            stats.record_finding(
+                category,
+                severity,
+                url,
+                detail,
+                evidence=evidence or None,
+                impact=item.get("impact"),
+                role=item.get("role"),
+                validation=item.get("validation"),
+                impact_summary=item.get("impact_summary"),
+                verification=item.get("verification"),
+                proof=item.get("proof") if isinstance(item.get("proof"), dict) else None,
+                confidence=item.get("confidence"),
+                confidence_reason=item.get("confidence_reason"),
+            )
         except Exception:
             stats.findings.append(
                 {

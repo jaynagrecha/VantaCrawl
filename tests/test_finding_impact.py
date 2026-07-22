@@ -97,8 +97,9 @@ def test_cors_tracking_only_on_static_is_limited():
             {"name": "lang", "role": "preference", "impact": "no_credential_impact", "host": "cdn.example.com"},
         ],
     )
-    assert result.impact == "limited_impact"
-    assert result.severity == "medium"
+    # Public/static assets with only tracking cookies are informational — not High
+    assert result.impact in ("informational", "limited_impact")
+    assert result.severity == "info"
 
 
 def test_cors_tracking_only_but_login_path_still_high():

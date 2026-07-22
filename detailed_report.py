@@ -59,9 +59,26 @@ def _counter_lines(counter: Counter, *, indent: str = "  • ", limit: int = 20)
 
 def _takeaways(stats: CrawlStats, finding_groups: List[dict], defense: Optional[dict]) -> List[str]:
     items: List[str] = []
-    high = sum(1 for g in finding_groups if g.get("severity") in ("critical", "high"))
+    try:
+        from report_status import scan_status_from_stats
+
+        status = scan_status_from_stats(stats)
+        if status.get("scan_status") == "partial":
+            items.append(
+                "Report exported mid-scan — treat risk conclusions as provisional until the crawl/enum finish."
+            )
+        if status.get("directory_enum_message") and not status.get("directory_enum_started"):
+            items.append(str(status["directory_enum_message"]))
+    except Exception:
+        pass
+    high = sum(
+        1
+        for g in finding_groups
+        if g.get("severity") in ("critical", "high")
+        and str(g.get("assessment_state") or "") == "Confirmed vulnerability"
+    )
     if high:
-        items.append(f"{high} high/critical issue type(s) need priority review.")
+        items.append(f"{high} confirmed high/critical issue type(s) need priority review.")
     if stats.enum_hit_urls:
         items.append(f"{len(stats.enum_hit_urls)} hidden path(s) discovered — verify they are intentional.")
     if stats.sensitive_urls:
@@ -97,6 +114,12 @@ def build_report_model(
     severity_counts = Counter(f.get("severity", "info") for f in stats.findings)
     category_counts = Counter(f.get("category", "other") for f in stats.findings)
     defense = stats.defense_tracker.to_dict() if stats.defense_tracker else None
+    try:
+        from report_status import scan_status_from_stats
+
+        scan_status_meta = scan_status_from_stats(stats)
+    except Exception:
+        scan_status_meta = {}
 
     # Dedupe forms/parameters lightly for display
     form_rows = []
@@ -132,6 +155,7 @@ def build_report_model(
         "severity_counts": dict(severity_counts),
         "category_counts": dict(category_counts),
         "defense": defense,
+        "scan_status_meta": scan_status_meta,
         "takeaways": _takeaways(stats, finding_groups, defense),
         "key_findings_lines": [
             line
@@ -199,11 +223,21 @@ def render_detailed_text(model: Dict[str, Any]) -> str:
     lines += _hrule("PART A — EXECUTIVE SUMMARY", "=")
     lines.append(f"  Overall risk posture: {model['verdict_title']}")
     lines.append(f"  {model['verdict_body']}")
+    status_meta = model.get("scan_status_meta") or {}
+    if status_meta.get("scan_status"):
+        lines.append(
+            f"  Report status: {status_meta.get('scan_status')} "
+            f"(phase={status_meta.get('phase')}, "
+            f"completion≈{status_meta.get('completion_percent')}%)"
+        )
     lines.append("")
     lines.append("  Snapshot numbers:")
     lines.append(f"  • Pages crawled:          {snap.get('pages_crawled', 0):,}")
     lines.append(f"  • URLs discovered:        {model['discovered_total']:,}")
-    lines.append(f"  • Hidden paths found:     {len(model['enum_hits']):,}")
+    if status_meta.get("directory_enum_message") and not status_meta.get("directory_enum_started"):
+        lines.append(f"  • Hidden paths:           {status_meta['directory_enum_message']}")
+    else:
+        lines.append(f"  • Hidden paths found:     {len(model['enum_hits']):,}")
     lines.append(f"  • Security issue types:   {len(model['finding_groups']):,}")
     lines.append(f"  • Unique findings:        {len(model['findings']):,}")
     lines.append(f"  • Sensitive paths:        {len(model['sensitive']):,}")
@@ -244,12 +278,16 @@ def render_detailed_text(model: Dict[str, Any]) -> str:
     lines += _hrule("B2. Hidden paths (directory brute force)")
     tested = snap.get("enum_words_tested", 0)
     total = snap.get("enum_words_total", 0)
-    if total:
+    if status_meta.get("directory_enum_message") and not status_meta.get("directory_enum_started"):
+        lines.append(f"  {status_meta['directory_enum_message']}")
+        lines.append("  Do not interpret zero hits as “0 hidden paths found” — enumeration has not run yet.")
+    elif total:
         pct = min(100, int(tested * 100 / total)) if total else 0
         lines.append(f"  Wordlist progress: {tested:,} / {total:,} ({pct}%).")
+        lines.append(f"  Hits: {len(model['enum_hits']):,}")
     else:
         lines.append("  Wordlist progress: not started or not applicable.")
-    lines.append(f"  Hits: {len(model['enum_hits']):,}")
+        lines.append(f"  Hits: {len(model['enum_hits']):,}")
     lines.append("  Enum HTTP status codes:")
     lines.extend(_counter_lines(Counter(model["enum_status"])))
     lines.append("  Hidden paths found:")

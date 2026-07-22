@@ -757,6 +757,7 @@ def group_findings_for_report(findings: List[Dict[str, Any]], *, max_groups: int
                 "proof": item.get("proof") if isinstance(item.get("proof"), dict) else {},
                 "confidence": item.get("confidence") or "",
                 "confidence_reason": item.get("confidence_reason") or "",
+                "assessment_state": item.get("assessment_state") or "",
             }
         bucket = buckets[key]
         bucket["count"] += 1
@@ -812,6 +813,22 @@ def group_findings_for_report(findings: List[Dict[str, Any]], *, max_groups: int
         g.pop("_evidence_seen", None)
 
     groups = apply_hardening_context(groups)
+    try:
+        from report_status import assessment_state_for_finding
+
+        for g in groups:
+            if not g.get("assessment_state"):
+                g["assessment_state"] = assessment_state_for_finding(
+                    category=str(g.get("category") or ""),
+                    severity=str(g.get("severity") or ""),
+                    validation=str(g.get("validation") or ""),
+                    impact=str(g.get("impact") or ""),
+                    finding_kind=str(g.get("finding_kind") or ""),
+                    verification=str(g.get("verification") or ""),
+                    detail=str(g.get("detail") or ""),
+                )
+    except Exception:
+        pass
     groups.sort(
         key=lambda g: (
             0 if g.get("finding_kind") == "vulnerability" else 1,
@@ -827,12 +844,15 @@ def format_finding_group_lines(group: Dict[str, Any], *, max_urls: int = 40) -> 
     """Client-facing lines: title, then exact paths, then accessible secret evidence."""
     impact = group.get("impact") or ""
     validation = group.get("validation") or ""
+    assessment_state = group.get("assessment_state") or ""
     impact_bit = ""
     if impact:
         impact_bit = f" [{impact}" + (f"/{validation}" if validation else "") + "]"
     lines = [
         f"{group.get('title', 'Finding')} ({group.get('severity', 'info')}){impact_bit} — seen {group.get('count', 0)}×"
     ]
+    if assessment_state:
+        lines.append(f"  Assessment state: {assessment_state}")
     if group.get("impact_summary"):
         lines.append(f"  Impact: {group.get('impact_summary')}")
     urls = group.get("urls") or []

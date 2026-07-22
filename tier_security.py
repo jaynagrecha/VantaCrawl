@@ -265,7 +265,7 @@ def scan_jwt_flaws(url: str, body_text: str, headers: Optional[dict] = None) -> 
                         _ev(f"alg={alg} sig_len={len(sig)}", label="jwt_weak_sig"),
                     )
                 )
-            # expired acceptance cannot be proven passively; flag expired tokens still presented
+            # expired tokens are inventory/info — not a demonstrated vulnerability
             exp = payload.get("exp")
             if isinstance(exp, (int, float)):
                 import time
@@ -274,9 +274,15 @@ def scan_jwt_flaws(url: str, body_text: str, headers: Optional[dict] = None) -> 
                     findings.append(
                         (
                             "jwt",
-                            gate_severity("medium", verification="verified"),
-                            "Expired JWT still present in response/headers — verify server rejects it",
+                            "info",
+                            "Expired JWT still present in response/headers — inventory only; verify server rejects it",
                             _ev(f"exp={exp}", label="jwt_expired"),
+                            _meta(
+                                "detected",
+                                "info",
+                                confidence="low",
+                                confidence_reason="exp claim is in the past — not proof of acceptance",
+                            ),
                         )
                     )
             if "aud" not in payload and "iss" not in payload:
@@ -396,13 +402,15 @@ def scan_hidden_params_in_js(url: str, body_text: str) -> List[Finding]:
 
 
 async def probe_mass_assignment(client, url: str, *, max_tries: int = 3) -> List[Finding]:
-    """POST/PUT JSON role/isAdmin on API-ish endpoints — confirmed on reflection."""
+    """POST JSON privilege fields on API-ish endpoints — confirm only with structured impact."""
     parsed = urlparse(url)
     path = (parsed.path or "").lower()
     if not re.search(r"(?i)/(?:api|v\d+|user|users|account|profile|auth)/", path):
         return []
+    # Skip obvious HTML document routes
+    if re.search(r"(?i)\.(?:html?|aspx?|jsp|php)(?:$|\?)", path):
+        return []
     if parsed.query:
-        # Prefer clean resource URLs
         target = url.split("?", 1)[0]
     else:
         target = url
@@ -418,30 +426,56 @@ async def probe_mass_assignment(client, url: str, *, max_tries: int = 3) -> List
                 target,
                 json=payload,
                 timeout=10,
-                follow_redirects=True,
-                headers={"Content-Type": "application/json"},
+                follow_redirects=False,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
             )
         except Exception:
             continue
         body = resp.text or ""
         status = int(getattr(resp, "status_code", 0) or 0)
-        if status >= 400:
+        if status >= 400 or status < 200:
             continue
-        # Reflection / acceptance signals
-        reflected = any(
-            str(v).lower() in body.lower()
-            for v in payload.values()
-            if not isinstance(v, bool) or v is True
-        ) or ('"role"' in body and "admin" in body.lower()) or (
-            '"isAdmin"' in body and "true" in body.lower()
-        )
-        if not reflected:
+        # Redirects / HTML app shells are not API mass-assignment proof
+        if 300 <= status < 400:
+            continue
+        ctype = str(
+            (getattr(resp, "headers", {}) or {}).get("content-type")
+            or (getattr(resp, "headers", {}) or {}).get("Content-Type")
+            or ""
+        ).lower()
+        body_l = body.lstrip().lower()
+        if "text/html" in ctype or body_l.startswith("<!doctype") or body_l.startswith("<html"):
+            continue
+        if "json" not in ctype and not (body_l.startswith("{") or body_l.startswith("[")):
+            continue
+        try:
+            parsed_json = json.loads(body)
+        except Exception:
+            continue
+        if not isinstance(parsed_json, (dict, list)):
+            continue
+
+        def _field_present(obj, key, expected) -> bool:
+            if isinstance(obj, dict):
+                if key in obj and obj.get(key) == expected:
+                    return True
+                return any(_field_present(v, key, expected) for v in obj.values())
+            if isinstance(obj, list):
+                return any(_field_present(v, key, expected) for v in obj)
+            return False
+
+        persisted = False
+        for key, expected in payload.items():
+            if _field_present(parsed_json, key, expected):
+                persisted = True
+                break
+        if not persisted:
             continue
         findings.append(
             (
                 "mass_assignment",
                 gate_severity("high", verification="exploitable"),
-                f"Mass-assignment probe reflected privilege fields on {target} (HTTP {status})",
+                f"Mass-assignment probe: privilege field persisted in JSON response on {target} (HTTP {status})",
                 _ev(json.dumps(payload) + " => " + body[:120], label="mass_assignment"),
                 _meta(
                     "exploitable",
@@ -452,11 +486,11 @@ async def probe_mass_assignment(client, url: str, *, max_tries: int = 3) -> List
                         status=status,
                         body_snippet=body[:200],
                         evidence=json.dumps(payload),
-                        impact="Client-controlled privilege fields accepted/reflected",
+                        impact="Client-controlled privilege fields accepted in structured JSON response",
                         request_extra=f"json={json.dumps(payload)}",
                     ),
                     confidence="high",
-                    confidence_reason="Privilege JSON fields reflected in success response",
+                    confidence_reason="Privilege JSON fields present in structured API response",
                 ),
             )
         )
@@ -467,7 +501,11 @@ async def probe_mass_assignment(client, url: str, *, max_tries: int = 3) -> List
 # --- Rate limit --------------------------------------------------------------
 
 async def probe_rate_limit(client, url: str, *, bursts: int = 12) -> List[Finding]:
-    """Burst auth-ish endpoints; flag when no 429/challenge across rapid repeats."""
+    """Burst auth-ish endpoints; flag when no 429/challenge across rapid repeats.
+
+    Redirect-only bursts (all 301/302) do not prove missing rate limiting — the
+    auth handler / WAF counter may never have been reached.
+    """
     if not _AUTH_PATH_RE.search(urlparse(url).path or ""):
         return []
     statuses = []
@@ -479,21 +517,28 @@ async def probe_rate_limit(client, url: str, *, bursts: int = 12) -> List[Findin
             break
     if len(statuses) < max(6, bursts // 2):
         return []
+    # Pure redirect chains never exercised the protected auth workflow
+    if statuses and all(300 <= s < 400 for s in statuses):
+        return []
     limited = any(s in (429, 503) for s in statuses) or len(set(statuses)) > 3
     if limited:
         return []
-    # All succeeded similarly — possible missing rate limit (verified observation, not confirmed abuse)
+    # Require some non-redirect responses that actually hit an endpoint
+    reached = [s for s in statuses if s < 300 or s >= 400]
+    if len(reached) < max(4, bursts // 3):
+        return []
     return [
         (
             "rate_limit",
-            gate_severity("medium", verification="verified"),
-            f"Auth-like endpoint accepted {len(statuses)} rapid requests without 429/lockout signal",
+            "info",
+            f"Authentication surface candidate requiring rate-limit assessment "
+            f"({len(statuses)} rapid requests, no 429/lockout; statuses={statuses[:8]})",
             _ev(f"statuses={statuses[:12]}", label="rate_limit"),
             _meta(
-                "verified",
-                "medium",
-                confidence="medium",
-                confidence_reason="No 429/lockout across rapid auth-path requests",
+                "detected",
+                "info",
+                confidence="low",
+                confidence_reason="Auth-path burst without 429 — candidate only, not a confirmed missing control",
             ),
         )
     ]
@@ -991,12 +1036,22 @@ def scan_sso_lookfors(url: str, body_text: str) -> List[Finding]:
 # --- Race conditions (limited parallel burst) --------------------------------
 
 async def probe_race_conditions(client, url: str, *, parallelism: int = 10) -> List[Finding]:
-    """Fire parallel requests at redeem/pay/transfer paths; flag identical success bodies."""
+    """Fire parallel requests at redeem/pay/transfer paths; flag identical success bodies.
+
+    Static HTML shells (terms pages, marketing .html) are never race candidates.
+    """
     import asyncio
 
     path = (urlparse(url).path or "").lower()
+    if re.search(r"(?i)\.(?:html?|css|js|mjs)(?:$|\?)", path):
+        return []
+    if re.search(r"(?i)terms|conditions|policy|privacy|about|help|faq", path):
+        return []
     if not re.search(r"(?i)/(?:coupon|redeem|checkout|pay|payment|transfer|wallet)/", path):
         return []
+    # Prefer API-ish handlers over document routes
+    if not re.search(r"(?i)/(?:api|v\d+|action|submit|graphql)/", path) and path.endswith("/"):
+        pass
     target = url.split("?", 1)[0]
 
     async def _one():
@@ -1005,30 +1060,46 @@ async def probe_race_conditions(client, url: str, *, parallelism: int = 10) -> L
                 target,
                 json={"amount": 1, "coupon": "TEST", "quantity": 1},
                 timeout=8,
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                follow_redirects=False,
             )
-            return int(getattr(resp, "status_code", 0) or 0), (resp.text or "")[:240]
+            ctype = str(
+                (getattr(resp, "headers", {}) or {}).get("content-type")
+                or (getattr(resp, "headers", {}) or {}).get("Content-Type")
+                or ""
+            ).lower()
+            return int(getattr(resp, "status_code", 0) or 0), (resp.text or "")[:240], ctype
         except Exception:
-            return 0, ""
+            return 0, "", ""
 
     results = await asyncio.gather(*[_one() for _ in range(max(5, min(parallelism, 20)))])
-    ok = [(s, b) for s, b in results if 200 <= s < 300 and b]
+    ok = []
+    for s, b, ctype in results:
+        if not (200 <= s < 300 and b):
+            continue
+        bl = b.lstrip().lower()
+        if "text/html" in ctype or bl.startswith("<!doctype") or bl.startswith("<html"):
+            continue
+        if "json" not in ctype and not (bl.startswith("{") or bl.startswith("[")):
+            continue
+        ok.append((s, b))
     if len(ok) < 5:
         return []
-    # Same success body repeated → possible missing idempotency / double-redeem
     bodies = [b for _, b in ok]
-    if len(set(bodies)) == 1 and not re.search(r"(?i)(already|used|limit|insufficient|error|invalid)", bodies[0]):
+    if len(set(bodies)) == 1 and not re.search(
+        r"(?i)(already|used|limit|insufficient|error|invalid)", bodies[0]
+    ):
         return [
             (
                 "business_logic",
                 gate_severity("medium", verification="verified"),
-                f"Race burst: {len(ok)} parallel POSTs returned identical success bodies on {path}",
+                f"Race burst: {len(ok)} parallel POSTs returned identical JSON success bodies on {path}",
                 _ev(f"n={len(ok)} status={ok[0][0]} body={bodies[0][:100]}", label="race_identical"),
                 _meta(
                     "verified",
                     "medium",
                     confidence="medium",
-                    confidence_reason="Identical success across parallel mutating requests",
+                    confidence_reason="Identical mutating JSON responses under parallel burst",
                 ),
             )
         ]

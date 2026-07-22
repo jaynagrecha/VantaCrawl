@@ -23,7 +23,10 @@ SECRET_PATTERNS = [
     (r"sk_live_[0-9a-zA-Z]{24,}", "Stripe Live Secret Key", "critical"),
     (r"rk_live_[0-9a-zA-Z]{24,}", "Stripe Restricted Live Key", "critical"),
     (r"pk_live_[0-9a-zA-Z]{24,}", "Stripe Live Publishable Key", "medium"),
-    (r"sk-(?:proj-)?[A-Za-z0-9_\-]{20,}", "OpenAI API Key", "critical"),
+    (r"sk-(?:proj-|svcacct-)?[A-Za-z0-9]{20,}T3BlbkFJ[A-Za-z0-9]{20,}", "OpenAI API Key", "critical"),
+    (r"sk-proj-[A-Za-z0-9_\-]{40,}", "OpenAI API Key", "critical"),
+    # Legacy OpenAI sk- keys: require high entropy and exclude hyphenated natural-language tokens
+    (r"(?<![A-Za-z0-9_-])sk-[A-Za-z0-9]{48,}(?![A-Za-z0-9_-])", "OpenAI API Key", "critical"),
     # Browser-embeddable Maps keys are client/public by design — start medium, escalate only with evidence
     (r"AIza[0-9A-Za-z\-_]{35}", "Google Cloud / Maps API Key", "medium"),
     (r"xox[baprs]-[0-9A-Za-z-]{10,48}-[0-9A-Za-z-]{10,48}(?:-[0-9A-Za-z-]{10,48})?", "Slack API Token", "critical"),
@@ -113,6 +116,11 @@ _FORM_FIELD_KEYWORDS = frozenset(
         "passwd",
         "pwd",
         "pass",
+        "contraseña",
+        "contrasena",
+        "senha",
+        "motdepasse",
+        "passwort",
         "secret",
         "secrets",
         "token",
@@ -492,7 +500,58 @@ def _should_skip_secret_match(
     end: int,
     value: str,
 ) -> bool:
-    """Drop form-control / UI-schema false positives for generic assignment patterns."""
+    """Drop form-control / UI-schema / route-label false positives."""
+    value_l = (value or "").strip().lower()
+    # Localization / UI labels are never passwords
+    if value_l in {
+        "contraseña",
+        "contrasena",
+        "senha",
+        "mot de passe",
+        "passwort",
+        "password",
+        "passwd",
+        "default.password",
+    }:
+        return True
+    # A route containing forgot-password / reset-password is never a password secret
+    if re.search(
+        r"(?i)forgot[-_/]?password|reset[-_/]?password|change[-_/]?password|"
+        r"save[-_/]?password|default\.password|gwp.?save.?password",
+        value_l,
+    ):
+        return True
+    if value_l.startswith("/") and re.search(r"(?i)password|contraseñ|senha", value_l):
+        return True
+    # Entire match is a URL path containing password wording
+    if re.search(
+        r"(?i)(?:^|[\"'`=\s])/[^\s\"']*(?:forgot|reset|change|save)[-_/]?password",
+        raw or "",
+    ):
+        return True
+    # OpenAI: reject hyphenated natural-language after sk- (sk-karlek-och-…)
+    if label == "OpenAI API Key":
+        rest = (value or "")[3:]
+        if rest.startswith("proj-") or rest.startswith("svcacct-"):
+            return False
+        if "-" in rest[:32]:
+            return True
+        return False
+    # JWT-shaped values: skip when exp is already past
+    if re.match(r"^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$", (value or "").strip()):
+        try:
+            import base64
+            import json
+            import time
+
+            mid = (value or "").split(".")[1]
+            pad = "=" * (-len(mid) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(mid + pad))
+            exp = payload.get("exp")
+            if isinstance(exp, (int, float)) and exp < time.time() - 60:
+                return True
+        except Exception:
+            pass
     if label not in _GENERIC_SECRET_LABELS_FOR_FP:
         return False
     if _value_is_form_field_noise(value, raw):
@@ -1094,8 +1153,9 @@ def scan_file_upload(forms: Optional[List[dict]], url: str) -> List[Finding]:
         findings.append(
             (
                 "file_upload",
-                sev,
-                f"File upload form at {action} via {method} ({why})",
+                "info",
+                f"File-upload surface discovered at {action} via {method} "
+                f"({why}); server-side validation not assessed",
                 evidence,
             )
         )

@@ -10,23 +10,32 @@ from crawl_stats import CrawlStats
 from detailed_report import build_report_model, render_detailed_text
 
 
-def _risk_verdict(findings: List[dict]) -> Tuple[str, str]:
+def _risk_verdict(findings: List[dict], *, scan_status: str = "", phase: str = "") -> Tuple[str, str]:
+    from report_status import demonstrated_severity_counts, partial_executive_summary
+
+    if scan_status == "partial":
+        return (
+            "PARTIAL SCAN — candidate findings only",
+            partial_executive_summary(phase=phase or "crawl"),
+        )
+
+    demo = demonstrated_severity_counts(findings)
     counts = Counter(f.get("severity", "info") for f in findings)
-    critical = counts.get("critical", 0)
-    high = counts.get("high", 0)
-    medium = counts.get("medium", 0)
+    critical = int(demo.get("critical", 0))
+    high = int(demo.get("high", 0))
+    medium = int(demo.get("medium", 0)) or int(counts.get("medium", 0))
 
     if critical > 0:
         return (
             "HIGH RISK — immediate review required",
-            f"The scan found {critical} critical issue type(s), {high} high, and {medium} medium. "
+            f"The scan demonstrated {critical} critical issue type(s), {high} high, and {medium} medium. "
             "Prioritize critical/high items in Part B. Each issue includes what it means, how it could be abused, "
             "and how to fix it.",
         )
     if high > 0:
         return (
             "ELEVATED RISK — review recommended",
-            f"No critical issues were recorded, but {high} high-severity and {medium} medium issue(s) "
+            f"No critical issues were recorded, but {high} demonstrated high-severity and {medium} medium issue(s) "
             "need a closer look. Read the “How an attacker could use this” notes before deciding what to patch first.",
         )
     if medium > 0:
@@ -38,7 +47,7 @@ def _risk_verdict(findings: List[dict]) -> Tuple[str, str]:
     if findings:
         return (
             "LOW — informational findings only",
-            f"{len(findings)} informational item(s) were recorded. No urgent exploit path is indicated, "
+            f"{len(findings)} informational / candidate item(s) were recorded. No urgent exploit path is indicated, "
             "but skim Part B so nothing important was mis-labeled.",
         )
     return (
@@ -59,7 +68,14 @@ def build_search_conclusion(
     download_dir: str = "",
     config_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    verdict_title, verdict_body = _risk_verdict(stats.findings)
+    from report_status import scan_status_from_stats
+
+    status_meta = scan_status_from_stats(stats)
+    verdict_title, verdict_body = _risk_verdict(
+        stats.findings,
+        scan_status=str(status_meta.get("scan_status") or ""),
+        phase=str(status_meta.get("phase") or ""),
+    )
     meta = dict(config_meta or {})
     meta.setdefault("profile", profile)
     meta.setdefault("download_files", download_enabled)
@@ -74,6 +90,7 @@ def build_search_conclusion(
         verdict_title=verdict_title,
         verdict_body=verdict_body,
     )
+    model["scan_status_meta"] = status_meta
     text = render_detailed_text(model)
     if output_file:
         text += f"\nFull URL list:     {output_file}"
@@ -96,6 +113,8 @@ def build_search_conclusion(
         recommendations.append(
             f"Manually open the {len(model['enum_hits'])} hidden path(s) and confirm they are intentional."
         )
+    elif status_meta.get("directory_enum_message") and not status_meta.get("directory_enum_started"):
+        recommendations.append(str(status_meta["directory_enum_message"]))
     if model["s3"] or model["gcs"]:
         recommendations.append("Review cloud bucket hits — public list/read access is often accidental.")
     if model["broken"]:
@@ -138,4 +157,6 @@ def build_search_conclusion(
         "defense": defense,
         "scan_setup": model["scan_setup"],
         "report_model": model,
+        "scan_status": status_meta.get("scan_status"),
+        "scan_status_meta": status_meta,
     }

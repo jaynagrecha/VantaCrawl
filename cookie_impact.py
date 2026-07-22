@@ -41,7 +41,8 @@ _ANALYTICS_NAME_RE = re.compile(
     r"intercom-.*|__cfruid|__cf_bm|_cfuvid|cf_clearance|"
     r"_clck|_clsk|CLID|MR|MUID|SRM_B|ANONCHK|"
     r"NID|1P_JAR|AEC|CONSENT|SOCS|"
-    r"bm_sz|ak_bmsc|bm_sv|bm_mi|abck|_abck|akamai.*"
+    r"bm_sz|ak_bmsc|bm_sv|bm_mi|bm_lso|bm_so|abck|_abck|akamai.*|akzip|"
+    r"datadome|reese84|_px(?:vid|hd|3|de)?|__cfwaitingroom"
     r")$"
 )
 
