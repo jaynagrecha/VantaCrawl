@@ -118,10 +118,43 @@ a.job-card:hover { border-color: rgba(61,214,198,.45); text-decoration: none; ba
   background: linear-gradient(180deg, rgba(255,255,255,.02), transparent), var(--bg-elev);
   border: 1px solid var(--line); border-radius: var(--radius);
   padding: 1.25rem 1.35rem; box-shadow: var(--shadow);
+  overflow-x: clip; min-width: 0;
 }
 .card + .card { margin-top: 1rem; }
 .grid-2 { display: grid; grid-template-columns: 1.2fr .8fr; gap: 1rem; }
+.grid-2 > * { min-width: 0; }
 @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+
+.hits-list {
+  margin: 0; padding-left: 1.1rem; font-size: .8rem;
+  max-height: 240px; overflow: auto; min-width: 0;
+}
+.hits-list a { word-break: break-all; overflow-wrap: anywhere; }
+
+.findings-panel { min-width: 0; }
+.findings-list {
+  list-style: none; margin: 0; padding: 0;
+  max-height: 280px; overflow: auto; min-width: 0;
+  display: grid; gap: .75rem;
+}
+.finding-item {
+  min-width: 0; max-width: 100%;
+  padding: .7rem .8rem; border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, .14);
+  background: rgba(0, 0, 0, .16);
+  overflow-wrap: anywhere; word-break: break-word;
+}
+.finding-meta {
+  display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; margin-bottom: .4rem;
+}
+.finding-title {
+  font-size: .9rem; font-weight: 700; line-height: 1.35;
+  overflow-wrap: anywhere; word-break: break-word;
+}
+.finding-url {
+  display: block; margin-top: .35rem; font-size: .78rem;
+  word-break: break-all; overflow-wrap: anywhere;
+}
 
 h1 { margin: 0 0 .35rem; font-size: 1.7rem; }
 h2 { margin: 0 0 .75rem; font-size: 1.15rem; }
@@ -562,12 +595,20 @@ a.btn:hover { text-decoration: none; }
   color: #9aa7b8;
 }
 
-.secret-reveal-row { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; margin-top: .25rem; }
-.secret-reveal-btn { padding: .15rem .55rem; font-size: .75rem; min-height: 0; }
-.secret-reveal-row code { word-break: break-all; font-size: .78rem; }
+.secret-reveal-row {
+  display: flex; flex-wrap: wrap; align-items: flex-start; gap: .45rem;
+  margin-top: .45rem; min-width: 0; max-width: 100%;
+}
+.secret-reveal-btn { padding: .15rem .55rem; font-size: .75rem; min-height: 0; flex: 0 0 auto; }
+.secret-reveal-row code {
+  display: block; min-width: 0; flex: 1 1 100%;
+  word-break: break-all; overflow-wrap: anywhere; font-size: .78rem;
+  white-space: pre-wrap;
+}
 
 .secret-type-pill {
   display: inline-block;
+  max-width: 100%;
   font-size: .72rem;
   font-weight: 700;
   color: var(--accent);
@@ -576,7 +617,12 @@ a.btn:hover { text-decoration: none; }
   border-radius: 999px;
   padding: .1rem .5rem;
   vertical-align: middle;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
 }
+
+.log { overflow-wrap: anywhere; word-break: break-word; }
 
 /* —— Mobile / narrow viewports —— */
 @media (max-width: 760px) {
