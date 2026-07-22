@@ -468,6 +468,10 @@ export default function JobPage() {
             {
               label: "Protections",
               value: String(progress.protections_label || "none"),
+              hint:
+                Array.isArray(progress.protections) && progress.protections.length
+                  ? `Detected: ${(progress.protections as string[]).join(", ")}`
+                  : "Bot/WAF fingerprints seen so far (kept for the whole job)",
               tone: "text",
             },
             { label: "Mode", value: job.mode, tone: "text" },
