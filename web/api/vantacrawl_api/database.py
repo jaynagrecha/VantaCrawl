@@ -10,6 +10,9 @@ engine = create_engine(settings.sqlalchemy_url, echo=False, connect_args=connect
 
 
 def init_db() -> None:
+    # Ensure all table models are registered on SQLModel.metadata
+    from . import models as _models  # noqa: F401
+
     SQLModel.metadata.create_all(engine)
 
 
