@@ -25,6 +25,7 @@ from ..services.queue import (
     set_job_command,
 )
 from ..scan_settings import MODE_PRESETS, available_wordlists, concurrency_for_speed
+from target_url_safety import validate_public_http_url, validate_public_http_urls
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -53,6 +54,15 @@ def _purge_job_files(job: ScanJob) -> None:
                 resolved.unlink()
             except OSError:
                 pass
+
+
+def _require_safe_targets(start: str, extras: Optional[List[str]] = None) -> tuple[str, List[str]]:
+    try:
+        safe_start = validate_public_http_url(start)
+        safe_extras = validate_public_http_urls(extras or [])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return safe_start, safe_extras
 
 
 def _to_out(job: ScanJob) -> JobOut:
@@ -156,7 +166,10 @@ def create_job(body: JobCreateRequest, session: SessionDep, user: CurrentUser):
         raise HTTPException(status_code=400, detail="start_url must be http(s)")
     if not urlparse(start).netloc:
         raise HTTPException(status_code=400, detail="Invalid start_url")
+    start, safe_targets = _require_safe_targets(start, body.target_urls or [])
     config = _build_config_json(body)
+    if safe_targets:
+        config["target_urls"] = safe_targets
     job = _persist_and_enqueue(session, user, start, body.title, body.mode, body.speed, config)
     return _to_out(job)
 
@@ -199,7 +212,7 @@ async def create_job_with_files(
                 urls.append(line)
     if not urls:
         urls = [start]
-    start = urls[0]
+    start, urls = _require_safe_targets(urls[0], urls)
 
     try:
         settings_obj = json.loads(settings_json or "{}")
@@ -216,6 +229,7 @@ async def create_job_with_files(
         target_urls=urls,
     )
     config = _build_config_json(req)
+    config["target_urls"] = urls
     job = _persist_and_enqueue(session, user, start, title, mode, speed, config)
 
     settings = get_settings()

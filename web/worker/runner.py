@@ -30,7 +30,13 @@ from vantacrawl_api.services.queue import (  # noqa: E402
     publish_progress,
 )
 
-from browser_fetch import apply_selenium_login, make_browser_fetcher, quit_selenium_driver  # noqa: E402
+from browser_fetch import (  # noqa: E402
+    apply_selenium_login,
+    chrome_available,
+    make_browser_fetcher,
+    probe_chrome,
+    quit_selenium_driver,
+)
 from crawl_config import CrawlConfig  # noqa: E402
 from crawl_orchestrator import PauseController, run_full_crawl_async  # noqa: E402
 from crawl_stats import CrawlStats  # noqa: E402
@@ -568,10 +574,11 @@ async def run_job(job_id: str) -> None:
                 or getattr(config, "browser_primary", False)
                 or getattr(config, "browser_on_challenge", False)
             )
-            fetcher = None
             if use_browser:
-                try:
-                    fetcher = make_browser_fetcher(config)
+                if not chrome_available():
+                    _, detail = probe_chrome()
+                    output_callback(f"Browser features requested but unavailable ({detail}); using HTTP only.")
+                else:
                     output_callback(
                         "Real Chrome fetch path ready — "
                         + (
@@ -579,17 +586,10 @@ async def run_job(job_id: str) -> None:
                             if getattr(config, "browser_primary", False) or config.deep_mirror
                             else "challenge escalation"
                         )
-                        + (
-                            "; auto cookie sync on"
-                            if getattr(config, "auto_sync_cookies", True)
-                            else ""
-                        )
+                        + ("; auto cookie sync on" if getattr(config, "auto_sync_cookies", True) else "")
                         + "."
                     )
-                except Exception as exc:
-                    output_callback(f"Chrome fetch path unavailable ({exc}); continuing with HTTP stealth only.")
-                    fetcher = None
-                    use_browser = False
+            fetcher = make_browser_fetcher(config, output=output_callback) if use_browser else None
 
             crawl_task = asyncio.create_task(
                 run_full_crawl_async(

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional, Tuple
@@ -24,6 +25,8 @@ from session_cookies import SessionCookieStore
 _executor = ThreadPoolExecutor(max_workers=1)
 _selenium_driver = None
 _driver_ua = ""
+_chrome_probe: Optional[Tuple[bool, str]] = None
+_chrome_skip_logged = False
 
 DOM_LINKS_SCRIPT = """
 const out = [];
@@ -37,10 +40,99 @@ document.querySelectorAll('[href],[src],[srcset],[poster],[action],[data-src],[d
 return out;
 """
 
+def _candidate_chrome_bins() -> list[str]:
+    env_bins = [
+        os.environ.get("CHROME_BIN"),
+        os.environ.get("GOOGLE_CHROME_BIN"),
+        os.environ.get("CHROMIUM_PATH"),
+    ]
+    cache = os.path.expanduser("~/.cache/vantacrawl-chrome")
+    path_file = os.path.join(cache, "chrome_bin.path")
+    if os.path.isfile(path_file):
+        try:
+            with open(path_file, encoding="utf-8") as handle:
+                env_bins.append(handle.read().strip())
+        except OSError:
+            pass
+    which = [
+        shutil.which("google-chrome"),
+        shutil.which("google-chrome-stable"),
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+        shutil.which("chrome"),
+    ]
+    fixed = [
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ]
+    out = []
+    for item in env_bins + which + fixed:
+        if item and item not in out:
+            out.append(item)
+    return out
+
+
+def probe_chrome() -> Tuple[bool, str]:
+    """Return (available, detail). Result is cached for the process."""
+    global _chrome_probe
+    if _chrome_probe is not None:
+        return _chrome_probe
+    for path in _candidate_chrome_bins():
+        if path and os.path.isfile(path) and os.access(path, os.X_OK):
+            _chrome_probe = (True, path)
+            return _chrome_probe
+        # Windows executables are "accessible" without X_OK semantics
+        if path and os.path.isfile(path):
+            _chrome_probe = (True, path)
+            return _chrome_probe
+    _chrome_probe = (False, "Chrome/Chromium binary not found")
+    return _chrome_probe
+
+
+def chrome_available() -> bool:
+    return probe_chrome()[0]
+
+
+def reset_chrome_probe_cache() -> None:
+    """Test helper."""
+    global _chrome_probe, _chrome_skip_logged
+    _chrome_probe = None
+    _chrome_skip_logged = False
+
+
+def _chromedriver_service():
+    from selenium.webdriver.chrome.service import Service as ChromeService
+
+    driver_path = os.environ.get("CHROMEDRIVER_PATH") or os.environ.get("CHROMEDRIVER")
+    cache = os.path.expanduser("~/.cache/vantacrawl-chrome")
+    path_file = os.path.join(cache, "chromedriver.path")
+    if not driver_path and os.path.isfile(path_file):
+        try:
+            with open(path_file, encoding="utf-8") as handle:
+                driver_path = handle.read().strip()
+        except OSError:
+            driver_path = None
+    kwargs = {}
+    if driver_path and os.path.isfile(driver_path):
+        kwargs["executable_path"] = driver_path
+    try:
+        return ChromeService(log_output=os.devnull, **kwargs)
+    except TypeError:
+        try:
+            return ChromeService(**kwargs)
+        except TypeError:
+            return ChromeService()
+
 
 def get_selenium_driver(proxy_url: str = "", user_agent: str = ""):
     global _selenium_driver, _driver_ua
     ua = (user_agent or "").strip() or get_random_user_agent()
+
     if _selenium_driver is not None:
         # Recreate if UA policy changed (keeps browser UA aligned with sticky stealth UA)
         if ua and _driver_ua and ua != _driver_ua:
@@ -48,11 +140,15 @@ def get_selenium_driver(proxy_url: str = "", user_agent: str = ""):
         else:
             return _selenium_driver
 
+    ok, detail = probe_chrome()
+    if not ok:
+        raise RuntimeError(f"Browser automation unavailable: {detail}")
+
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.chrome.service import Service as ChromeService
 
     options = Options()
+    options.binary_location = detail
     options.add_argument("--headless=new")
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
@@ -62,12 +158,10 @@ def get_selenium_driver(proxy_url: str = "", user_agent: str = ""):
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
+    options.add_argument("--window-size=1280,720")
     if proxy_url:
         options.add_argument(f"--proxy-server={proxy_url}")
-    try:
-        service = ChromeService(log_output=os.devnull)
-    except TypeError:
-        service = ChromeService()
+    service = _chromedriver_service()
     _selenium_driver = webdriver.Chrome(service=service, options=options)
     _selenium_driver.set_page_load_timeout(30)
     _selenium_driver.set_script_timeout(20)
@@ -139,7 +233,12 @@ def _response_looks_challenged(status_code: int, body_text: str) -> bool:
     return any(m in low for m in markers[:6]) and ("challenge" in low or "denied" in low or "captcha" in low)
 
 
-def make_browser_fetcher(config, reporter=None, cookie_store: Optional[SessionCookieStore] = None):
+def make_browser_fetcher(
+    config,
+    reporter=None,
+    cookie_store: Optional[SessionCookieStore] = None,
+    output: Optional[Callable[[str], Any]] = None,
+):
     store = cookie_store or SessionCookieStore()
     if getattr(config, "cookie_string", ""):
         store.load_cookie_string(config.cookie_string, host=getattr(config, "start_url", "") or "")
@@ -184,6 +283,7 @@ def make_browser_fetcher(config, reporter=None, cookie_store: Optional[SessionCo
             output_note(f"Synced {updated} browser cookie(s) into HTTP jar for {_host_label(url)}")
 
     async def browser_page_fetcher(client, url, deep_render=False):
+        global _chrome_skip_logged
         force_browser = bool(deep_render or browser_primary)
         screenshot_path = None
         if getattr(config, "screenshot_capture", False) and reporter and is_html_url(url):
@@ -217,6 +317,18 @@ def make_browser_fetcher(config, reporter=None, cookie_store: Optional[SessionCo
                 if not on_challenge and not force_browser:
                     raise
 
+        if not chrome_available():
+            if output and not _chrome_skip_logged:
+                _chrome_skip_logged = True
+                _, detail = probe_chrome()
+                output(
+                    f"Browser render skipped — {detail}. "
+                    "Install Chrome/Chromium or set CHROME_BIN; continuing with HTTP only."
+                )
+            response = await client.get(url, timeout=20, follow_redirects=True)
+            response.raise_for_status()
+            return response.text, []
+
         try:
             page_html, cookies, dom_urls = await _selenium_fetch(url, screenshot_path=screenshot_path)
         except Exception:
@@ -249,7 +361,8 @@ def _ingest_set_cookie_headers(store: SessionCookieStore, url: str, headers) -> 
         if callable(get_list):
             raw_list = get_list("set-cookie") or []
         else:
-            one = headers.get("set-cookie") or headers.get("Set-Cookie")
+            headers_l = {str(key).lower(): value for key, value in headers.items()}
+            one = headers_l.get("set-cookie")
             if one:
                 raw_list = [one]
         for item in raw_list:
@@ -267,6 +380,11 @@ def _ingest_set_cookie_headers(store: SessionCookieStore, url: str, headers) -> 
 
 def apply_selenium_login(config, output: Optional[Callable[[str], Any]] = None, cookie_store: Optional[SessionCookieStore] = None):
     if not config.use_selenium_login or not config.login_url:
+        return config
+    if not chrome_available():
+        if output:
+            _, detail = probe_chrome()
+            output(f"Browser login skipped — {detail}")
         return config
     if output:
         output("Running browser login to capture cookies…")

@@ -10,6 +10,9 @@
 # Set secret env vars in the Dashboard (do not commit real SMTP/admin secrets).
 # If the Live service is named differently (e.g. santascan-api), set the same
 # env vars there after deploy.
+#
+# Browser features: build installs Chrome for Testing into CHROME_INSTALL_DIR.
+# If that fails, the worker auto-detects and falls back to HTTP-only with one log line.
 
 databases:
   - name: vantacrawl-db
@@ -33,8 +36,22 @@ services:
       name: vantacrawl-data
       mountPath: /opt/render/project/src/web/data
       sizeGB: 10
-    buildCommand: pip install -r web/requirements-render.txt -r web/api/requirements.txt && cd web/ui && npm install && npm run build
-    startCommand: uvicorn vantacrawl_api.main:app --host 0.0.0.0 --port $PORT --app-dir web/api
+    buildCommand: |
+      bash scripts/install_chrome_linux.sh
+      pip install -r web/requirements-render.txt -r web/api/requirements.txt
+      cd web/ui && npm install && npm run build
+    startCommand: |
+      if [ -f "$HOME/.cache/vantacrawl-chrome/chrome_bin.path" ]; then
+        export CHROME_BIN="$(cat "$HOME/.cache/vantacrawl-chrome/chrome_bin.path")"
+        export CHROMEDRIVER_PATH="$(cat "$HOME/.cache/vantacrawl-chrome/chromedriver.path")"
+        export PATH="$(dirname "$CHROMEDRIVER_PATH"):$PATH"
+      fi
+      if [ -f "${CHROME_INSTALL_DIR}/chrome_bin.path" ]; then
+        export CHROME_BIN="$(cat "${CHROME_INSTALL_DIR}/chrome_bin.path")"
+        export CHROMEDRIVER_PATH="$(cat "${CHROME_INSTALL_DIR}/chromedriver.path")"
+        export PATH="$(dirname "$CHROMEDRIVER_PATH"):$PATH"
+      fi
+      uvicorn vantacrawl_api.main:app --host 0.0.0.0 --port $PORT --app-dir web/api
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.11"
@@ -46,6 +63,8 @@ services:
         value: "8"
       - key: MAX_CONCURRENT_SCANS_PER_USER
         value: "1"
+      - key: APP_ENV
+        value: production
       - key: DATABASE_URL
         fromDatabase:
           name: vantacrawl-db
@@ -81,6 +100,8 @@ services:
         value: /opt/render/project/src/web/data/jobs
       - key: UI_DIST_DIR
         value: /opt/render/project/src/web/ui/dist
+      - key: CHROME_INSTALL_DIR
+        value: /opt/render/project/src/.cache/vantacrawl-chrome
 
   # Dedicated scan consumer (optional on Standard). After this is Live,
   # set the web service EMBED_WORKER=false.
@@ -89,8 +110,16 @@ services:
     runtime: python
     plan: standard
     maxShutdownDelaySeconds: 300
-    buildCommand: pip install -r web/requirements-render.txt -r web/api/requirements.txt
-    startCommand: python web/worker/worker.py
+    buildCommand: |
+      bash scripts/install_chrome_linux.sh
+      pip install -r web/requirements-render.txt -r web/api/requirements.txt
+    startCommand: |
+      if [ -f "${CHROME_INSTALL_DIR}/chrome_bin.path" ]; then
+        export CHROME_BIN="$(cat "${CHROME_INSTALL_DIR}/chrome_bin.path")"
+        export CHROMEDRIVER_PATH="$(cat "${CHROME_INSTALL_DIR}/chromedriver.path")"
+        export PATH="$(dirname "$CHROMEDRIVER_PATH"):$PATH"
+      fi
+      python web/worker/worker.py
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.11"
@@ -100,6 +129,8 @@ services:
         value: "8"
       - key: MAX_CONCURRENT_SCANS_PER_USER
         value: "1"
+      - key: APP_ENV
+        value: production
       - key: DATABASE_URL
         fromDatabase:
           name: vantacrawl-db
@@ -117,3 +148,5 @@ services:
         value: /opt/render/project/src/web/data/reports
       - key: JOBS_DIR
         value: /opt/render/project/src/web/data/jobs
+      - key: CHROME_INSTALL_DIR
+        value: /opt/render/project/src/.cache/vantacrawl-chrome

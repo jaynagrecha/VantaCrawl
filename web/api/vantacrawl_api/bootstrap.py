@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from sqlmodel import Session, select
@@ -11,6 +12,27 @@ from .models import User
 from .security import hash_password
 
 log = logging.getLogger("vantacrawl.bootstrap")
+
+_DEFAULT_SECRET = "change-me-in-production-use-long-random-string"
+
+
+def ensure_production_secrets() -> None:
+    settings = get_settings()
+    on_render = bool(os.environ.get("RENDER") or os.environ.get("RENDER_SERVICE_ID"))
+    is_prod = (settings.app_env or "").lower() in {"production", "prod"} or on_render
+    if not is_prod:
+        return
+    secret = (settings.secret_key or "").strip()
+    if not secret or secret == _DEFAULT_SECRET or len(secret) < 32:
+        raise RuntimeError(
+            "Refusing to start: set SECRET_KEY to a long random string "
+            "(Render generateValue or a 32+ char secret)."
+        )
+    admin_pw = settings.admin_password or ""
+    if admin_pw in {"", "ChangeMeAdmin123!"}:
+        log.warning(
+            "ADMIN_PASSWORD is still the default — set a strong password in the Dashboard."
+        )
 
 
 def ensure_dirs() -> None:
@@ -47,6 +69,7 @@ def ensure_admin_user() -> None:
 
 
 def startup() -> None:
+    ensure_production_secrets()
     ensure_dirs()
     init_db()
     ensure_admin_user()
