@@ -144,12 +144,7 @@ def build_assessment_document(
     low = int(vuln_sev.get("low", 0)) + int(hard_sev.get("low", 0))
     info = int(vuln_sev.get("info", 0)) + int(hard_sev.get("info", 0)) + int(hard_sev.get("medium", 0))
 
-    if status_meta.get("scan_status") == "partial":
-        risk_level = "Partial"
-        exec_headline = partial_executive_summary(
-            host=host, phase=str(status_meta.get("phase") or "crawl")
-        )
-    elif critical:
+    if critical:
         risk_level = "Critical"
         exec_headline = (
             f"This assessment identified critical vulnerabilities on {host} that should be addressed immediately."
@@ -178,6 +173,14 @@ def build_assessment_document(
             f"No security findings were recorded for {host} in this run. "
             "Treat coverage limits below as part of residual risk."
         )
+
+    # Scan completeness is separate from risk — never use "Partial" as a risk rating.
+    scan_status = str(status_meta.get("scan_status") or "")
+    if scan_status in ("partial", "stopped"):
+        incomplete = partial_executive_summary(
+            host=host, phase=str(status_meta.get("phase") or "crawl")
+        )
+        exec_headline = f"{incomplete} {exec_headline}"
 
     top_exec = [
         f"{f['id']} [{f['severity'].upper()}] {f['executive']}"

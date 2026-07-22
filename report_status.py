@@ -16,7 +16,11 @@ ASSESSMENT_STATES = (
 
 
 def scan_status_from_stats(stats: Any) -> Dict[str, Any]:
-    """Derive report completeness metadata from CrawlStats (or attr-enriched rebuild)."""
+    """Derive report completeness metadata from CrawlStats (or attr-enriched rebuild).
+
+    ``scan_status`` is completeness (partial / final / stopped) — never a risk rating.
+    Stale mid-scan ``_scan_status=partial`` must not override a finished, drained crawl.
+    """
     queue_size = int(getattr(stats, "queue_size", 0) or 0)
     remaining = int(getattr(stats, "_remaining_jobs", queue_size) or queue_size)
     pages = int(getattr(stats, "pages_crawled", 0) or 0)
@@ -40,6 +44,9 @@ def scan_status_from_stats(stats: Any) -> Dict[str, Any]:
         if getattr(stats, "enum_complete", None) is not None
         else (enum_started and enum_total > 0 and enum_done >= enum_total)
     )
+    # Enum not in scope ⇒ treat as complete for finalization purposes
+    if not enum_configured:
+        enum_complete = True
     enum_skip_reason = getattr(stats, "enum_skip_reason", None)
 
     # Legacy alias — do NOT treat "enabled=false" as "configured but not started"
@@ -47,11 +54,20 @@ def scan_status_from_stats(stats: Any) -> Dict[str, Any]:
 
     finished = bool(getattr(stats, "finished_at", None))
     crawl_complete = remaining <= 0 and pages > 0
+    work_complete = crawl_complete and enum_complete
 
     explicit = str(getattr(stats, "_scan_status", "") or "").strip().lower()
-    if explicit in ("partial", "final", "stopped"):
-        status = explicit
-    elif finished and crawl_complete and (enum_complete or not enum_configured):
+    # Structural completion wins over a stale mid-scan "partial" stamp once finished.
+    if work_complete and (finished or explicit == "final"):
+        status = "final"
+    elif explicit == "stopped" or (finished and not work_complete):
+        status = "stopped"
+    elif explicit == "final" and work_complete:
+        status = "final"
+    elif explicit in ("partial", "final", "stopped") and not finished:
+        # Mid-scan / early export — honor explicit only while still running
+        status = "partial" if explicit != "stopped" else "stopped"
+    elif finished and work_complete:
         status = "final"
     elif finished:
         status = "stopped"
@@ -64,6 +80,8 @@ def scan_status_from_stats(stats: Any) -> Dict[str, Any]:
         completion = round(0.7 * crawl_pct + 0.3 * enum_pct, 1)
     else:
         completion = round(crawl_pct, 1)
+    if status == "final":
+        completion = 100.0
 
     if status == "final":
         phase = "complete"
@@ -103,7 +121,7 @@ def scan_status_from_stats(stats: Any) -> Dict[str, Any]:
         # New explicit state model
         "enum_configured": enum_configured,
         "enum_started": enum_started,
-        "enum_complete": enum_complete,
+        "enum_complete": enum_complete if enum_configured else True,
         "enum_skip_reason": enum_skip_reason,
         # Legacy aliases for older report templates
         "directory_enum_enabled": enum_enabled,

@@ -702,6 +702,18 @@ async def run_job(job_id: str) -> None:
             try:
                 from reporting import write_findings_snapshot, write_stats_reports
 
+                try:
+                    stats.mark_finished()
+                    if not stop_flag["stop"]:
+                        stats._scan_status = "final"  # type: ignore[attr-defined]
+                    elif int(getattr(stats, "queue_size", 0) or 0) <= 0 and int(
+                        getattr(stats, "pages_crawled", 0) or 0
+                    ) > 0:
+                        stats._scan_status = "final"  # type: ignore[attr-defined]
+                    else:
+                        stats._scan_status = "stopped"  # type: ignore[attr-defined]
+                except Exception:
+                    pass
                 write_findings_snapshot(report_dir, stats)
                 written = write_stats_reports(
                     stats,

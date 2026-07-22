@@ -1073,6 +1073,32 @@ async def run_full_crawl_async(
         from distributed_queue import push_urls
         push_urls(config.distributed_redis_url, "crawler:queue", list(discovered))
 
+    # Finalize completeness before reports — without this, drained crawls stay
+    # "partial" and Overall risk incorrectly becomes "Partial".
+    try:
+        flat_q = len(queue) if hasattr(queue, "__len__") else int(getattr(stats, "queue_size", 0) or 0)
+        if use_priority and hasattr(queue, "__len__"):
+            flat_q = len(queue)
+        stats.queue_size = flat_q
+    except Exception:
+        pass
+    stopped_early = not await running()
+    stats.mark_finished()
+    enum_needed = bool(getattr(stats, "enum_configured", False))
+    enum_done = bool(getattr(stats, "enum_complete", False)) or not enum_needed
+    work_complete = int(getattr(stats, "queue_size", 0) or 0) <= 0 and int(
+        getattr(stats, "pages_crawled", 0) or 0
+    ) > 0 and enum_done
+    if work_complete and not stopped_early:
+        stats._scan_status = "final"  # type: ignore[attr-defined]
+    elif stopped_early and not work_complete:
+        stats._scan_status = "stopped"  # type: ignore[attr-defined]
+    elif work_complete:
+        # Stop requested after work already drained — still a final report
+        stats._scan_status = "final"  # type: ignore[attr-defined]
+    else:
+        stats._scan_status = "partial"  # type: ignore[attr-defined]
+
     from reporting import write_stats_reports
 
     report_paths = write_stats_reports(
