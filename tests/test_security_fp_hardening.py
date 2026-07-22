@@ -41,9 +41,9 @@ def test_open_redirect_oauth_redirect_uri_suppressed():
     assert findings == []
 
 
-def test_open_redirect_passive_suppressed():
+def test_open_redirect_passive_is_precise_low():
     findings = scan_open_redirect("https://app.example/login?next=https://evil.example/phish")
-    assert findings == []
+    assert findings and all(f[1] == "low" for f in findings)
 
 
 def test_mailgun_webpack_chunk_not_fp():
@@ -106,7 +106,7 @@ def test_file_upload_name_only_not_fp():
     assert scan_file_upload(forms, "https://x.com/") == []
 
 
-def test_file_upload_type_file_inventory_not_finding():
+def test_file_upload_type_file_info_finding():
     html = (
         '<form action="/upload" method="post">'
         '<input type="file" name="attachment">'
@@ -115,8 +115,8 @@ def test_file_upload_type_file_inventory_not_finding():
     )
     forms = extract_forms(html, "https://x.com/page", "text/html")
     assert forms and forms[0]["has_file_input"]
-    # Presence of type=file is inventory, not a vulnerability finding
-    assert scan_file_upload(forms, "https://x.com/page") == []
+    findings = scan_file_upload(forms, "https://x.com/page")
+    assert any(f[0] == "file_upload" and f[1] == "info" for f in findings)
 
 
 def test_mixed_content_anchor_href_not_fp():
@@ -184,8 +184,9 @@ def test_path_only_dotdot_not_traversal_fp():
     assert scan_directory_traversal("https://x.com/page?next=../home") == []
 
 
-def test_traversal_etc_passwd_param_passive_suppressed():
-    assert scan_directory_traversal("https://x.com/file?path=../../../etc/passwd") == []
+def test_traversal_etc_passwd_param_precise_tp():
+    findings = scan_directory_traversal("https://x.com/file?path=../../../etc/passwd")
+    assert any(f[0] == "directory_traversal" for f in findings)
 
 
 def test_api_leak_phpinfo_404_not_fp():
@@ -329,19 +330,20 @@ def test_http_password_form_still_finding():
     assert any(f[0] == "authentication" for f in findings)
 
 
-def test_possible_credential_cookie_no_finding():
+def test_possible_credential_cookie_low_finding():
     inv, findings = analyze_set_cookie_headers(
         {"Set-Cookie": "device_id=abcdef0123456789abcdef0123456789; Path=/"},
         page_url="https://example.com/",
     )
     assert inv
-    assert findings == []
+    # Precise low TP: opaque high-entropy cookie without HttpOnly
+    assert any(f[0] == "authentication" and f[1] == "low" for f in findings)
 
 
-def test_passive_ssrf_sqli_rce_redirect_empty():
+def test_passive_precise_signals_still_fire():
     from security_scan import scan_rce
 
-    assert scan_ssrf("https://x.com/fetch?url=http://169.254.169.254/") == []
-    assert scan_sql_injection("https://x.com/?id=1", "mysql_fetch SQL syntax error") == []
-    assert scan_rce("https://x.com/?cmd=id", "sh: command not found") == []
-    assert scan_open_redirect("https://x.com/out?next=https://evil.test/") == []
+    assert scan_ssrf("https://x.com/fetch?url=http://169.254.169.254/")
+    assert scan_sql_injection("https://x.com/?id=1", "mysql_fetch SQL syntax error")
+    assert scan_rce("https://x.com/?cmd=id", "sh: command not found")
+    assert scan_open_redirect("https://x.com/out?next=https://evil.test/")

@@ -50,24 +50,21 @@ def test_invalid_ipv6_url_rejected():
     assert "http://[bad-ipv6" not in discovered
 
 
-def test_vuln_scan_sql_error_passive_suppressed():
+def test_vuln_scan_sql_error():
     from security_scan import scan_sql_injection
 
-    # Passive SQL-error pages are suppressed; active probes confirm SQLi
-    assert (
-        scan_sql_injection(
-            "https://x.com/page?id=1",
-            "Warning: mysql_fetch_array(): SQL syntax error near",
-        )
-        == []
+    findings = scan_sql_injection(
+        "https://x.com/page?id=1",
+        "Warning: mysql_fetch_array(): SQL syntax error near",
     )
+    assert any(f[0] == "sql_injection" for f in findings)
 
 
-def test_vuln_scan_traversal_passive_suppressed():
+def test_vuln_scan_traversal():
     from security_scan import scan_directory_traversal
 
-    # Passive traversal is suppressed; active /etc/passwd probes confirm disclosure
-    assert scan_directory_traversal("https://x.com/file?path=../../../etc/passwd") == []
+    findings = scan_directory_traversal("https://x.com/file?path=../../../etc/passwd")
+    assert any(f[0] == "directory_traversal" for f in findings)
 
 
 def test_apply_live_settings_preserves_identity():

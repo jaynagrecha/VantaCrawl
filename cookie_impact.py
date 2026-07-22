@@ -323,12 +323,14 @@ def analyze_set_cookie_headers(
         inventory.append(row)
 
         name = row["name"]
-        # Emit only proven stealable auth/jwt cookies — possible_credential is inventory noise
-        if assessment["impact"] == "stealable_credential" and assessment.get("role") in (
-            "auth_session",
-            "jwt",
-        ):
-            dedupe = f"{name}|{assessment['impact']}|{row['flags']}"
+        role = str(assessment.get("role") or "")
+        impact = str(assessment.get("impact") or "")
+        # Stealable auth/jwt = high-confidence TP; possible_credential = precise low TP
+        emit = (
+            impact == "stealable_credential" and role in ("auth_session", "jwt")
+        ) or (impact == "possible_credential" and bool(assessment.get("stealable")))
+        if emit:
+            dedupe = f"{name}|{impact}|{row['flags']}"
             if dedupe in seen_names:
                 continue
             seen_names.add(dedupe)
@@ -336,13 +338,13 @@ def analyze_set_cookie_headers(
             issue_txt = f" Issues: {'; '.join(issues)}." if issues else ""
             detail = (
                 f"Cookie `{name}` — {assessment['summary']}{issue_txt} "
-                f"Flags: {row['flags']}. Impact: {assessment['impact']}."
+                f"Flags: {row['flags']}. Impact: {impact}."
             )
             evidence = row.get("value_masked") or None
-            if assessment["stealable"] and parsed.get("value"):
+            if assessment.get("stealable") and parsed.get("value") and impact == "stealable_credential":
                 evidence = str(parsed["value"])
             findings.append(("authentication", str(assessment["severity"]), detail, evidence))
-        # possible / mitigated / analytics / preference → inventory only
+        # mitigated / analytics / preference → inventory only
 
     return inventory, findings
 

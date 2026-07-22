@@ -73,17 +73,32 @@ def _is_active_confirmed(detail: str) -> bool:
 
 
 def assess_header_audit(detail: str, severity: str) -> ImpactResult:
-    # All header gaps stay in security-header inventory — not raised as findings.
-    # Missing HSTS/CSP on every host was a major noise source.
     d = _detail_l(detail)
-    role = "hygiene" if _INFO_HEADERS.search(d) else "hardening"
+    # Hygiene (Referrer-Policy, Permissions-Policy, X-Powered-By) → inventory only
+    if _INFO_HEADERS.search(d):
+        return ImpactResult(
+            role="hygiene",
+            impact="informational",
+            severity="info",
+            summary="Header hygiene / disclosure — tracked in inventory, not raised as a finding.",
+            validation="confirmed",
+            suppress=True,
+        )
+    # HSTS / CSP / X-Frame — real hardening gaps when the orchestrator chooses to emit
+    if _HARDENING_HEADERS.search(d):
+        return ImpactResult(
+            role="hardening",
+            impact="informational",
+            severity=severity if severity in ("high", "medium") else "medium",
+            summary="Missing transport/framing control — hardening gap, not an active exploit by itself.",
+            validation="confirmed",
+        )
     return ImpactResult(
-        role=role,
+        role="hardening",
         impact="informational",
-        severity="info",
-        summary="Security header gap tracked in inventory (not raised as a finding).",
+        severity=severity or "low",
+        summary="Security header finding — verify against your policy baseline.",
         validation="confirmed",
-        suppress=True,
     )
 
 
@@ -116,14 +131,23 @@ def assess_authentication(detail: str, severity: str, evidence: str = "") -> Imp
             suppress=True,  # do not treat as a security finding in reports
         )
     if "possible_credential" in d:
-        # Opaque / unverified possibles stay inventory — only stealable auth/jwt emits
+        # Request-Cookie possibles stay suppressed; Set-Cookie possibles are low TPs
+        if "request" in d:
+            return ImpactResult(
+                role="cookie",
+                impact="possible_credential",
+                severity="info",
+                summary="Auth-like cookie on request — flags unknown; inventory only.",
+                validation="unverified",
+                suppress=True,
+                proof=evidence or None,
+            )
         return ImpactResult(
             role="cookie",
             impact="possible_credential",
-            severity="info",
-            summary="Opaque cookie may be a credential — inventory only until Set-Cookie proves stealable.",
+            severity=severity or "low",
+            summary="Opaque high-entropy cookie without HttpOnly — verify it is not a session token.",
             validation="unverified",
-            suppress=True,
             proof=evidence or None,
         )
     if "limited_impact" in d or "csrf" in d:
@@ -458,11 +482,10 @@ def assess_open_redirect(detail: str, severity: str) -> ImpactResult:
         )
     return ImpactResult(
         role="open_redirect",
-        impact="no_impact",
-        severity="info",
-        summary="Passive open-redirect heuristic — suppressed; use active Location confirmation.",
+        impact="possible",
+        severity=severity or "low",
+        summary="Off-site URL in a redirect-style parameter (precise passive) — verify allow-list.",
         validation="unverified",
-        suppress=True,
     )
 
 
@@ -476,30 +499,27 @@ def assess_active_vuln(category: str, detail: str, severity: str) -> ImpactResul
             summary=f"{category} actively confirmed against a baseline response.",
             validation="confirmed",
         )
-    # Unconfirmed injection / probe heuristics are suppressed (active probes only)
-    if role in (
-        "xss",
-        "sql_injection",
-        "directory_traversal",
-        "ssrf",
-        "path_traversal",
-        "rce",
-        "form_probe",
-        "open_redirect",
-    ):
+    # form_probe status codes are not vulns
+    if role == "form_probe":
         return ImpactResult(
             role=role,
             impact="no_impact",
             severity="info",
-            summary=f"{category} heuristic without active confirmation — suppressed.",
+            summary="Form probe HTTP status — inventory only.",
             validation="unverified",
             suppress=True,
         )
+    # Precise passive hits stay as possible at the scanner's severity
+    precise = "precise" in _detail_l(detail)
     return ImpactResult(
         role=role,
         impact="possible",
-        severity=severity or "medium",
-        summary=f"{category} heuristic hit — not actively confirmed.",
+        severity=severity or ("medium" if precise else "low"),
+        summary=(
+            f"{category} precise passive signal — not actively confirmed yet."
+            if precise
+            else f"{category} heuristic hit — not actively confirmed."
+        ),
         validation="unverified",
     )
 
@@ -564,10 +584,9 @@ def assess_file_upload(detail: str, severity: str) -> ImpactResult:
     return ImpactResult(
         role="file_upload",
         impact="informational",
-        severity="info",
-        summary="Upload form surface is inventory — not proof of weak validation.",
+        severity=severity or "info",
+        summary="File upload surface (type=file) — verify extension/MIME validation server-side.",
         validation="unverified",
-        suppress=True,
     )
 
 
