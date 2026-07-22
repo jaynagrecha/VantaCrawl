@@ -257,6 +257,7 @@ def test_access_deny_surfaces_status_without_waf_blocks():
     assert out["block_journal"][0]["signal"] == "access_deny"
 
 
+<<<<<<< HEAD
 def test_credential_cookie_preview_masks_but_keeps_full():
     """possible_credential cookies get Show-full: masked for display, full in evidence_full."""
     from vantacrawl_api.services.live_progress import _findings_preview
@@ -285,3 +286,28 @@ def test_credential_cookie_preview_masks_but_keeps_full():
     assert "…" in row["evidence_masked"]
     assert row["evidence_masked"] != full
     assert row["evidence_masked"].startswith("9810") or "9810" in row["evidence_masked"]
+=======
+def test_protections_label_keeps_all_fingerprints():
+    """Stacked perimeters must not drop later names (e.g. recaptcha) from the tile."""
+    names = ["akamai", "cloudflare", "datadome", "perimeterx", "recaptcha"]
+    defense = {
+        "caught_by_protection": 10,
+        "completed_without_challenge": 100,
+        "protections_detected": names,
+        "block_journal": [],
+        "block_status_counts": {"403": 10},
+        "protection_block_counts": {"akamai": 10},
+        "access_deny_count": 0,
+        "access_deny_status_counts": {},
+        "access_deny_journal": [],
+    }
+    out = build_live_progress(
+        _stats(pages_crawled=50, defense=defense),
+        progress_text="Progress: 5m elapsed",
+        phase="crawl",
+    )
+    assert out["protections"] == names
+    assert out["protections_count"] == 5
+    assert "recaptcha" in out["protections_label"]
+    assert out["protections_label"] == ", ".join(names)
+>>>>>>> 7bab9e4 (Show all protection fingerprints in the cockpit tile)
