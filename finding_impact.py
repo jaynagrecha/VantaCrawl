@@ -130,6 +130,18 @@ def assess_authentication(detail: str, severity: str, evidence: str = "") -> Imp
             suppress=True,  # do not treat as a security finding in reports
         )
     if "possible_credential" in d:
+        # Request-Cookie / unverified possibles are inventory noise unless Set-Cookie
+        # already proved missing flags (stealable_credential branch above).
+        if "request" in d and "set-cookie" in d:
+            return ImpactResult(
+                role="cookie",
+                impact="possible_credential",
+                severity="info",
+                summary="Auth-like cookie on request — flags unknown; inventory only.",
+                validation="unverified",
+                suppress=True,
+                proof=evidence or None,
+            )
         return ImpactResult(
             role="cookie",
             impact="possible_credential",
@@ -146,13 +158,14 @@ def assess_authentication(detail: str, severity: str, evidence: str = "") -> Imp
             summary="CSRF/anti-forgery token — not a reusable session credential alone.",
             validation="confirmed",
         )
-    if "credentials or tokens appear in url" in d:
+    if "credential-like value in url" in d or "credentials or tokens appear in url" in d:
         return ImpactResult(
             role="credential_in_url",
-            impact="stealable_credential",
-            severity="critical",
-            summary="Credentials in the URL can leak via logs, Referer, and history.",
-            validation="confirmed",
+            impact="possible_credential",
+            severity=severity if severity in ("critical", "high") else "high",
+            summary="Credential-shaped value in the URL can leak via logs, Referer, and history.",
+            validation="unverified",
+            proof=evidence or None,
         )
     if "http" in d and ("login" in d or "password" in d or "auth" in d):
         return ImpactResult(
@@ -447,12 +460,14 @@ def assess_mixed_content(detail: str, severity: str) -> ImpactResult:
             summary="HTTPS page references active HTTP content (script/iframe) — MITM can inject code.",
             validation="confirmed",
         )
+    # Stylesheets / images / other passive mixed content — inventory noise
     return ImpactResult(
         role="mixed_content",
         impact="limited_impact",
-        severity=severity or "low",
-        summary="Mixed content detected (likely passive assets). Lower direct exploit impact than scripts.",
+        severity="info",
+        summary="Passive mixed content (non-script) — suppressed as a finding.",
         validation="confirmed",
+        suppress=True,
     )
 
 
@@ -484,10 +499,19 @@ def assess_active_vuln(category: str, detail: str, severity: str) -> ImpactResul
             summary=f"{category} actively confirmed against a baseline response.",
             validation="confirmed",
         )
+    # Passive heuristics stay low; do not inflate unverified injection noise
+    passive_low = role in (
+        "xss",
+        "sql_injection",
+        "directory_traversal",
+        "ssrf",
+        "path_traversal",
+        "form_probe",
+    )
     return ImpactResult(
         role=role,
         impact="possible",
-        severity=severity or "medium",
+        severity="low" if passive_low else (severity or "medium"),
         summary=f"{category} heuristic hit — not actively confirmed.",
         validation="unverified",
     )
@@ -511,12 +535,22 @@ def assess_api_leak(detail: str, severity: str) -> ImpactResult:
             summary="JSON response field may expose a secret value.",
             validation="unverified",
         )
+    if "confirmed" in d or "body proof" in d or "exposed at" in d:
+        return ImpactResult(
+            role="api_leak",
+            impact="confirmed" if "confirmed" in d or "body proof" in d else "possible",
+            severity=severity or "medium",
+            summary="Sensitive API/debug surface with content evidence.",
+            validation="confirmed" if "confirmed" in d or "body proof" in d else "unverified",
+        )
+    # Path-only leftovers without proof
     return ImpactResult(
         role="api_leak",
-        impact="possible",
-        severity=severity or "medium",
-        summary="Sensitive API/debug surface pattern — verify exposure is intentional.",
+        impact="no_impact",
+        severity="info",
+        summary="API/debug path pattern without body proof — suppressed.",
         validation="unverified",
+        suppress=True,
     )
 
 

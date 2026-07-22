@@ -151,11 +151,9 @@ def classify_cookie(name: str, value: str = "") -> str:
         return "csrf"
     if _AUTH_NAME_RE.match(n):
         return "auth_session"
-    # Substring auth — after analytics/preference/csrf so tracking names win
-    if re.search(r"(?i)(session|auth|token|jwt|sid)", n):
-        return "auth_session"
-    # High-entropy opaque values with auth-ish prefixes
-    if re.search(r"(?i)^(sess|auth|token|jwt|sid)", n) and len(v) >= 16:
+    # Prefix + entropy only — bare substring (cart_token, device_sid, ab_test_session)
+    # is too noisy and is intentionally not treated as auth.
+    if re.search(r"(?i)^(sess|auth|jwt|sid)[_-]?", n) and len(v) >= 16 and _entropy_hint(v):
         return "auth_session"
     return "unknown"
 
@@ -397,27 +395,21 @@ def analyze_cookie_request_header(
             inventory.append(row)
             continue
         assessment = assess_cookie_impact(fake, page_url=page_url)
-        # Soften: request header alone can't prove missing HttpOnly
+        # Request Cookie cannot prove missing HttpOnly — inventory only, never a finding
         if assessment["impact"] == "stealable_credential":
             assessment["impact"] = "possible_credential"
-            assessment["severity"] = "low"
+            assessment["severity"] = "info"
+            assessment["stealable"] = False
             assessment["summary"] = (
                 f"`{fake['name']}` auth-like cookie present on the request. "
-                "Confirm Set-Cookie flags on the issuing response; value may be a session credential."
+                "Flags unknown here — confirm Set-Cookie on the issuing response."
             )
             assessment["issues"] = [
                 "Observed on Cookie request header — verify HttpOnly/Secure on Set-Cookie"
             ]
         row = cookie_to_inventory_row(fake, assessment)
         inventory.append(row)
-        if assessment["impact"] in ("stealable_credential", "possible_credential"):
-            detail = (
-                f"Cookie `{fake['name']}` — {assessment['summary']} "
-                f"Impact: {assessment['impact']}."
-            )
-            findings.append(
-                ("authentication", str(assessment["severity"]), detail, fake.get("value") or fake.get("value_masked"))
-            )
+        # No findings from request Cookie alone (Set-Cookie path emits stealable ones)
     return inventory, findings
 
 

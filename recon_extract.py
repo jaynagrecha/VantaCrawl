@@ -183,8 +183,12 @@ def extract_websocket_urls(text: str, base_url: str) -> Set[str]:
     }
 
 
-def extract_mixed_content(url: str, body_text: str) -> List[str]:
-    """Return HTTP URLs loaded as active content on an HTTPS page."""
+def extract_mixed_content(url: str, body_text: str, *, include_stylesheets: bool = False) -> List[str]:
+    """Return HTTP URLs loaded as active content on an HTTPS page.
+
+    Default: script + iframe only. Stylesheets are passive mixed content and are
+    opt-in (inventory / separate reporting) to avoid finding noise.
+    """
     if not body_text or not url.lower().startswith("https://"):
         return []
     hits: List[str] = []
@@ -193,10 +197,11 @@ def extract_mixed_content(url: str, body_text: str) -> List[str]:
         hits.append(match.group(1))
     for match in MIXED_CONTENT_IFRAME_RE.finditer(chunk):
         hits.append(match.group(1))
-    for match in MIXED_CONTENT_STYLE_RE.finditer(chunk):
-        resource = match.group(1) or match.group(2)
-        if resource:
-            hits.append(resource)
+    if include_stylesheets:
+        for match in MIXED_CONTENT_STYLE_RE.finditer(chunk):
+            resource = match.group(1) or match.group(2)
+            if resource:
+                hits.append(resource)
     seen: Set[str] = set()
     out: List[str] = []
     for item in hits:
@@ -287,23 +292,36 @@ _JWT_ALGS = frozenset(
 )
 
 
-def jwt_header_looks_valid(token: str) -> bool:
-    """True when the first JWT segment decodes to JSON with a recognized ``alg``."""
+def _jwt_header_dict(token: str) -> Optional[dict]:
     import base64
     import json
 
     parts = (token or "").split(".")
     if len(parts) < 2:
-        return False
+        return None
     try:
         pad = "=" * (-len(parts[0]) % 4)
         header = json.loads(base64.urlsafe_b64decode(parts[0] + pad).decode("utf-8", "replace"))
     except Exception:
-        return False
-    if not isinstance(header, dict):
+        return None
+    return header if isinstance(header, dict) else None
+
+
+def jwt_header_looks_valid(token: str) -> bool:
+    """True when the first JWT segment decodes to JSON with a recognized ``alg``."""
+    header = _jwt_header_dict(token)
+    if not header:
         return False
     alg = header.get("alg")
     return isinstance(alg, str) and alg.upper() in _JWT_ALGS
+
+
+def jwt_alg_is_none(token: str) -> bool:
+    header = _jwt_header_dict(token)
+    if not header:
+        return False
+    alg = header.get("alg")
+    return isinstance(alg, str) and alg.upper() == "NONE"
 
 
 def find_jwt_candidates(

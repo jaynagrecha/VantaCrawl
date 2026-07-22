@@ -1187,22 +1187,31 @@ async def _run_security_checks(
         ):
             await emit("secrets_exposure", severity, url, detail, evidence=evidence)
         try:
-            from recon_extract import find_jwt_candidates
+            from recon_extract import find_jwt_candidates, jwt_alg_is_none
             from urllib.parse import urlparse as _urlparse
 
             scheme = (_urlparse(url).scheme or "").lower()
-            # Auth/Cookie headers only — body JWT shapes are a major FP source
+            # Inventory JWTs; only emit when cleartext HTTP or dangerous alg=none
             for source, token in find_jwt_candidates(
                 body_text or "", headers or {}, include_body=False
             ):
-                sev = "high" if scheme == "http" else "medium"
-                await emit(
-                    "secrets_exposure",
-                    sev,
-                    url,
-                    f"JWT-shaped token observed in {source}",
-                    evidence=token,
-                )
+                stats.record_url("jwt", f"{url} :: {source}")
+                if scheme == "http":
+                    await emit(
+                        "secrets_exposure",
+                        "high",
+                        url,
+                        f"JWT observed in {source} over cleartext HTTP",
+                        evidence=token,
+                    )
+                elif jwt_alg_is_none(token):
+                    await emit(
+                        "secrets_exposure",
+                        "high",
+                        url,
+                        f"JWT with alg=none observed in {source}",
+                        evidence=token,
+                    )
         except Exception:
             pass
     sensitive = scan_sensitive_path(url)
