@@ -463,28 +463,32 @@ async def run_job(job_id: str) -> None:
 
     async def command_watcher():
         while not stop_flag["stop"]:
-            cmd = get_job_command(job_id)
-            if cmd == "pause":
-                pause.pause()
-                _update_job(job_id, status="paused")
-                publish_progress(job_id, {"status": "paused", "message": "Paused — edit settings then Resume"})
-                clear_job_command(job_id)
-            elif cmd == "resume":
-                pause.resume()
-                _update_job(job_id, status="running")
-                publish_progress(job_id, {"status": "running", "message": "Resume requested"})
-                clear_job_command(job_id)
-            elif cmd == "stop":
-                stop_flag["stop"] = True
-                pause.resume()
-                try:
-                    manager.cancel_all()
-                except Exception:
-                    pass
-                _update_job(job_id, status="stopping")
-                publish_progress(job_id, {"status": "stopping", "message": "Stopping"})
-                clear_job_command(job_id)
-                break
+            try:
+                cmd = get_job_command(job_id)
+                if cmd == "pause":
+                    pause.pause()
+                    _update_job(job_id, status="paused")
+                    publish_progress(job_id, {"status": "paused", "message": "Paused — edit settings then Resume"})
+                    clear_job_command(job_id)
+                elif cmd == "resume":
+                    pause.resume()
+                    _update_job(job_id, status="running")
+                    publish_progress(job_id, {"status": "running", "message": "Resume requested"})
+                    clear_job_command(job_id)
+                elif cmd == "stop":
+                    stop_flag["stop"] = True
+                    pause.resume()
+                    try:
+                        manager.cancel_all()
+                    except Exception:
+                        pass
+                    _update_job(job_id, status="stopping")
+                    publish_progress(job_id, {"status": "stopping", "message": "Stopping"})
+                    clear_job_command(job_id)
+                    break
+            except Exception:
+                # Never let a Redis blip abort the watcher / scan
+                log.exception("command_watcher tick failed for %s", job_id)
             await asyncio.sleep(0.35)
 
     job = _get_job(job_id)
