@@ -748,28 +748,35 @@ export default function JobPage() {
               If you only see a thin cancel summary, click <strong>Rebuild full assessment</strong>.
             </p>
             {artifacts.length > 0 ? (
-              <table className="table" style={{ marginBottom: "1rem" }}>
-                <thead>
-                  <tr>
-                    <th>File</th>
-                    <th>Size</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {artifacts.map((a) => (
-                    <tr key={a.path}>
-                      <td className="mono">{a.name}</td>
-                      <td className="muted">{Math.max(1, Math.round(a.size / 1024))} KB</td>
-                      <td>
-                        <a className="btn" href={`/api/reports/${job.id}/artifacts/${encodeURIComponent(a.path)}?token=${tok}`}>
+              <div className="artifact-block">
+                <div className="artifact-block-head">
+                  <h3>Files</h3>
+                  <span className="muted">{artifacts.length} artifact{artifacts.length === 1 ? "" : "s"}</span>
+                </div>
+                <ul className="artifact-list">
+                  {artifacts.map((a) => {
+                    const kb = Math.max(1, Math.round(a.size / 1024));
+                    const href = `/api/reports/${job.id}/artifacts/${encodeURIComponent(a.path)}?token=${tok}`;
+                    const kind = (a.kind || "").trim();
+                    return (
+                      <li key={a.path} className="artifact-row">
+                        <div className="artifact-info">
+                          <div className="artifact-name mono" title={a.name}>
+                            {a.name}
+                          </div>
+                          <div className="artifact-meta">
+                            <span>{kb} KB</span>
+                            {kind ? <span className="artifact-kind">{kind}</span> : null}
+                          </div>
+                        </div>
+                        <a className="btn primary artifact-dl" href={href} download={a.name}>
                           Download
                         </a>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
             ) : null}
             <iframe className="report-frame" title="Report" src={embedUrl} />
           </>
