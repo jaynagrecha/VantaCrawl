@@ -339,6 +339,9 @@ def test_possible_credential_cookie_low_finding():
     assert inv
     # Precise low TP: opaque high-entropy cookie without HttpOnly
     assert any(f[0] == "authentication" and f[1] == "low" for f in findings)
+    # Full value stored for tap-to-reveal (live UI masks it)
+    hit = next(f for f in findings if f[0] == "authentication" and f[1] == "low")
+    assert hit[3] == "abcdef0123456789abcdef0123456789"
 
 
 def test_passive_precise_signals_still_fire():

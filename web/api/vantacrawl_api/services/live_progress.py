@@ -27,7 +27,9 @@ def _findings_preview(stats) -> List[Dict[str, str]]:
             evidence = str(item.get("evidence") or "")
             detail = str(item.get("detail") or item.get("title") or "")
             secret_type = ""
-            if str(item.get("category") or "") == "secrets_exposure":
+            category = str(item.get("category") or "")
+            impact = str(item.get("impact") or "")
+            if category == "secrets_exposure":
                 if detail.lower().startswith("exposed "):
                     secret_type = detail[8:].split(" in response", 1)[0].strip()
                 elif ":" in detail:
@@ -35,9 +37,12 @@ def _findings_preview(stats) -> List[Dict[str, str]]:
             title = detail[:160]
             if secret_type and secret_type.lower() not in title.lower():
                 title = f"{secret_type}: {title}"[:160]
-            category = str(item.get("category") or "")
-            # Pattern-match evidence must stay fully readable; only mask secret values.
-            if category == "secrets_exposure" and evidence:
+            # Mask secret / credential values for display; keep pattern evidence readable
+            credentialish = category == "secrets_exposure" or impact in (
+                "possible_credential",
+                "stealable_credential",
+            )
+            if credentialish and evidence:
                 evidence_masked = mask_secret_value(evidence)
             else:
                 evidence_masked = evidence
@@ -48,7 +53,7 @@ def _findings_preview(stats) -> List[Dict[str, str]]:
                     "url": str(item.get("url") or ""),
                     "category": category,
                     "secret_type": secret_type,
-                    "impact": str(item.get("impact") or ""),
+                    "impact": impact,
                     "validation": str(item.get("validation") or ""),
                     "impact_summary": str(item.get("impact_summary") or ""),
                     "role": str(item.get("role") or ""),
@@ -367,16 +372,13 @@ def build_live_progress(
     access_deny_journal = list(
         defense.get("access_deny_journal") or prev.get("access_deny_journal") or []
     )[-30:]
-    # Merge deny status into the status strip so operators still see HTTP 403×N
-    # even when WAF Blocks stays at 0 (Netlify/Vercel permission denials).
+    # Keep WAF status strip separate from access-deny counts (avoid 403×N looking like
+    # hundreds of bot-wall rows when the list only shows real WAF catches).
     display_status_counts = dict(block_status_counts)
-    for code, count in access_deny_status_counts.items():
-        display_status_counts[str(code)] = int(display_status_counts.get(str(code), 0) or 0) + int(
-            count or 0
-        )
-    # Prefer WAF journal; fall back to access-deny journal so the panel isn't empty
+    # Prefer WAF journal for the list; do not flood with access-deny rows.
+    # If there are no WAF events yet, show a tiny deny sample so the panel isn't empty.
     if not block_journal and access_deny_journal:
-        block_journal = access_deny_journal
+        block_journal = access_deny_journal[-5:]
 
     # Rate-based health: raw error counts panic users on secured sites mid-crawl.
     attempts = max(pages + errors, 1)

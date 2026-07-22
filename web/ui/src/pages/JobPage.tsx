@@ -526,16 +526,21 @@ export default function JobPage() {
                 <div className="block-journal">
                   <div className="block-journal-head">
                     <h3>Block / challenge journal</h3>
-                    {statusSummary ? <span className="muted">Statuses: {statusSummary}</span> : null}
+                    {statusSummary ? (
+                      <span className="muted" title="WAF/bot challenge HTTP statuses only">
+                        WAF: {statusSummary}
+                      </span>
+                    ) : null}
                   </div>
                   <p className="muted block-journal-help">
-                    WAF Blocks stay at 0 on bare Netlify/Vercel 403s (not a bot wall). Those still
-                    show here as access_deny with HTTP status codes.
-                    {denySummary ? ` Access denies: ${denySummary}.` : ""} Full headers + body
-                    snippets land in the defense report.
+                    WAF statuses above are bot-wall challenges only — not bare 401/403 permission
+                    denials. Those count in the Denies tile
+                    {denySummary ? ` (${denySummary})` : ""}. When there are no WAF catches yet,
+                    a few recent deny samples may appear below (not a full list). Full headers +
+                    body snippets land in the defense report.
                   </p>
                   {journal.length === 0 ? (
-                    <p className="muted">Waiting for the first catch/deny event…</p>
+                    <p className="muted">Waiting for the first WAF challenge…</p>
                   ) : (
                     <ul className="block-journal-list">
                       {[...journal].reverse().map((ev: any, idx: number) => {
@@ -636,15 +641,26 @@ export default function JobPage() {
                 <ul className="findings-list">
                   {findings.map((f, i) => {
                     const secretKey = `${f.url || ""}-${i}`;
+                    const impact = String(f.impact || "");
+                    const isCredentialImpact =
+                      impact === "possible_credential" || impact === "stealable_credential";
                     const isSecretCategory =
-                      f.category === "secrets_exposure" || Boolean(f.secret_type);
+                      f.category === "secrets_exposure" ||
+                      Boolean(f.secret_type) ||
+                      isCredentialImpact;
                     const hasEvidence = Boolean(f.evidence_full || f.evidence_masked);
+                    const masked = f.evidence_masked || "";
+                    const full = f.evidence_full || "";
+                    const canReveal =
+                      isSecretCategory &&
+                      Boolean(full) &&
+                      (full.length > masked.length || (masked && full !== masked));
                     const patternEvidence = !isSecretCategory
-                      ? f.evidence_full || f.evidence_masked || ""
+                      ? full || masked || ""
                       : "";
                     const shown = revealedSecrets[secretKey]
-                      ? f.evidence_full || f.evidence_masked || ""
-                      : f.evidence_masked || (f.evidence_full ? "••••" : "");
+                      ? full || masked || ""
+                      : masked || (full ? "••••" : "");
                     return (
                       <li key={secretKey} className="finding-item">
                         <div className="finding-meta">
@@ -669,8 +685,9 @@ export default function JobPage() {
                         ) : null}
                         {isSecretCategory && hasEvidence ? (
                           <div className="secret-reveal-row">
+                            <span className="muted">matched:</span>
                             <code className="mono">{shown}</code>
-                            {f.evidence_full ? (
+                            {canReveal ? (
                               <button
                                 className="btn secret-reveal-btn"
                                 type="button"

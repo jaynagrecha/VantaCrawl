@@ -218,7 +218,7 @@ def test_api_recon_surfaces_hit_urls_in_enum_hit_urls():
 
 
 def test_access_deny_surfaces_status_without_waf_blocks():
-    """Netlify-style 403s: Blocks stays 0, Denies + status codes still show."""
+    """Netlify-style 403s: Blocks stays 0; deny totals stay out of the WAF status strip."""
     defense = {
         "caught_by_protection": 0,
         "completed_without_challenge": 20,
@@ -229,13 +229,14 @@ def test_access_deny_surfaces_status_without_waf_blocks():
         "access_deny_status_counts": {"403": 11, "401": 1},
         "access_deny_journal": [
             {
-                "url": "https://app.netlify.app/x.bak",
+                "url": f"https://app.netlify.app/x{i}.bak",
                 "status": 403,
                 "signal": "access_deny",
                 "protections": [],
                 "reason": "HTTP 403 without WAF",
                 "time": "12:00:00 IST",
             }
+            for i in range(8)
         ],
         "protection_block_counts": {},
     }
@@ -247,6 +248,40 @@ def test_access_deny_surfaces_status_without_waf_blocks():
     assert out["blocks"] == 0
     assert out["challenge_events"] == 0
     assert out["access_deny_count"] == 12
-    assert out["block_status_counts"].get("403") == 11
+    # WAF status strip must not absorb deny counts (avoids "403×N" looking like bot walls)
+    assert not out["block_status_counts"]
+    assert out["access_deny_status_counts"].get("403") == 11
+    # Tiny sample only — never dump the full deny journal into the panel
     assert out["block_journal"]
+    assert len(out["block_journal"]) <= 5
     assert out["block_journal"][0]["signal"] == "access_deny"
+
+
+def test_credential_cookie_preview_masks_but_keeps_full():
+    """possible_credential cookies get Show-full: masked for display, full in evidence_full."""
+    from vantacrawl_api.services.live_progress import _findings_preview
+
+    full = "9810abcdef0123456789abcdef8199"
+    stats = SimpleNamespace(
+        findings=[
+            {
+                "category": "authentication",
+                "severity": "low",
+                "url": "https://westernunion.com/",
+                "detail": (
+                    "Cookie `AKZip` — unclassified but looks like an opaque token. "
+                    "Impact: possible_credential."
+                ),
+                "evidence": full,
+                "impact": "possible_credential",
+            }
+        ]
+    )
+    preview = _findings_preview(stats)
+    assert preview
+    row = preview[0]
+    assert row["impact"] == "possible_credential"
+    assert row["evidence_full"] == full
+    assert "…" in row["evidence_masked"]
+    assert row["evidence_masked"] != full
+    assert row["evidence_masked"].startswith("9810") or "9810" in row["evidence_masked"]
