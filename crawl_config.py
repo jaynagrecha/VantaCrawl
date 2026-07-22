@@ -43,10 +43,11 @@ class CrawlConfig:
     max_values_per_parameter: int = 2
     max_query_variants_per_endpoint: int = 3
     max_parameter_combinations: int = 5
-    # Do not BFS-expand CSS/JS/images/fonts as HTML pages
+    # Do not BFS-expand CSS/images/fonts as HTML pages (JS/JSON still fetched)
     skip_static_page_enqueue: bool = True
     # Soft-404 / wildcard calibration per directory prefix during enum
     per_directory_wildcard: bool = True
+    # Design: caps trim enqueue work only — observed params stay inventoried
 
     proxy_url: str = ""
     auth_username: str = ""

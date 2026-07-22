@@ -352,6 +352,7 @@ async def run_full_crawl_async(
                 getattr(config, "max_query_variants_per_endpoint", 3) or 3
             ),
         )
+        stats.query_variant_tracker = query_tracker  # type: ignore[attr-defined]
 
         async def safe_enqueue(url, *, link_depth=0):
             async with crawl_state_lock:
@@ -804,6 +805,31 @@ async def run_full_crawl_async(
                     await _process_crawl_url(current_url)
         elif config.enum_only:
             output_callback("=== Enum-only mode (Gobuster-beater) — skipping crawl phase ===")
+
+        # Merge capped-but-observed query params into attack-surface inventory
+        try:
+            rows = query_tracker.inventory_rows()
+            if rows:
+                existing = {
+                    (str(p.get("name") or ""), str(p.get("endpoint_identity") or p.get("url") or ""))
+                    for p in (stats.parameters or [])
+                }
+                added = 0
+                for row in rows:
+                    key = (str(row.get("name") or ""), str(row.get("endpoint_identity") or ""))
+                    if key in existing:
+                        continue
+                    existing.add(key)
+                    stats.parameters.append(row)
+                    added += 1
+                if added:
+                    output_callback(
+                        f"Query inventory: {added} parameter(s) retained "
+                        f"({query_tracker.skipped_variants} fetch-queue variant(s) capped, "
+                        f"surface preserved)."
+                    )
+        except Exception:
+            pass
 
         if await running() and _directory_enum_enabled(config):
             await _run_full_enum_suite(

@@ -1,5 +1,11 @@
 """Crawl URL policy: scheme gates, query-variant caps, static assets, form keys.
 
+Design rule (non-negotiable):
+  Efficiency fine-tunes *how much we enqueue*, never *what we can find*.
+  Caps must not erase attack surface — inventory skipped query values, still
+  fetch JS/JSON for extractors, and keep security modules wired to the same
+  endpoints. Capabilities must not be lost; only redundant crawl work is cut.
+
 Addresses mapper quality issues (query explosion, non-HTTP curl targets,
 malformed % encoding, static-as-page, form dedupe) without inventing findings.
 """
@@ -8,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Any, Dict, Iterable, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlsplit, urlunsplit
 
 INVALID_PERCENT_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
@@ -54,7 +60,7 @@ TRACKING_PARAM_NAMES = frozenset(
     }
 )
 
-# Functional amount/id params — keep at most N representative values
+# Functional amount/id params — keep at most N representative values *in the queue*
 FUNCTIONAL_PARAM_NAMES = frozenset(
     {
         "sendamount",
@@ -74,10 +80,20 @@ FUNCTIONAL_PARAM_NAMES = frozenset(
     }
 )
 
+# Still fetched for extractors / secret scan (not treated as dead weight)
+ANALYSIS_EXT_RE = re.compile(r"\.(?:js|mjs|cjs|json|map|xml)(?:$|\?)", re.I)
+
 STATIC_EXT_RE = re.compile(
     r"\.(?:css|js|mjs|map|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|eot|otf|"
     r"mp4|webm|mp3|wav|pdf|zip|gz|tgz|rar|7z|dmg|exe|apk|"
     r"json|xml|txt|csv|htc)(?:$|\?)",
+    re.I,
+)
+
+# Binary / style / media — inventory + mirror only; do not BFS as pages
+NON_ANALYSIS_STATIC_EXT_RE = re.compile(
+    r"\.(?:css|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|eot|otf|"
+    r"mp4|webm|mp3|wav|pdf|zip|gz|tgz|rar|7z|dmg|exe|apk|txt|csv|htc)(?:$|\?)",
     re.I,
 )
 
@@ -169,8 +185,25 @@ def resource_identity(url: str) -> str:
         return url
 
 
+def is_analysis_asset_url(url: str) -> bool:
+    """JS/JSON/XML/sourcemap — still fetched for route/secret extractors."""
+    if not url:
+        return False
+    try:
+        path = (urlsplit(url).path or "").lower()
+    except Exception:
+        return False
+    if ANALYSIS_EXT_RE.search(path):
+        return True
+    if path.endswith("/page-data.json") or (
+        "/page-data/" in path and path.endswith(".json")
+    ):
+        return True
+    return False
+
+
 def is_static_asset_url(url: str) -> bool:
-    """True for CSS/JS/images/fonts/page-data — recordable but not HTML crawl targets."""
+    """True for CSS/JS/images/fonts/page-data — recordable static-like URLs."""
     if not url:
         return False
     try:
@@ -186,19 +219,59 @@ def is_static_asset_url(url: str) -> bool:
     return False
 
 
+def is_non_analysis_static_url(url: str) -> bool:
+    """Images/fonts/CSS/media — inventory/mirror only; do not enqueue as crawl pages."""
+    if not url or is_analysis_asset_url(url):
+        return False
+    try:
+        path = (urlsplit(url).path or "").lower()
+    except Exception:
+        return False
+    if NON_ANALYSIS_STATIC_EXT_RE.search(path):
+        return True
+    # Path markers that are clearly style/media trees (not /js/ — may hold app chunks)
+    style_markers = (
+        "/staticassets/css/",
+        "/fonts/",
+        "/images/",
+        "/img/",
+        "/media/",
+        "/blogs-staticassets/",
+    )
+    if any(m in path for m in style_markers):
+        return True
+    if "/css/" in path and not path.endswith((".html", ".htm", ".php", ".asp", ".aspx", ".jsp")):
+        return True
+    return False
+
+
 def is_html_crawl_candidate(url: str) -> bool:
-    """False for static assets that should not expand the BFS frontier as pages."""
-    if is_static_asset_url(url):
-        # Allow HTML-ish endpoints under /js/ that are really pages? Prefer extension gate.
+    """False only for assets that should not enter the fetch queue at all.
+
+    Analysis assets (JS/JSON/XML) remain True so extractors keep full power.
+    """
+    if is_analysis_asset_url(url):
+        return True
+    if is_non_analysis_static_url(url):
         path = (urlsplit(url).path or "").lower()
         if path.endswith((".html", ".htm", ".php", ".asp", ".aspx", ".jsp")):
+            return True
+        return False
+    if is_static_asset_url(url):
+        path = (urlsplit(url).path or "").lower()
+        if path.endswith((".html", ".htm", ".php", ".asp", ".aspx", ".jsp")):
+            return True
+        if NON_ANALYSIS_STATIC_EXT_RE.search(path):
+            return False
+        # Keep /js/ chunks without extension enqueueable when analysis might apply
+        if "/js/" in path or "/_next/static/" in path:
             return True
         return False
     return True
 
 
 class QueryVariantTracker:
-    """Cap query-value explosion per endpoint identity."""
+    """Cap query-value *enqueue* explosion; always retain full param inventory."""
 
     def __init__(
         self,
@@ -210,18 +283,61 @@ class QueryVariantTracker:
         self.max_query_variants_per_endpoint = max(1, int(max_query_variants_per_endpoint or 3))
         self._endpoint_variants: Dict[str, Set[str]] = {}
         self._param_values: Dict[str, Dict[str, Set[str]]] = {}
+        # Unbounded attack-surface inventory (never drop observed values)
+        self._observed_param_values: Dict[str, Dict[str, Set[str]]] = {}
+        self._observed_endpoints: Set[str] = set()
         self.skipped_variants = 0
+        self.observed_variants = 0
+
+    def observe(self, url: str) -> str:
+        """Record endpoint + every query value as attack surface. Returns endpoint id."""
+        cleaned = strip_tracking_params(url)
+        eid = endpoint_identity(cleaned)
+        self._observed_endpoints.add(eid)
+        self.observed_variants += 1
+        try:
+            parts = urlsplit(cleaned)
+            by_param = self._observed_param_values.setdefault(eid, {})
+            for name, value in parse_qsl(parts.query, keep_blank_values=True):
+                low = (name or "").lower()
+                if not low:
+                    continue
+                by_param.setdefault(low, set()).add(value)
+        except Exception:
+            pass
+        return eid
+
+    def inventory_rows(self, *, max_values: int = 20) -> List[Dict[str, Any]]:
+        """Serialize observed params for reports (capped display, full names)."""
+        rows: List[Dict[str, Any]] = []
+        for eid in sorted(self._observed_endpoints):
+            params = self._observed_param_values.get(eid) or {}
+            for name in sorted(params.keys()):
+                vals = sorted(params[name])
+                rows.append(
+                    {
+                        "endpoint_identity": eid,
+                        "name": name,
+                        "values_sample": vals[:max_values],
+                        "values_count": len(vals),
+                        "source": "query_observe",
+                    }
+                )
+        return rows
 
     def allow(self, url: str) -> bool:
-        """Return True if this URL's query variant should be enqueued."""
+        """Return True if this URL's query variant should be enqueued for fetch.
+
+        Always calls ``observe`` first so skipped variants remain in inventory.
+        """
         cleaned = strip_tracking_params(url)
+        self.observe(cleaned)
         eid = endpoint_identity(cleaned)
         rid = resource_identity(cleaned)
         variants = self._endpoint_variants.setdefault(eid, set())
         if rid in variants:
             return True  # already counted; caller still dedupes on full URL
         if len(variants) >= self.max_query_variants_per_endpoint:
-            # Allow only if no query
             try:
                 if not urlsplit(cleaned).query:
                     variants.add(rid)
@@ -230,7 +346,7 @@ class QueryVariantTracker:
                 pass
             self.skipped_variants += 1
             return False
-        # Cap functional param value cardinality
+        # Cap functional param value cardinality for the *queue* only
         try:
             parts = urlsplit(cleaned)
             by_param = self._param_values.setdefault(eid, {})
@@ -272,7 +388,14 @@ def form_fingerprint(
             continue
         # Mark classic CSRF field names as dynamic type slot
         low = name.lower()
-        if low in ("csrf", "csrf_token", "csrftoken", "_token", "authenticity_token", "__requestverificationtoken"):
+        if low in (
+            "csrf",
+            "csrf_token",
+            "csrftoken",
+            "_token",
+            "authenticity_token",
+            "__requestverificationtoken",
+        ):
             typ = "csrf"
         pairs.append(f"{name}:{typ.lower()}")
     pairs.sort()
