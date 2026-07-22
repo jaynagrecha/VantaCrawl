@@ -56,6 +56,11 @@ button, input, select, textarea { font: inherit; }
 }
 .job-cards { display: none; list-style: none; margin: 0; padding: 0; gap: .75rem; }
 .job-cards > li { margin: 0; }
+.job-card-wrap {
+  display: grid; gap: .5rem;
+}
+.job-card-delete { width: 100%; }
+.job-row-actions { display: flex; gap: .45rem; flex-wrap: wrap; justify-content: flex-end; }
 a.job-card, .job-card {
   border: 1px solid var(--line); border-radius: 16px; background: var(--bg-soft);
   padding: 1.05rem 1.1rem; display: flex; flex-direction: column; gap: .65rem;

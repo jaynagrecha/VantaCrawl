@@ -13,6 +13,13 @@ from sqlmodel import Session, select
 
 from .models import ScanJob, User
 
+# Active / in-flight — must stop or finish before delete
+ACTIVE_JOB_STATUSES = frozenset({"queued", "running", "paused", "stopping", "scheduled"})
+
+
+def job_is_deletable(status: str) -> bool:
+    return (status or "").strip().lower() not in ACTIVE_JOB_STATUSES
+
 
 def assert_job_owner(job: Optional[ScanJob], user: User) -> ScanJob:
     """Return job if ``user`` owns it, or if ``user`` is admin; else 404."""

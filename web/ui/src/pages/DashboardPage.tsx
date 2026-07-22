@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, Job } from "../api";
 import ScanActivity from "../components/ScanActivity";
+import { canDeleteJob } from "../jobStatus";
 
 function modeLabel(mode: string) {
   return mode.replace(/_/g, " ");
@@ -10,6 +11,7 @@ function modeLabel(mode: string) {
 export default function DashboardPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [error, setError] = useState("");
+  const [deletingId, setDeletingId] = useState("");
 
   useEffect(() => {
     let alive = true;
@@ -29,6 +31,22 @@ export default function DashboardPage() {
       clearInterval(t);
     };
   }, []);
+
+  const deleteJob = async (job: Job) => {
+    if (!canDeleteJob(job.status)) return;
+    const ok = window.confirm(`Delete “${job.title || "this scan"}”? Reports and logs will be removed.`);
+    if (!ok) return;
+    setDeletingId(job.id);
+    setError("");
+    try {
+      await api.deleteJob(job.id);
+      setJobs((prev) => prev.filter((j) => j.id !== job.id));
+    } catch (err) {
+      setError(String((err as Error).message || err));
+    } finally {
+      setDeletingId("");
+    }
+  };
 
   const running = jobs.filter((j) => j.status === "running").length;
   const done = jobs.filter((j) => j.status === "completed").length;
@@ -80,26 +98,39 @@ export default function DashboardPage() {
           ) : (
             <>
               <ul className="job-cards">
-                {jobs.map((job) => (
-                  <li key={job.id}>
-                    <Link className="job-card" to={`/jobs/${job.id}`}>
-                      <div className="job-card-top">
-                        <div className="job-card-title">{job.title || "Untitled scan"}</div>
-                        <div className="status-cell">
-                          <span className={`badge ${job.status}`}>{job.status}</span>
-                          <ScanActivity status={job.status} compact />
+                {jobs.map((job) => {
+                  const deletable = canDeleteJob(job.status);
+                  return (
+                    <li key={job.id} className="job-card-wrap">
+                      <Link className="job-card" to={`/jobs/${job.id}`}>
+                        <div className="job-card-top">
+                          <div className="job-card-title">{job.title || "Untitled scan"}</div>
+                          <div className="status-cell">
+                            <span className={`badge ${job.status}`}>{job.status}</span>
+                            <ScanActivity status={job.status} compact />
+                          </div>
                         </div>
-                      </div>
-                      <div className="job-card-url mono" title={job.start_url}>
-                        {job.start_url}
-                      </div>
-                      <div className="job-card-foot">
-                        <span className="job-card-mode">{modeLabel(job.mode)}</span>
-                        <span className="job-card-open">Open →</span>
-                      </div>
-                    </Link>
-                  </li>
-                ))}
+                        <div className="job-card-url mono" title={job.start_url}>
+                          {job.start_url}
+                        </div>
+                        <div className="job-card-foot">
+                          <span className="job-card-mode">{modeLabel(job.mode)}</span>
+                          <span className="job-card-open">Open →</span>
+                        </div>
+                      </Link>
+                      {deletable ? (
+                        <button
+                          className="btn danger job-card-delete"
+                          type="button"
+                          disabled={deletingId === job.id}
+                          onClick={() => deleteJob(job)}
+                        >
+                          {deletingId === job.id ? "Deleting…" : "Delete"}
+                        </button>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
               <div className="table-wrap desktop-only">
                 <table className="table">
@@ -113,24 +144,39 @@ export default function DashboardPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {jobs.map((job) => (
-                      <tr key={job.id}>
-                        <td>{job.title}</td>
-                        <td className="mono table-url">{job.start_url}</td>
-                        <td>
-                          <div className="status-cell">
-                            <span className={`badge ${job.status}`}>{job.status}</span>
-                            <ScanActivity status={job.status} compact />
-                          </div>
-                        </td>
-                        <td className="muted">{job.mode}</td>
-                        <td>
-                          <Link className="btn" to={`/jobs/${job.id}`}>
-                            Open
-                          </Link>
-                        </td>
-                      </tr>
-                    ))}
+                    {jobs.map((job) => {
+                      const deletable = canDeleteJob(job.status);
+                      return (
+                        <tr key={job.id}>
+                          <td>{job.title}</td>
+                          <td className="mono table-url">{job.start_url}</td>
+                          <td>
+                            <div className="status-cell">
+                              <span className={`badge ${job.status}`}>{job.status}</span>
+                              <ScanActivity status={job.status} compact />
+                            </div>
+                          </td>
+                          <td className="muted">{job.mode}</td>
+                          <td>
+                            <div className="job-row-actions">
+                              <Link className="btn" to={`/jobs/${job.id}`}>
+                                Open
+                              </Link>
+                              {deletable ? (
+                                <button
+                                  className="btn danger"
+                                  type="button"
+                                  disabled={deletingId === job.id}
+                                  onClick={() => deleteJob(job)}
+                                >
+                                  {deletingId === job.id ? "Deleting…" : "Delete"}
+                                </button>
+                              ) : null}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

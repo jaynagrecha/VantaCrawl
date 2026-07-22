@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, getToken, Job } from "../api";
 import ScanActivity from "../components/ScanActivity";
+import { canDeleteJob } from "../jobStatus";
 
 function formatDuration(totalSeconds: number): string {
   if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return "—";
@@ -116,9 +117,11 @@ function withLiveElapsed(text: string, elapsedSecs: number | null): string {
 
 export default function JobPage() {
   const { id = "" } = useParams();
+  const nav = useNavigate();
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState("");
+  const [deleting, setDeleting] = useState(false);
   const [logExtra, setLogExtra] = useState("");
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [artifacts, setArtifacts] = useState<{ name: string; path: string; size: number; kind: string }[]>([]);
@@ -256,6 +259,22 @@ export default function JobPage() {
   const canPause = job.status === "running" || job.status === "queued";
   const canResume = job.status === "paused" || job.status === "scheduled";
   const canStop = !["completed", "cancelled", "failed"].includes(job.status);
+  const canDelete = canDeleteJob(job.status);
+
+  async function deleteThisJob() {
+    if (!job || !canDelete) return;
+    const ok = window.confirm(`Delete “${job.title || "this scan"}”? Reports and logs will be removed.`);
+    if (!ok) return;
+    setDeleting(true);
+    setActionError("");
+    try {
+      await api.deleteJob(job.id);
+      nav("/");
+    } catch (err) {
+      setActionError(String((err as Error).message || err));
+      setDeleting(false);
+    }
+  }
 
   const enumHits = (progress.enum_hit_urls as string[]) || [];
   const enumHitCount = Number(progress.enum_hits) || 0;
@@ -307,6 +326,11 @@ export default function JobPage() {
             >
               {job.status === "stopping" ? "Force cancel" : "Stop"}
             </button>
+            {canDelete ? (
+              <button className="btn danger" type="button" disabled={deleting} onClick={deleteThisJob}>
+                {deleting ? "Deleting…" : "Delete"}
+              </button>
+            ) : null}
             <Link className="btn" to="/">
               All jobs
             </Link>
