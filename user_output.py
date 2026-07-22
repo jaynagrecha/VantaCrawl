@@ -121,14 +121,20 @@ def format_friendly_stats(stats) -> str:
     if pages:
         parts.append(f"{pages} page(s) checked")
     if links:
-        parts.append(f"{links} link(s) discovered")
+        parts.append(f"{links} unique URL(s) queued/discovered")
+    disc = snap.get("discovered_url_count", 0)
+    if disc and disc != links:
+        parts.append(f"{disc} unique URL(s) inventoried")
+    route_skip = snap.get("route_variants_skipped", 0)
+    if route_skip:
+        parts.append(f"{route_skip} route-sample skip(s)")
     if total:
         pct = min(100, int(tested * 100 / total)) if total else 0
         parts.append(f"folder scan {pct}% ({tested:,} of {total:,} names tried)")
     if enum_hits:
         parts.append(f"{enum_hits} hidden path(s) found")
     if queue:
-        parts.append(f"{queue} page(s) waiting")
+        parts.append(f"{queue} crawl job(s) waiting")
     if speed and pages:
         parts.append(f"~{speed:.0f} pages/min")
     if errors:

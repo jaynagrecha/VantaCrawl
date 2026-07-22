@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Mapping, Optional
+from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 from urllib.parse import urlparse
 
 
@@ -57,10 +57,16 @@ class SessionCookieStore:
                 continue
             target[name] = value.strip()
 
-    def ingest_selenium_cookies(self, cookies: Iterable[Mapping], url: str) -> int:
-        """Merge Selenium get_cookies() rows; returns number of names updated."""
+    def ingest_selenium_cookies(self, cookies: Iterable[Mapping], url: str) -> Tuple[int, List[str], List[str]]:
+        """Merge Selenium get_cookies() rows.
+
+        Returns ``(changed_count, new_names, changed_names)`` so callers can
+        sync silently when only volatile BM cookie values mutate.
+        """
         host = _host_key(url)
-        updated = 0
+        changed = 0
+        new_names: List[str] = []
+        changed_names: List[str] = []
         for cookie in cookies or []:
             name = str(cookie.get("name") or "").strip()
             if not name:
@@ -69,10 +75,16 @@ class SessionCookieStore:
             domain = str(cookie.get("domain") or host)
             key = _host_key(domain) or host
             bucket = self._by_host.setdefault(key, {})
-            if bucket.get(name) != value:
-                updated += 1
+            prev = bucket.get(name)
+            if prev is None:
+                new_names.append(name)
+                changed += 1
+                changed_names.append(name)
+            elif prev != value:
+                changed += 1
+                changed_names.append(name)
             bucket[name] = value
-        return updated
+        return changed, new_names, changed_names
 
     def header_for(self, url: str) -> str:
         host = _host_key(url)

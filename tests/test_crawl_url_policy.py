@@ -55,12 +55,42 @@ def test_static_assets_not_html_candidates():
     assert is_static_asset_url("https://ex.com/staticassets/css/ar/es/app.css")
     assert not is_html_crawl_candidate("https://ex.com/staticassets/css/ar/es/app.css")
     assert is_html_crawl_candidate("https://ex.com/send-money.html")
-    # JS/JSON stay enqueueable for extractors — capability preserved
-    from crawl_url_policy import is_analysis_asset_url
+    # JS stays enqueueable for extractors — capability preserved
+    from crawl_url_policy import is_analysis_asset_url, is_page_data_json_url
 
     assert is_analysis_asset_url("https://ex.com/static/app.js")
     assert is_html_crawl_candidate("https://ex.com/static/app.js")
-    assert is_html_crawl_candidate("https://ex.com/page-data/x/page-data.json")
+    # page-data.json: inventoried, not HTML/browser queue
+    assert is_page_data_json_url("https://ex.com/staticassets/page-data/be/en/x/page-data.json")
+    assert not is_html_crawl_candidate("https://ex.com/staticassets/page-data/be/en/x/page-data.json")
+    assert not is_analysis_asset_url("https://ex.com/staticassets/page-data/be/en/x/page-data.json")
+
+
+def test_route_template_sampling_preserves_inventory():
+    from crawl_url_policy import RouteTemplateTracker, route_template_key
+
+    key = route_template_key(
+        "https://www.westernunion.com/be/en/send-money-to-oman.html"
+    )
+    assert "{locale}" in key
+    assert "{destination}" in key
+    assert route_template_key(
+        "https://www.westernunion.com/be/fr/send-money-to-panama.html"
+    ) == key
+
+    tracker = RouteTemplateTracker(
+        max_instances_per_route_template=3,
+        max_locales_per_route_template=2,
+        same_locale_only=True,
+        start_url="https://www.westernunion.com/be/en/home.html",
+    )
+    assert tracker.allow("https://www.westernunion.com/be/en/send-money-to-oman.html")
+    assert tracker.allow("https://www.westernunion.com/be/en/send-money-to-panama.html")
+    assert tracker.allow("https://www.westernunion.com/be/en/send-money-to-peru.html")
+    assert not tracker.allow("https://www.westernunion.com/be/en/send-money-to-chile.html")
+    # Other locale inventoried but not queued when same_locale_only
+    assert not tracker.allow("https://www.westernunion.com/be/fr/send-money-to-oman.html")
+    assert tracker.inventory_counts()[key] >= 5
 
 
 def test_query_cap_preserves_inventory():

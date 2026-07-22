@@ -43,11 +43,18 @@ class CrawlConfig:
     max_values_per_parameter: int = 2
     max_query_variants_per_endpoint: int = 3
     max_parameter_combinations: int = 5
-    # Do not BFS-expand CSS/images/fonts as HTML pages (JS/JSON still fetched)
+    # Do not BFS-expand CSS/images/fonts as HTML pages (JS still fetched; page-data.json inventoried only)
     skip_static_page_enqueue: bool = True
     # Soft-404 / wildcard calibration per directory prefix during enum
     per_directory_wildcard: bool = True
     # Design: caps trim enqueue work only — observed params stay inventoried
+    # Route-template sampling (locale/destination families) — inventory kept
+    max_instances_per_route_template: int = 3
+    max_locales_per_route_template: int = 2
+    same_locale_only: bool = True
+    # After BM cookies exist, prefer HTTP for HTML and escalate on challenge (speed)
+    # When BM cookies missing, Chrome-first still applies. Does not disable browser capability.
+    http_first_when_bm_ready: bool = True
 
     proxy_url: str = ""
     auth_username: str = ""

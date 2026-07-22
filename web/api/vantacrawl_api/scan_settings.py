@@ -57,10 +57,27 @@ _HUMAN = {
         "Cap distinct query strings fetched per path+param-name template. Extra variants "
         "remain in the parameter inventory.",
     ),
+    "max_instances_per_route_template": (
+        "Max instances per route template",
+        "Sample N URLs per route family (e.g. send-money-to-{destination}). Extra URLs stay inventoried.",
+    ),
+    "max_locales_per_route_template": (
+        "Max locales per route template",
+        "How many language path segments to fully crawl per template (default 2).",
+    ),
+    "same_locale_only": (
+        "Same locale only",
+        "When seed has a locale (e.g. /be/en/), prefer that locale for crawl queue; other locales inventoried.",
+    ),
+    "http_first_when_bm_ready": (
+        "HTTP-first after BM cookies",
+        "After Chrome warm-up obtains BM cookies, fetch HTML over HTTP and escalate to Chrome on challenge. "
+        "Speeds crawl without removing browser capability.",
+    ),
     "skip_static_page_enqueue": (
         "Skip static assets as pages",
-        "Skip CSS/images/fonts/media as HTML BFS pages (still inventoried; mirror can download). "
-        "JS/JSON/XML/sourcemaps are still fetched for route and secret extractors.",
+        "Skip CSS/images/fonts/media/page-data.json as HTML BFS pages (still inventoried; mirror can download). "
+        "JS bundles are still fetched for route and secret extractors.",
     ),
     "per_directory_wildcard": (
         "Per-directory soft-404 calibration",
@@ -417,6 +434,10 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "link_depth_limit",
             "max_values_per_parameter",
             "max_query_variants_per_endpoint",
+            "max_instances_per_route_template",
+            "max_locales_per_route_template",
+            "same_locale_only",
+            "http_first_when_bm_ready",
             "skip_static_page_enqueue",
             "per_directory_wildcard",
             "branch_depth_limit",

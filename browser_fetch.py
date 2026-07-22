@@ -458,30 +458,34 @@ def make_browser_fetcher(
     ):
         if not bool(getattr(config, "auto_sync_cookies", True)):
             return
-        updated = store.ingest_selenium_cookies(cookies, url)
+        changed, new_names, _changed_names = store.ingest_selenium_cookies(cookies, url)
         header = store.apply_to_client(client, url)
         if header:
             config.cookie_string = store.as_cookie_string()
         present = list(bm_found or []) or bm_cookie_names_present(cookies)
+        host = _host_label(url)
         if output_note:
-            if updated:
+            # Only log *new* cookie names — BM cookies mutate every page and spam the log
+            if new_names:
                 output_note(
-                    f"Synced {updated} browser cookie(s) into HTTP jar for {_host_label(url)}"
+                    f"Synced {len(new_names)} new browser cookie(s) into HTTP jar "
+                    f"for {host}: {', '.join(new_names[:12])}"
+                    + ("…" if len(new_names) > 12 else "")
                 )
-            if present:
+            elif changed and host not in _bm_cookie_warn_hosts and present:
+                # First successful BM-ready sync acknowledgment (once per host)
                 output_note(
                     f"BM cookies on HTTP jar after Chrome: {', '.join(present)}"
                 )
-            else:
-                host = _host_label(url)
-                if host not in _bm_cookie_warn_hosts:
-                    _bm_cookie_warn_hosts.add(host)
-                    output_note(
-                        "Chrome finished HTML load but no Akamai BM cookies "
-                        "(_abck/bm_sz/ak_bmsc) were set — sensor likely incomplete "
-                        "(headless fingerprint / script blocked). HTTP follow-ups may "
-                        "still be scored as NoScript / JS fingerprint missing."
-                    )
+                _bm_cookie_warn_hosts.add(host)
+            elif not present and host not in _bm_cookie_warn_hosts:
+                _bm_cookie_warn_hosts.add(host)
+                output_note(
+                    "Chrome finished HTML load but no Akamai BM cookies "
+                    "(_abck/bm_sz/ak_bmsc) were set — sensor likely incomplete "
+                    "(headless fingerprint / script blocked). HTTP follow-ups may "
+                    "still be scored as NoScript / JS fingerprint missing."
+                )
 
     async def browser_page_fetcher(client, url, deep_render=False):
         global _chrome_skip_logged
@@ -493,7 +497,24 @@ def make_browser_fetcher(
             or getattr(config, "selenium_fallback", False)
             or on_challenge_default
         )
-        force_browser = bool(deep_render or browser_primary)
+        # Capability-preserving hybrid: Chrome until BM cookies exist, then HTTP-first
+        # with challenge escalate (recovers pages/min without dropping browser power).
+        http_first_ready = bool(getattr(config, "http_first_when_bm_ready", True))
+        bm_ready = False
+        if http_first_ready and browser_primary and not getattr(config, "deep_mirror", False):
+            try:
+                hdr = store.header_for(url) or ""
+                names = {}
+                for part in hdr.split(";"):
+                    part = part.strip()
+                    if "=" in part:
+                        names[part.split("=", 1)[0].strip()] = "1"
+                bm_ready = bool(bm_cookie_names_present(names))
+            except Exception:
+                bm_ready = False
+        force_browser = bool(deep_render or (browser_primary and not bm_ready))
+        if getattr(config, "deep_mirror", False):
+            force_browser = True
         screenshot_path = None
         if getattr(config, "screenshot_capture", False) and reporter and is_html_url(url):
             screenshot_path = reporter.screenshot_path(url)
