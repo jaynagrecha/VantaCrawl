@@ -349,6 +349,15 @@ def write_stats_reports(
         "assessment_report": True if config is None else bool(getattr(config, "assessment_report", True)),
     }
     cb("\nGenerating reports...")
+    # Owner-facing Bot Manager presence / unchallenged-gap findings (detection only)
+    try:
+        from defense_verify import inject_bot_management_findings
+
+        n = inject_bot_management_findings(stats)
+        if n:
+            cb(f"Added {n} bot-management hardening finding(s) from defense verification.")
+    except Exception as exc:
+        cb(f"Bot-management findings skipped: {exc}")
     paths = reporter.write_all(stats, flags, config_meta=config_meta)
 
     if getattr(stats, "defense_tracker", None) is not None:

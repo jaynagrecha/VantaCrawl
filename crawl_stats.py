@@ -183,7 +183,7 @@ class CrawlStats:
         elif category == "secrets_exposure" and evidence_key:
             # Same secret value = one finding even when product labels differ (Ript vs Text)
             dedupe_key = f"{category}|{host}|{evidence_key}"
-        elif category in ("js_intel", "business_logic") or (
+        elif category in ("js_intel", "business_logic", "bot_management") or (
             category == "mass_assignment" and sev_l == "info"
         ):
             # Same intel signal across every JS bundle / page → one per host+label

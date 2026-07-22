@@ -551,6 +551,25 @@ EXPLAINERS: List[Tuple[tuple, Dict[str, str]]] = [
         },
     ),
     (
+        ("bot_management", "bot manager", "akamai bot", "_abck", "bm_sz", "unchallenged"),
+        {
+            "title": "Bot management / Akamai Bot Manager posture",
+            "what": (
+                "Akamai Bot Manager cookies or deny fingerprints were seen, and/or a large share of "
+                "scanner requests completed without a challenge signal while BM appears deployed."
+            ),
+            "attacker": (
+                "Automated clients that are not challenged can scrape, enumerate, or probe APIs at "
+                "scale. This finding highlights a coverage gap for owners — it is not a cookie-forge exploit."
+            ),
+            "fix": (
+                "On the Akamai / network edge: review bot category scores, challenge actions for "
+                "automation, JA4/TLS anomaly rules, and require stronger controls on login/API/checkout. "
+                "Tune allow-lists so real browsers pass while non-interactive clients are challenged."
+            ),
+        },
+    ),
+    (
         ("websocket", "wss://", "ws://"),
         {
             "title": "WebSocket security signal",
@@ -601,6 +620,7 @@ def explain_finding(category: str = "", detail: str = "") -> Dict[str, str]:
         "business_logic": ("business_logic", "price", "coupon", "race"),
         "js_intel": ("js_intel", "feature flag", "staging", "fetch()"),
         "websocket": ("websocket", "wss://", "ws://"),
+        "bot_management": ("bot_management", "bot manager", "_abck", "bm_sz", "unchallenged"),
     }
 
     def _secret_type_from_detail(text: str) -> str:

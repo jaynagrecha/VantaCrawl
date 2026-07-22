@@ -911,6 +911,30 @@ def assess_tier_category(category: str, detail: str, severity: str, evidence: st
     )
 
 
+def assess_bot_management(detail: str, severity: str, evidence: str = "") -> ImpactResult:
+    d = _detail_l(detail)
+    if "gap" in d or "unchallenged" in d or "without a challenge" in d:
+        return ImpactResult(
+            role="hardening",
+            impact="possible",
+            severity=severity if severity in ("info", "low", "medium") else "medium",
+            summary=(
+                "Bot Manager is present but a meaningful share of automation completed without "
+                "challenge — owners should tighten edge bot rules (network-side)."
+            ),
+            validation="confirmed",
+            proof=evidence or None,
+        )
+    return ImpactResult(
+        role="hardening",
+        impact="informational",
+        severity="info",
+        summary="Akamai Bot Manager signals observed — inventory for owners; not a forge/bypass finding.",
+        validation="confirmed",
+        proof=evidence or None,
+    )
+
+
 def assess_file_metadata(detail: str, severity: str, evidence: str = "") -> ImpactResult:
     d = _detail_l(detail)
     if "gps" in d or "author" in d or "email" in d:
@@ -1003,6 +1027,8 @@ async def assess_finding(
         return assess_cloud_url(detail, severity)
     if cat == "cloud":
         return assess_tier_category(cat, detail, severity, ev)
+    if cat == "bot_management":
+        return assess_bot_management(detail, severity, ev)
     if cat == "file_metadata":
         return assess_file_metadata(detail, severity, ev)
     if cat in (
