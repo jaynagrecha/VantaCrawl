@@ -296,7 +296,7 @@ def analyze_set_cookie_headers(
     """Parse response Set-Cookie headers → inventory rows + impact findings.
 
     Findings are (category, severity, detail, evidence) where evidence is the
-    masked cookie value (full raw only kept when clearly stealable JWT/session).
+    full cookie value when stealable (UI/live progress mask for display).
     """
     inventory: List[Dict[str, str]] = []
     findings: List[Tuple[str, str, str, Optional[str]]] = []
@@ -340,9 +340,12 @@ def analyze_set_cookie_headers(
                 f"Cookie `{name}` — {assessment['summary']}{issue_txt} "
                 f"Flags: {row['flags']}. Impact: {impact}."
             )
-            evidence = row.get("value_masked") or None
-            if assessment.get("stealable") and parsed.get("value") and impact == "stealable_credential":
+            evidence = None
+            if assessment.get("stealable") and parsed.get("value"):
+                # Full value for tap-to-reveal; UI/live progress mask by default
                 evidence = str(parsed["value"])
+            elif row.get("value_masked"):
+                evidence = row.get("value_masked")
             findings.append(("authentication", str(assessment["severity"]), detail, evidence))
         # mitigated / analytics / preference → inventory only
 

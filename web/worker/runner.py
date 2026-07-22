@@ -736,8 +736,10 @@ async def run_job(job_id: str) -> None:
                 if isinstance(f, dict):
                     evidence = str(f.get("evidence") or "")
                     detail = str(f.get("detail") or f.get("title") or "")
+                    category = str(f.get("category") or "")
+                    impact = str(f.get("impact") or "")
                     secret_type = ""
-                    if str(f.get("category") or "") == "secrets_exposure":
+                    if category == "secrets_exposure":
                         if detail.lower().startswith("exposed "):
                             secret_type = detail[8:].split(" in response", 1)[0].strip()
                         elif ":" in detail:
@@ -745,8 +747,11 @@ async def run_job(job_id: str) -> None:
                     title = detail[:160]
                     if secret_type and secret_type.lower() not in title.lower():
                         title = f"{secret_type}: {title}"[:160]
-                    category = str(f.get("category") or "")
-                    if category == "secrets_exposure" and evidence:
+                    credentialish = category == "secrets_exposure" or impact in (
+                        "possible_credential",
+                        "stealable_credential",
+                    )
+                    if credentialish and evidence:
                         evidence_masked = mask_secret_value(evidence)
                     else:
                         evidence_masked = evidence
@@ -757,7 +762,7 @@ async def run_job(job_id: str) -> None:
                             "url": str(f.get("url") or ""),
                             "category": category,
                             "secret_type": secret_type,
-                            "impact": str(f.get("impact") or ""),
+                            "impact": impact,
                             "validation": str(f.get("validation") or ""),
                             "impact_summary": str(f.get("impact_summary") or ""),
                             "role": str(f.get("role") or ""),
