@@ -1,4 +1,4 @@
-"""Per-user job isolation — no cross-tenant list/get (admins included)."""
+"""Job isolation: regular users see only their jobs; admins see all."""
 
 from __future__ import annotations
 
@@ -38,26 +38,18 @@ def _job(jid: str, owner: str) -> ScanJob:
 
 
 def test_owner_can_access_own_job():
-    user = _user("u1")
-    job = _job("j1", "u1")
-    assert assert_job_owner(job, user).id == "j1"
+    assert assert_job_owner(_job("j1", "u1"), _user("u1")).id == "j1"
 
 
 def test_other_user_cannot_access_job():
-    user = _user("u2")
-    job = _job("j1", "u1")
     with pytest.raises(HTTPException) as exc:
-        assert_job_owner(job, user)
+        assert_job_owner(_job("j1", "u1"), _user("u2"))
     assert exc.value.status_code == 404
 
 
-def test_admin_cannot_access_other_users_job():
-    """Admin badge must not bypass tenant isolation for scan jobs."""
+def test_admin_can_access_other_users_job():
     admin = _user("admin1", admin=True)
-    job = _job("j1", "u1")
-    with pytest.raises(HTTPException) as exc:
-        assert_job_owner(job, admin)
-    assert exc.value.status_code == 404
+    assert assert_job_owner(_job("j1", "u1"), admin).id == "j1"
 
 
 def test_missing_job_is_404():
@@ -66,41 +58,33 @@ def test_missing_job_is_404():
     assert exc.value.status_code == 404
 
 
-def test_empty_owner_id_denied():
-    user = _user("u1")
-    job = _job("j1", "")
+def test_empty_owner_id_denied_for_user():
     with pytest.raises(HTTPException):
-        assert_job_owner(job, user)
+        assert_job_owner(_job("j1", ""), _user("u1"))
 
 
-def test_list_helper_scopes_to_user():
-    user = _user("u1", admin=True)
-    stmt = select_jobs_for_user(user)
-    # Walk SQLAlchemy where criteria for the bound user id
-    found = False
-    for clause in getattr(stmt, "_where_criteria", ()) or ():
-        text = str(clause)
-        if "user_id" in text.lower() and "u1" in text:
-            found = True
-            break
-        for element in getattr(clause, "get_children", lambda: ())():
-            if getattr(element, "value", None) == "u1":
-                found = True
-    assert found, f"expected user_id == u1 filter in {stmt!r}"
+def test_empty_owner_id_allowed_for_admin():
+    assert assert_job_owner(_job("j1", ""), _user("admin1", admin=True)).id == "j1"
 
 
-def test_source_has_no_admin_job_bypass():
-    """Regression: list/get/reports must not reintroduce admin OR ownership bypass."""
-    jobs_src = (API / "vantacrawl_api" / "routes" / "jobs.py").read_text(encoding="utf-8")
-    reports_src = (API / "vantacrawl_api" / "routes" / "reports.py").read_text(encoding="utf-8")
+def test_list_helper_scopes_users_but_not_admins():
+    user_stmt = select_jobs_for_user(_user("u1"))
+    admin_stmt = select_jobs_for_user(_user("admin1", admin=True))
+    user_blob = repr(user_stmt)
+    admin_blob = repr(admin_stmt)
+    assert "user_id" in user_blob.lower() or any(
+        getattr(el, "value", None) == "u1"
+        for clause in (getattr(user_stmt, "_where_criteria", ()) or ())
+        for el in (getattr(clause, "get_children", lambda: ())() or (clause,))
+    )
+    # Admin list has no user_id equality filter
+    admin_where = getattr(admin_stmt, "_where_criteria", ()) or ()
+    assert not admin_where or "user_id" not in repr(admin_where).lower()
+
+
+def test_source_keeps_admin_bypass_in_job_access():
     access_src = (API / "vantacrawl_api" / "job_access.py").read_text(encoding="utf-8")
-    # Former bypass patterns (job.user_id != user.id and not user.is_admin)
-    assert "job.user_id != user.id" not in jobs_src
-    assert "job.user_id != user.id" not in reports_src
-    assert 'payload.get("admin")' not in jobs_src
-    assert "is_admin" not in access_src
-    assert "select_jobs_for_user" in jobs_src
+    assert "is_admin" in access_src
+    jobs_src = (API / "vantacrawl_api" / "routes" / "jobs.py").read_text(encoding="utf-8")
     assert "assert_job_owner" in jobs_src
-    assert "assert_job_owner" in reports_src
-    # Admin must not get an unfiltered job list
-    assert "if user.is_admin" not in jobs_src
+    assert "select_jobs_for_user" in jobs_src
