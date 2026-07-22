@@ -17,7 +17,7 @@ def test_header_hardening_vs_info():
     assert hsts.impact == "informational"
     assert hsts.role == "hardening"
     assert hsts.suppress is False
-    assert hsts.severity == "medium"
+    assert hsts.severity == "info"
 
     ref = _assess(category="header_audit", severity="info", detail="missing Referrer-Policy")
     assert ref.severity == "info"

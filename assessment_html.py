@@ -45,10 +45,17 @@ def render_assessment_html(doc: Dict[str, Any], *, technical_report_name: str = 
         for r in roadmap
     ) or "<tr><td colspan='3' class='muted'>No remediation items queued.</td></tr>"
 
-    finding_blocks = []
-    for f in findings:
+    def _render_finding(f: Dict[str, Any]) -> str:
         sev_l = _sev_class(str(f.get("severity")))
         evidence = f.get("evidence") or []
+        kind = str(f.get("finding_kind") or "")
+        kind_badge = (
+            "<span class='pill'>Hardening</span>"
+            if kind == "hardening"
+            else "<span class='pill'>Vulnerability</span>"
+            if kind == "vulnerability"
+            else ""
+        )
         if evidence:
             try:
                 from security_scan import secret_reveal_html
@@ -62,7 +69,10 @@ def render_assessment_html(doc: Dict[str, Any], *, technical_report_name: str = 
                     secret_type = detail[8:].split(" in response", 1)[0].strip()
                 chips = []
                 for e in evidence[:10]:
-                    chip = secret_reveal_html(str(e), secret_type=secret_type if f.get("category") == "secrets_exposure" else "")
+                    chip = secret_reveal_html(
+                        str(e),
+                        secret_type=secret_type if f.get("category") == "secrets_exposure" else "",
+                    )
                     if chip:
                         chips.append(chip)
                 if f.get("category") == "secrets_exposure" and chips:
@@ -92,11 +102,18 @@ def render_assessment_html(doc: Dict[str, Any], *, technical_report_name: str = 
                 )
         else:
             ev_html = "<p class='muted'>No matched pattern / evidence snippet stored for this finding.</p>"
-        finding_blocks.append(
-            f"""
+        impact_meta = ""
+        if f.get("impact") or f.get("role"):
+            impact_meta = (
+                f" · <strong>Kind:</strong> {escape(kind or 'n/a')}"
+                f" · <strong>Impact:</strong> {escape(str(f.get('impact') or 'n/a'))}"
+                f" · <strong>Role:</strong> {escape(str(f.get('role') or 'n/a'))}"
+            )
+        return f"""
 <article class="finding sev-{sev_l}" id="{escape(str(f.get('id')))}">
   <header>
     <span class="badge sev-{sev_l}">{escape(str(f.get('severity', '')).upper())}</span>
+    {kind_badge}
     <span class="fid">{escape(str(f.get('id')))}</span>
     <h3>{escape(str(f.get('title')))}</h3>
   </header>
@@ -109,7 +126,7 @@ def render_assessment_html(doc: Dict[str, Any], *, technical_report_name: str = 
     <p class="meta"><strong>Category:</strong> {escape(str(f.get('category')))}
        · <strong>Signal:</strong> {escape(str(f.get('detail')))}
        · <strong>Occurrences:</strong> {escape(str(f.get('count')))}
-       · <strong>Hosts:</strong> {escape(str(f.get('unique_hosts')))}</p>
+       · <strong>Hosts:</strong> {escape(str(f.get('unique_hosts')))}{impact_meta}</p>
     <div class="grid3">
       <div><h5>What this means</h5><p>{escape(str(f.get('what')))}</p></div>
       <div><h5>Attacker use</h5><p>{escape(str(f.get('attacker')))}</p></div>
@@ -122,10 +139,31 @@ def render_assessment_html(doc: Dict[str, Any], *, technical_report_name: str = 
   </section>
 </article>
 """
-        )
-    findings_html = "\n".join(finding_blocks) or (
-        "<p class='empty'>No security findings were recorded in this assessment run.</p>"
+
+    vulns = list(doc.get("vulnerabilities") or [])
+    hardening = list(doc.get("hardening_issues") or [])
+    if not vulns and not hardening:
+        # Backward compatible: classify from flat findings list
+        for f in findings:
+            if str(f.get("finding_kind") or "") == "hardening":
+                hardening.append(f)
+            else:
+                vulns.append(f)
+
+    vuln_html = "\n".join(_render_finding(f) for f in vulns) or (
+        "<p class='empty'>No demonstrated vulnerabilities in this run.</p>"
     )
+    hard_html = "\n".join(_render_finding(f) for f in hardening) or (
+        "<p class='empty'>No hardening / misconfiguration observations in this run.</p>"
+    )
+    findings_html = f"""
+    <h3>4a. Vulnerabilities</h3>
+    <p class="muted">Demonstrated or high-confidence attack classes (XSS, injection, auth issues, proven secret abuse, …).</p>
+    {vuln_html}
+    <h3>4b. Hardening issues</h3>
+    <p class="muted">Security misconfigurations and hygiene — not the same as exploitable vulnerabilities unless impact is proven.</p>
+    {hard_html}
+    """
 
     enum_hits = doc.get("enum_hits") or []
     enum_html = _url_list(list(enum_hits), limit=30)
@@ -319,7 +357,7 @@ footer {{ margin-top: 2rem; color: var(--muted); font-size: .8rem; }}
       <li><a href="#exec">Executive summary</a></li>
       <li><a href="#scope">Scope &amp; methodology</a></li>
       <li><a href="#metrics">Assessment metrics</a></li>
-      <li><a href="#findings">Findings (client + technical)</a></li>
+      <li><a href="#findings">Findings — vulnerabilities vs hardening</a></li>
       <li><a href="#surface">Attack surface notes</a></li>
       <li><a href="#roadmap">Remediation roadmap</a></li>
       <li><a href="#limits">Limitations &amp; confidence</a></li>
@@ -365,6 +403,7 @@ footer {{ margin-top: 2rem; color: var(--muted); font-size: .8rem; }}
 
   <section class="section" id="findings">
     <h2>4. Findings</h2>
+    <p class="muted">Security misconfiguration is not the same as a security vulnerability. Overall risk is driven by section 4a.</p>
     <p class="muted">Each issue includes a short business-facing summary, then technical detail for engineers.</p>
     {findings_html}
   </section>

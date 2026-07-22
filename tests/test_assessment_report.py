@@ -31,15 +31,18 @@ def test_assessment_document_dual_audience(tmp_path):
         mode="full_audit",
         job_title="Lab",
     )
-    assert doc["risk_level"] in ("High", "Critical", "Medium")
+    assert doc["risk_level"] in ("High", "Critical", "Medium", "Low")
     assert doc["findings"]
     assert "executive" in doc["findings"][0]
     assert "what" in doc["findings"][0]
+    assert "vulnerabilities" in doc and "hardening_issues" in doc
     html = render_assessment_html(doc, technical_report_name="tech.html")
     assert "Executive summary" in html
     assert "For decision makers" in html
     assert "For security engineers" in html
     assert "Remediation roadmap" in html
+    assert "Vulnerabilities" in html
+    assert "Hardening issues" in html
 
     writer = ReportWriter(str(tmp_path), "https://lab.example/", title="RepoTrace")
     paths = writer.write_all(

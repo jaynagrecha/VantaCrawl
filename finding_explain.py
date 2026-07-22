@@ -16,12 +16,11 @@ EXPLAINERS: List[Tuple[tuple, Dict[str, str]]] = [
             "title": "Missing HSTS (HTTPS enforcement)",
             "what": (
                 "The site does not tell browsers “always use HTTPS for this domain.” "
-                "Visitors can still be nudged onto an insecure HTTP connection."
+                "On HTTPS-only hosts (e.g. Vercel) this is usually informational hardening."
             ),
             "attacker": (
-                "On the same network (café Wi‑Fi, compromised router), an attacker can "
-                "intercept the first visit or strip HTTPS (SSL-stripping) and see or change "
-                "traffic before the user notices."
+                "Relevant mainly when an HTTP access path is demonstrably exploitable "
+                "(SSL-stripping on first visit). Many bounty programs mark bare missing HSTS as Informational."
             ),
             "fix": (
                 "Serve the site over HTTPS and add a Strict-Transport-Security header "
@@ -35,15 +34,15 @@ EXPLAINERS: List[Tuple[tuple, Dict[str, str]]] = [
             "title": "Missing Content Security Policy (CSP)",
             "what": (
                 "There is no policy telling the browser which scripts, styles, and frames are allowed. "
-                "That makes XSS and injected scripts easier to run if any page is compromised."
+                "Without demonstrated XSS this is a hardening gap, not a standalone vulnerability."
             ),
             "attacker": (
-                "If they find a place to inject HTML/JavaScript (comment field, reflected parameter), "
-                "the browser has fewer rules blocking that script from stealing cookies or acting as the user."
+                "CSP mainly limits damage after script injection exists. Alone, missing CSP does not "
+                "give an attacker a new entry point."
             ),
             "fix": (
                 "Add a Content-Security-Policy header starting in report-only mode, then tighten "
-                "script-src and related directives for your real assets."
+                "script-src and related directives for your real assets. Escalate priority if XSS is found."
             ),
         },
     ),
@@ -52,12 +51,12 @@ EXPLAINERS: List[Tuple[tuple, Dict[str, str]]] = [
         {
             "title": "Missing clickjacking protection (X-Frame-Options / frame-ancestors)",
             "what": (
-                "Pages can be embedded in an invisible frame on another site. Users may click "
-                "what they think is a harmless button while actually clicking yours."
+                "Pages can be embedded in a frame on another site. Without a PoC against a sensitive "
+                "authenticated action, this is hardening — not a Medium vulnerability by itself."
             ),
             "attacker": (
-                "They host a decoy page that overlays your real page in a transparent iframe and "
-                "trick victims into approving actions (change email, enable 2FA off, buy something)."
+                "Interesting only when a page is frameable and a sensitive action (delete account, "
+                "place order, change password) can be clickjacked."
             ),
             "fix": (
                 "Send X-Frame-Options: DENY (or SAMEORIGIN), or preferably "
@@ -499,6 +498,8 @@ def _host_of(url: str) -> str:
 
 def group_findings_for_report(findings: List[Dict[str, Any]], *, max_groups: int = 40) -> List[Dict[str, Any]]:
     """Collapse duplicate header/path noise into explained issue groups."""
+    from finding_kind import apply_hardening_context
+
     buckets: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
     order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
@@ -568,7 +569,15 @@ def group_findings_for_report(findings: List[Dict[str, Any]], *, max_groups: int
         g.pop("_url_seen", None)
         g.pop("_evidence_seen", None)
 
-    groups.sort(key=lambda g: (order.get(g["severity"], 5), -g["count"], g["title"]))
+    groups = apply_hardening_context(groups)
+    groups.sort(
+        key=lambda g: (
+            0 if g.get("finding_kind") == "vulnerability" else 1,
+            order.get(g["severity"], 5),
+            -g["count"],
+            g["title"],
+        )
+    )
     return groups[:max_groups]
 
 
