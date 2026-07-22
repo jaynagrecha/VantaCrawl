@@ -76,7 +76,6 @@ from recon_extract import (
 )
 from reporting import ReportWriter
 from security_scan import (
-    audit_security_headers,
     check_cors,
     discover_parameters,
     extract_forms,
@@ -1228,9 +1227,15 @@ async def _run_security_checks(
             # Pattern matched but no content gate defined — inventory, not a finding
             if url not in stats.sensitive_urls:
                 stats.sensitive_urls.append(url)
-    if config.header_audit:
-        for cat, severity, detail in audit_security_headers(headers or {}, url):
-            await emit(cat, severity, url, detail)
+    # header_audit: inventory via inventory_security_headers in _collect_passive_recon
+    # — do not emit missing-header findings (universal noise on almost every host)
+    if forms:
+        for form in forms:
+            if form.get("has_file_input") or form.get("file_fields"):
+                stats.record_url(
+                    "file_upload",
+                    f"{form.get('action') or url} :: {form.get('method', 'GET')}",
+                )
     try:
         from cookie_impact import analyze_response_cookies
 

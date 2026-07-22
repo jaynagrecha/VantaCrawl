@@ -16,8 +16,7 @@ def test_header_hardening_vs_info():
     hsts = _assess(category="header_audit", severity="medium", detail="missing HSTS")
     assert hsts.impact == "informational"
     assert hsts.role == "hardening"
-    assert hsts.severity == "medium"
-    assert hsts.suppress is False
+    assert hsts.suppress is True
 
     ref = _assess(category="header_audit", severity="info", detail="missing Referrer-Policy")
     assert ref.severity == "info"
@@ -56,8 +55,8 @@ def test_active_vs_passive_xss():
         severity="medium",
         detail="Parameter value reflected in HTML without encoding",
     )
-    assert passive.impact == "possible"
-    assert passive.validation == "unverified"
+    assert passive.suppress is True
+    assert passive.impact == "no_impact"
 
 
 def test_cors_credentials_without_session_evidence_is_medium():

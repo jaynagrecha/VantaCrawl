@@ -323,8 +323,11 @@ def analyze_set_cookie_headers(
         inventory.append(row)
 
         name = row["name"]
-        # Emit findings only when there is real or possible credential impact
-        if assessment["impact"] in ("stealable_credential", "possible_credential"):
+        # Emit only proven stealable auth/jwt cookies — possible_credential is inventory noise
+        if assessment["impact"] == "stealable_credential" and assessment.get("role") in (
+            "auth_session",
+            "jwt",
+        ):
             dedupe = f"{name}|{assessment['impact']}|{row['flags']}"
             if dedupe in seen_names:
                 continue
@@ -336,11 +339,10 @@ def analyze_set_cookie_headers(
                 f"Flags: {row['flags']}. Impact: {assessment['impact']}."
             )
             evidence = row.get("value_masked") or None
-            # Prefer full JWT/session value as evidence for tap-to-reveal when stealable
             if assessment["stealable"] and parsed.get("value"):
                 evidence = str(parsed["value"])
             findings.append(("authentication", str(assessment["severity"]), detail, evidence))
-        # mitigated_credential / analytics / preference → inventory only (no finding noise)
+        # possible / mitigated / analytics / preference → inventory only
 
     return inventory, findings
 

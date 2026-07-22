@@ -723,151 +723,48 @@ def _looks_like_code_listing(body_text: str) -> bool:
 
 
 def scan_sql_injection(url: str, body_text: str, forms: Optional[List[dict]] = None) -> List[Tuple[str, str, str]]:
-    """Emit only when the response body contains SQL-error evidence (passive)."""
-    findings = []
-    has_sql_error = bool(body_text and SQL_ERROR_RE.search(body_text))
-    if has_sql_error and not _looks_like_code_listing(body_text or ""):
-        findings.append(("sql_injection", "high", "SQL error pattern in response body (possible SQLi)"))
-    # Special-char-in-param without SQL errors is not a finding — active probes confirm SQLi
-    return findings
+    """Passive SQLi is inventory noise (generic DB error pages). Active probes confirm."""
+    return []
 
 
 def scan_xss(url: str, body_text: str, forms: Optional[List[dict]] = None) -> List[Tuple[str, str, str]]:
+    """Passive reflection is noisy — active marker probes confirm XSS.
+
+    Keep only inline scripts that clearly touch cookies / eval outside code listings.
+    """
     findings = []
-    if not body_text:
+    if not body_text or _looks_like_code_listing(body_text):
         return findings
-    params = _query_params(url)
-    for name, values in params.items():
-        for value in values:
-            # Require XSS-relevant characters in the reflected value (cuts breadcrumb FPs)
-            if len(value) < 3 or len(value) > 120:
-                continue
-            if not re.search(r"[<>\"'`]", value):
-                continue
-            if value in body_text and re.search(
-                rf"(?i)(<[^>]*>[^<]*{re.escape(value)}|['\"]{re.escape(value)})",
-                body_text,
-            ):
-                # Passive reflection stays low — active marker probe confirms XSS
-                findings.append(
-                    (
-                        "xss",
-                        "low",
-                        f"Parameter '{name}' value with HTML/JS metacharacters reflected (possible XSS)",
-                    ),
-                )
-                break
     if re.search(r"(?i)<script[^>]*>[^<]{0,200}(document\.cookie\s*=|eval\s*\()", body_text):
-        if not _looks_like_code_listing(body_text):
-            findings.append(("xss", "high", "Inline script with sensitive DOM access in response"))
+        findings.append(("xss", "medium", "Inline script with sensitive DOM access in response"))
     return findings
 
 
 def scan_rce(url: str, body_text: str, forms: Optional[List[dict]] = None) -> List[Tuple[str, str, str]]:
-    findings = []
-    if body_text and RCE_BODY_RE.search(body_text) and not _looks_like_code_listing(body_text):
-        # Prefer when paired with a command-style parameter or error context
-        params = _query_params(url)
-        cmd_params = [n for n in params if re.match(r"(?i)^(cmd|command|exec|execute|run|shell|ping|process)$", n)]
-        if cmd_params or re.search(r"(?i)(sh:|bash:|permission denied|command not found)", body_text):
-            findings.append(("rce", "high", "Dangerous code execution pattern in response body"))
-    params = _query_params(url)
-    for name, values in params.items():
-        if re.match(r"(?i)^(cmd|command|exec|execute|run|shell)$", name):
-            # Only elevate when value looks like a shell fragment
-            if any(re.search(r"[;&|`$]|^\s*(id|whoami|ls|cat|ping)\b", v or "") for v in values):
-                findings.append(("rce", "high", f"Command-style parameter '{name}' carries shell-like value"))
-    return findings
+    """Passive RCE heuristics are high-FP (docs, error copy). Active echo-marker probes confirm."""
+    return []
 
 
 def scan_file_upload(forms: Optional[List[dict]], url: str) -> List[Tuple[str, str, str]]:
-    """Emit only when a real ``type=file`` input is present (not name=file alone)."""
-    findings = []
-    if not forms:
-        return findings
-    for form in forms:
-        action = form.get("action") or url
-        has_file = bool(form.get("has_file_input")) or bool(form.get("file_fields"))
-        if not has_file:
-            continue
-        method = form.get("method", "GET")
-        findings.append(
-            (
-                "file_upload",
-                "medium" if method == "POST" else "high",
-                f"File upload form at {action} (verify extension/MIME validation)",
-            ),
-        )
-    return findings
+    """Upload forms are inventory (stats.forms) — presence ≠ weak validation."""
+    return []
 
 
 def scan_ssrf(url: str, body_text: str = "") -> List[Tuple[str, str, str]]:
-    """Only report high-confidence internal/metadata URL targets (passive).
-
-    Public absolute URLs in redirect-style params are open-redirect noise, not SSRF.
-    Active probes still confirm SSRF separately.
-    """
-    findings = []
-    params = _query_params(url)
-    for name, values in params.items():
-        if not SSRF_PARAM_RE.match(name):
-            continue
-        for value in values:
-            decoded = unquote(value or "")
-            if re.match(r"(?i)^https?://", decoded) or decoded.startswith("//"):
-                if re.search(
-                    r"(?i)(127\.0\.0\.1|localhost|0\.0\.0\.0|169\.254\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|"
-                    r"metadata\.google|169\.254\.169\.254)",
-                    decoded,
-                ):
-                    findings.append(
-                        ("ssrf", "high", f"Parameter '{name}' points at internal/metadata URL (possible SSRF)"),
-                    )
-    return findings
+    """Passive internal URL params are not proof of server-side fetch. Active probes confirm."""
+    return []
 
 
 def scan_directory_traversal(url: str) -> List[Tuple[str, str, str]]:
-    """Passive: only param values that look like file-disclosure attempts.
-
-    Bare ``../`` in a URL path is normal relative resolution — never a finding.
-    Active probes confirm traversal via /etc/passwd markers.
-    """
-    findings = []
-    for name, values in _query_params(url).items():
-        for value in values:
-            decoded = unquote(value or "")
-            if not TRAVERSAL_RE.search(decoded):
-                continue
-            if not re.search(
-                r"(?i)(etc/passwd|windows[/\\]win\.ini|/proc/self|\.git/config|boot\.ini)",
-                decoded,
-            ):
-                continue
-            sev = (
-                "medium"
-                if re.match(
-                    r"(?i)^(file|path|folder|dir|document|template|include|doc)$",
-                    name,
-                )
-                else "low"
-            )
-            findings.append(
-                (
-                    "directory_traversal",
-                    sev,
-                    f"Traversal + sensitive file target in parameter '{name}' (verify disclosure)",
-                ),
-            )
-    return findings
+    """Passive traversal payloads are not proof of disclosure. Active /etc/passwd probes confirm."""
+    return []
 
 
 def scan_authentication_flaws(url: str, headers: dict, body_text: str = "") -> List[Tuple[str, str, str]]:
+    """HTTP auth findings require a real login surface — not path keywords like /author."""
     findings = []
     parsed = urlparse(url)
     scheme = parsed.scheme.lower()
-    path = parsed.path.lower()
-    if scheme == "http" and re.search(r"(?i)(login|signin|auth|password|admin)", path):
-        findings.append(("authentication", "high", "Login/auth page served over unencrypted HTTP"))
     # Require a credential-shaped value — bare password=/api_key= keys are form noise
     for name, values in _query_params(url).items():
         if not _URL_CRED_PARAM_RE.match(name):
@@ -889,54 +786,22 @@ def scan_authentication_flaws(url: str, headers: dict, body_text: str = "") -> L
             )
             break
     lowered = {k.lower(): v for k, v in (headers or {}).items()}
-    # Cookie flag / stealable-credential analysis is handled by cookie_impact
-    if body_text and re.search(r"(?i)(type=['\"]password['\"]|name=['\"]password['\"])", body_text):
-        if scheme == "http":
-            findings.append(("authentication", "high", "Password form on HTTP connection"))
+    has_password_field = bool(
+        body_text
+        and re.search(r"(?i)(type=['\"]password['\"]|name=['\"]password['\"])", body_text)
+    )
     www_auth = lowered.get("www-authenticate", "")
+    # Path-only /login|/auth|/admin on HTTP is not enough — need password field or WWW-Authenticate
+    if scheme == "http" and has_password_field:
+        findings.append(("authentication", "high", "Password form on HTTP connection"))
     if www_auth and scheme == "http":
         findings.append(("authentication", "medium", f"Basic/digest auth over HTTP ({www_auth[:40]})"))
     return findings
 
 
 def scan_open_redirect(url: str) -> List[Tuple[str, str, str]]:
-    """Passive: absolute off-site URL in a redirect-style parameter.
-
-    OAuth ``redirect_uri`` on authorize endpoints is expected (not a finding).
-    Passive hits stay low severity — active probes confirm open redirects separately.
-    """
-    findings = []
-    parsed = urlparse(url)
-    host = (parsed.netloc or "").lower()
-    path = (parsed.path or "").lower()
-    oauthish = bool(re.search(r"(?i)/(?:oauth|oidc|authorize|sso|connect)(?:/|$)", path))
-    for name, values in _query_params(url).items():
-        if not OPEN_REDIRECT_PARAM_RE.match(name):
-            continue
-        name_l = (name or "").lower()
-        # Legitimate OAuth / OIDC redirect_uri to registered clients
-        if oauthish and name_l in (
-            "redirect_uri",
-            "redirect_url",
-            "return_to",
-            "return",
-            "callback",
-        ):
-            continue
-        for value in values:
-            decoded = unquote(value or "")
-            if not re.match(r"(?i)^https?://", decoded) and not decoded.startswith("//"):
-                continue
-            target_host = urlparse(decoded if "://" in decoded else f"https:{decoded}").netloc.lower()
-            if target_host and target_host != host and not target_host.endswith("." + host):
-                findings.append(
-                    (
-                        "open_redirect",
-                        "low",
-                        f"Parameter '{name}' points off-site to {target_host} (possible open redirect)",
-                    )
-                )
-    return findings
+    """Passive off-site return URLs are common (partners, payments). Active Location probes confirm."""
+    return []
 
 
 def scan_mixed_content(url: str, body_text: str) -> List[Tuple[str, str, str]]:
