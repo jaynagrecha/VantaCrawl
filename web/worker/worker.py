@@ -27,6 +27,19 @@ log = logging.getLogger("vantacrawl.standalone_worker")
 
 
 def main() -> None:
+    import os
+    import time
+
+    # Park this process when scans should run only via EMBED_WORKER on the API
+    # (Render disks cannot be shared with a Background Worker).
+    if os.environ.get("DISABLE_QUEUE_CONSUMER", "").strip().lower() in {"1", "true", "yes"}:
+        log.info(
+            "DISABLE_QUEUE_CONSUMER is set — not claiming Redis jobs. "
+            "Suspend this service in the Dashboard to stop billing."
+        )
+        while True:
+            time.sleep(3600)
+
     startup()
     stop = threading.Event()
 
