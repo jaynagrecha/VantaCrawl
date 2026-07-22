@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -17,6 +18,22 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from evasion_layer import detect_challenge, is_permission_or_storage_deny
+
+# Akamai Bot Manager client cookies (presence = BM deployed; values are not forged here)
+_BM_COOKIE_NAMES = frozenset(
+    {
+        "_abck",
+        "bm_sz",
+        "ak_bmsc",
+        "bm_sv",
+        "bm_mi",
+        "bm_lso",
+        "bm_so",
+    }
+)
+_BM_COOKIE_RE = re.compile(
+    r"(?i)(?:^|[;\s,])(_abck|bm_sz|ak_bmsc|bm_sv|bm_mi|bm_lso|bm_so)\s*="
+)
 
 try:
     from zoneinfo import ZoneInfo
@@ -219,6 +236,8 @@ class DefenseTracker:
     access_deny_count: int = 0
     access_deny_status_counts: Counter = field(default_factory=Counter)
     access_deny_events: List[DefenseEvent] = field(default_factory=list)
+    # Akamai Bot Manager cookie names observed (Set-Cookie / Cookie / inventory)
+    bm_cookies_seen: Set[str] = field(default_factory=set)
     caught_count: int = 0
     unchallenged_count: int = 0
     error_count: int = 0
@@ -259,6 +278,7 @@ class DefenseTracker:
         headers = dict(headers or {})
         headers_l = {str(k).lower(): v for k, v in headers.items()}
         self.observe_headers(headers, body_preview)
+        self._note_bm_cookies_from_headers(headers_l)
         on_response = _fingerprint_protections(headers, body_preview)
         forensic_headers = _extract_forensic_headers(headers)
         snippet = _body_snippet(body_preview)
@@ -416,6 +436,32 @@ class DefenseTracker:
         if len(self.sample_unchallenged) < self._max_samples:
             self.sample_unchallenged.append(event)
 
+    def _note_bm_cookies_from_headers(self, headers_l: Dict[str, str]) -> None:
+        blob = " ".join(
+            str(headers_l.get(k) or "")
+            for k in ("set-cookie", "cookie", "set-cookie2")
+        )
+        for match in _BM_COOKIE_RE.finditer(blob):
+            self.bm_cookies_seen.add(match.group(1).lower())
+        # Also scan raw header keys that dump multiple set-cookie values
+        for key, value in headers_l.items():
+            if "cookie" in key.lower():
+                for match in _BM_COOKIE_RE.finditer(str(value)):
+                    self.bm_cookies_seen.add(match.group(1).lower())
+
+    def note_bm_cookies_from_inventory(self, cookies: Optional[List[Dict[str, Any]]] = None) -> None:
+        for row in cookies or []:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or "").strip().lower()
+            if name in _BM_COOKIE_NAMES or name.startswith("bm_"):
+                self.bm_cookies_seen.add(name)
+
+    def akamai_bot_manager_present(self) -> bool:
+        if self.bm_cookies_seen:
+            return True
+        return "akamai" in {p.lower() for p in self.protections_seen}
+
     def total_scored(self) -> int:
         return self.caught_count + self.unchallenged_count
 
@@ -485,6 +531,8 @@ class DefenseTracker:
             "access_deny_count": self.access_deny_count,
             "access_deny_status_counts": dict(self.access_deny_status_counts),
             "access_deny_journal": [e.journal_dict() for e in self.access_deny_events[-30:]],
+            "akamai_bot_manager_present": self.akamai_bot_manager_present(),
+            "bm_cookies_seen": sorted(self.bm_cookies_seen),
             "fingerprint_notes": list(self.fingerprint_notes),
             "verdict_title": verdict_title,
             "verdict_body": verdict_body,
@@ -567,6 +615,24 @@ class DefenseTracker:
             "it does NOT mean a CAPTCHA or bot manager was bypassed or solved."
         )
         lines.append("")
+        if data.get("akamai_bot_manager_present") or data.get("bm_cookies_seen"):
+            lines.append("-" * 70)
+            lines.append("AKAMAI BOT MANAGER SIGNALS")
+            lines.append("-" * 70)
+            lines.append(
+                f"  Bot Manager present: {'yes' if data.get('akamai_bot_manager_present') else 'unclear'}"
+            )
+            cookies = data.get("bm_cookies_seen") or []
+            if cookies:
+                lines.append(f"  BM cookies observed: {', '.join(cookies)}")
+            else:
+                lines.append("  BM cookies observed: (none in Set-Cookie / inventory this run)")
+            lines.append(
+                "  Owner note: presence of _abck/bm_sz/ak_bmsc means Bot Manager is deployed. "
+                "High gap rate with BM present means automation is still reaching origin — "
+                "tighten bot category rules / challenge sensitive paths (network-side)."
+            )
+            lines.append("")
         if data["signal_breakdown"]:
             lines.append("Why traffic was marked as caught:")
             for signal, count in sorted(data["signal_breakdown"].items(), key=lambda x: -x[1]):
@@ -751,3 +817,112 @@ def format_defense_for_ui(tracker: Optional[DefenseTracker]) -> str:
     if tracker is None:
         return "Defense verification was not run for this scan."
     return tracker.format_plain_report()
+
+
+def build_bot_management_findings(
+    tracker: DefenseTracker,
+    *,
+    cookie_inventory: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Owner-facing Bot Manager findings (detection + gap analysis — no forge payloads).
+
+    Emits:
+    1. BM present (cookies / Akamai fingerprint) — informational hardening
+    2. Unchallenged gap while BM is present — medium hardening for network-side review
+    """
+    tracker.note_bm_cookies_from_inventory(cookie_inventory)
+    if not tracker.akamai_bot_manager_present():
+        return []
+
+    start = tracker.start_url or ""
+    host = ""
+    try:
+        host = urlparse(start).netloc or start
+    except Exception:
+        host = start
+    cookies = sorted(tracker.bm_cookies_seen)
+    cookie_note = ", ".join(cookies) if cookies else "(Akamai headers/body only — no BM cookies captured)"
+    protections = ", ".join(sorted(tracker.protections_seen)) or "akamai"
+    scored = tracker.total_scored()
+    gap = tracker.gap_rate_pct()
+    catch = tracker.catch_rate_pct()
+    gap_samples = [
+        e.url for e in tracker.sample_unchallenged[:8] if getattr(e, "url", None)
+    ]
+    gap_evidence = "; ".join(gap_samples[:5]) if gap_samples else "see defense report sample_unchallenged"
+
+    findings: List[Dict[str, Any]] = [
+        {
+            "category": "bot_management",
+            "severity": "info",
+            "url": start or f"https://{host}/",
+            "detail": (
+                "Akamai Bot Manager signals observed on this origin "
+                f"(cookies: {cookie_note}; protections: {protections}). "
+                "Bot Manager is deployed — owners should confirm rule coverage for automation, "
+                "API clients, and sensitive paths."
+            ),
+            "evidence": f"bm_cookies: {cookie_note}",
+            "role": "hardening",
+            "impact": "informational",
+            "validation": "confirmed",
+            "impact_summary": (
+                "Presence of Bot Manager client cookies (_abck/bm_sz/ak_bmsc) or Akamai deny "
+                "fingerprints confirms BM is in path. This is inventory for owners, not a bypass."
+            ),
+        }
+    ]
+
+    # Meaningful sample + BM present + substantial unchallenged traffic
+    if scored >= 8 and gap >= 35.0:
+        sev = "medium" if gap < 70 else "medium"
+        findings.append(
+            {
+                "category": "bot_management",
+                "severity": sev,
+                "url": start or f"https://{host}/",
+                "detail": (
+                    f"Akamai Bot Manager is present, but {gap}% of scored scanner requests "
+                    f"completed without a challenge/block signal (catch rate {catch}%, "
+                    f"unchallenged={tracker.unchallenged_count}, caught={tracker.caught_count}). "
+                    "Network-side gap: review Bot Manager bot categories, challenge actions, "
+                    "and JA4/TLS/header anomaly rules so automation cannot reach origin unchallenged."
+                ),
+                "evidence": f"gap_rate={gap}%; samples: {gap_evidence}",
+                "role": "hardening",
+                "impact": "possible",
+                "validation": "confirmed",
+                "impact_summary": (
+                    "BM cookies/headers prove the control exists, but high unchallenged rate means "
+                    "rules are not stopping this class of traffic. Tighten BM policy on the edge — "
+                    "do not treat this as proof of a client-side cookie forge."
+                ),
+            }
+        )
+    return findings
+
+
+def inject_bot_management_findings(stats: Any) -> int:
+    """Append BM presence/gap findings onto CrawlStats before reports are written."""
+    tracker = getattr(stats, "defense_tracker", None)
+    if tracker is None:
+        return 0
+    cookies = list(getattr(stats, "cookie_inventory", []) or [])
+    rows = build_bot_management_findings(tracker, cookie_inventory=cookies)
+    added = 0
+    for row in rows:
+        before = len(getattr(stats, "findings", []) or [])
+        stats.record_finding(
+            row["category"],
+            row["severity"],
+            row["url"],
+            row["detail"],
+            evidence=row.get("evidence"),
+            impact=row.get("impact"),
+            role=row.get("role"),
+            validation=row.get("validation"),
+            impact_summary=row.get("impact_summary"),
+        )
+        if len(getattr(stats, "findings", []) or []) > before:
+            added += 1
+    return added

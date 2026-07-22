@@ -34,6 +34,7 @@ CATEGORY_LABELS = {
     "sensitive_path": "Sensitive file or folder",
     "header_audit": "Missing security header",
     "cors": "CORS misconfiguration",
+    "bot_management": "Bot management / Akamai posture",
     "auth": "Authentication weakness",
     "api_leak": "API information leak",
     "open_redirect": "Open redirect",

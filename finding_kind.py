@@ -41,7 +41,7 @@ _VULN_CATEGORIES = frozenset(
 # Recon / intel categories — hardening unless severity proves abuse
 _INTEL_CATEGORIES = frozenset({"js_intel"})
 
-_HARDENING_CATEGORIES = frozenset({"header_audit"})
+_HARDENING_CATEGORIES = frozenset({"header_audit", "bot_management"})
 
 _HARDENING_ROLES = frozenset({"hardening", "hygiene", "client_public_key"})
 
