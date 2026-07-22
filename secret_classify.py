@@ -753,8 +753,9 @@ def assignment_note(body_text: str, start: int, end: int, value: str) -> str:
     return f" (assigned to `{ident}`)"
 
 
-# Browser RUM / analytics / telemetry keys that are designed to ship in JS.
-# Same policy as Google Maps/Firebase browser keys: limited_impact, not stealable.
+# Browser RUM / analytics / telemetry keys designed to ship in JS.
+# These have no stealable-credential value → suppress from findings entirely.
+# (Google Maps/Firebase AIza keys are different: keep visible; restrictions can fail.)
 _CLIENT_RUM_LABEL_MARKERS = (
     "boomr",
     "boomerang",
@@ -779,6 +780,16 @@ _CLIENT_RUM_LABEL_MARKERS = (
 )
 
 
+def is_browser_rum_telemetry_key(label: str) -> bool:
+    """True for pure RUM/analytics client keys that should not appear as findings."""
+    low = (label or "").lower()
+    if any(marker in low for marker in _CLIENT_RUM_LABEL_MARKERS):
+        return True
+    if re.search(r"(?i)\bboomr(?:_api)?(?:_key)?\b", low):
+        return True
+    return False
+
+
 def is_client_public_key(label: str, evidence: str = "") -> bool:
     """True for intentionally browser-embeddable / publishable credentials."""
     low = (label or "").lower()
@@ -797,10 +808,7 @@ def is_client_public_key(label: str, evidence: str = "") -> bool:
         or "google maps" in low
     ):
         return True
-    if any(marker in low for marker in _CLIENT_RUM_LABEL_MARKERS):
-        return True
-    # Assignment names often appear in detail notes: window.BOOMR_API_key
-    if re.search(r"(?i)\bboomr(?:_api)?(?:_key)?\b", low):
+    if is_browser_rum_telemetry_key(label):
         return True
     return False
 

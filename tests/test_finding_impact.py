@@ -156,7 +156,7 @@ def test_secrets_static_unverified():
     assert result.validation == "unverified"
 
 
-def test_boomr_static_is_client_public_key():
+def test_boomr_static_is_suppressed():
     result = _assess(
         category="secrets_exposure",
         severity="high",
@@ -165,8 +165,8 @@ def test_boomr_static_is_client_public_key():
         validate_secrets_live=False,
     )
     assert result.role == "client_public_key"
-    assert result.impact == "limited_impact"
-    assert result.severity in ("info", "low")
+    assert result.impact == "no_impact"
+    assert result.suppress is True
 
 
 def test_record_finding_stores_impact_fields():
