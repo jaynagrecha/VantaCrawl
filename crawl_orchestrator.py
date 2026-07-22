@@ -9,7 +9,7 @@ import re
 import shutil
 import time
 from collections import deque
-from typing import Callable, Optional
+from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -241,6 +241,9 @@ async def run_full_crawl_async(
         return bool(is_running_func()) and disk_space_ok(config.disk_space_guard_mb)
 
     crawl_state_lock = asyncio.Lock()
+    # Mutable so mid-scan BM detection can attach / enable Chrome-first without
+    # recreating the whole crawl loop.
+    fetcher_box: Dict[str, Any] = {"fn": page_html_fetcher}
 
     reporter = ReportWriter(
         config.report_dir(),
@@ -320,7 +323,7 @@ async def run_full_crawl_async(
             cookie_store.load_cookie_string(config.cookie_string, host=config.start_url)
             cookie_store.apply_to_client(client, config.start_url)
         # Browser fetcher may attach its own store; prefer that shared instance when present
-        fetcher_store = getattr(page_html_fetcher, "cookie_store", None) if page_html_fetcher else None
+        fetcher_store = getattr(fetcher_box["fn"], "cookie_store", None) if fetcher_box["fn"] else None
         if fetcher_store is not None:
             cookie_store = fetcher_store
             if config.cookie_string:
@@ -363,7 +366,12 @@ async def run_full_crawl_async(
                 seen = {str(p).lower() for p in (getattr(defense, "protections_seen", None) or set())}
                 if not seen and hasattr(defense, "to_dict"):
                     seen = {str(p).lower() for p in (defense.to_dict().get("protections_detected") or [])}
-                if "akamai" in seen or "cloudflare" in seen or "aws_waf" in seen:
+                bm_present = False
+                try:
+                    bm_present = bool(defense.akamai_bot_manager_present())
+                except Exception:
+                    bm_present = "akamai" in seen
+                if bm_present or "akamai" in seen or "cloudflare" in seen or "aws_waf" in seen:
                     config.enum_method = "GET"
                     config.api_recon_method = "GET"
                     config.evasion_chrome_tls = True
@@ -371,16 +379,38 @@ async def run_full_crawl_async(
                     config.evasion_ua_strategy = "sticky_host"
                     config.browser_on_challenge = True
                     config.auto_sync_cookies = True
+                    # Prefer real Chrome for HTML when Bot Manager is present so
+                    # navigations use a live browser JA4 (PQ + extension order).
+                    config.browser_primary = True
                     config.enum_concurrency = min(int(config.enum_concurrency or 12), 10)
                     config.crawl_concurrency = min(int(config.crawl_concurrency or 4), 3)
                     config.evasion_jitter_min_ms = max(int(config.evasion_jitter_min_ms or 0), 100)
                     config.evasion_jitter_max_ms = max(int(config.evasion_jitter_max_ms or 0), 450)
                     sync_evasion_from_crawl_config(evasion, config)
+                    # Ensure a browser fetcher exists (and picks up browser_primary live)
+                    if fetcher_box["fn"] is None:
+                        try:
+                            from browser_fetch import chrome_available, make_browser_fetcher
+
+                            if chrome_available():
+                                fetcher_box["fn"] = make_browser_fetcher(
+                                    config, output=output_callback
+                                )
+                                store = getattr(fetcher_box["fn"], "cookie_store", None)
+                                if store is not None:
+                                    stats.cookie_store = store  # type: ignore[attr-defined]
+                            else:
+                                output_callback(
+                                    "Chrome-first requested for Bot Manager but Chrome is "
+                                    "unavailable — keeping HTTP/curl_cffi + challenge escalate."
+                                )
+                        except Exception as exc:
+                            output_callback(f"Chrome-first attach skipped: {exc}")
                     output_callback(
                         "Bot manager / WAF fingerprint detected ("
                         + ", ".join(sorted(seen)[:4])
-                        + ") — switching to GET-only probes, Chrome TLS identity, "
-                        "lower concurrency, and cookie sync on challenge."
+                        + ") — Chrome-first HTML navigations, GET-only probes, "
+                        "Chrome TLS identity, lower concurrency, cookie sync on."
                     )
             except Exception:
                 pass
@@ -462,10 +492,10 @@ async def run_full_crawl_async(
                 page_html = None
                 extra_urls = set()
                 resp_headers = {}
-                use_browser = page_html_fetcher and is_html_url(current_url)
+                use_browser = fetcher_box["fn"] and is_html_url(current_url)
 
                 if use_browser:
-                    fetch_result = await page_html_fetcher(client, current_url, config.deep_mirror)
+                    fetch_result = await fetcher_box["fn"](client, current_url, config.deep_mirror)
                     if isinstance(fetch_result, tuple):
                         page_html = fetch_result[0]
                         dom = fetch_result[1] if len(fetch_result) > 1 else []

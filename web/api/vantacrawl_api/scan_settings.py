@@ -186,7 +186,9 @@ _HUMAN = {
     "deep_mirror": ("Deep mirror", "Render all HTML in Chrome for offline fidelity (slow)."),
     "browser_primary": (
         "Chrome-first HTML",
-        "Use real headless Chrome for HTML navigations (best TLS/cookies; needs Chrome; slower).",
+        "Use real headless Chrome for HTML page navigations (live browser JA4/cookies; needs Chrome; slower). "
+        "Also auto-enabled when Akamai/Cloudflare Bot Manager is detected. "
+        "Directory enum and API probes still use the HTTP client (Chrome cannot efficiently probe thousands of paths).",
     ),
     "browser_on_challenge": (
         "Chrome on challenge",
