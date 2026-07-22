@@ -575,10 +575,22 @@ def scan_secrets(
                 match.end(),
                 org_context=org_context,
             )
-            key = (typed, value[:80] if value else raw[:80])
-            if key in seen:
+            # Same secret value under different product labels ("Ript" vs "Text") = one finding
+            value_key = (value or "").strip()
+            dedupe = value_key[:120] if len(value_key) >= 8 else (typed, value_key or raw[:80])
+            if dedupe in seen:
                 continue
-            seen.add(key)
+            # HTML/JS data-* attributes are markup, not credentials (even if product label refined)
+            try:
+                from secret_classify import find_assignment_ident
+
+                assign = find_assignment_ident(body_text, match.start(), match.end(), value or "")
+                assign_l = (assign or "").lower().rsplit(".", 1)[-1]
+                if assign_l.startswith("data-") or assign_l.startswith("data_") or assign_l.startswith("aria-"):
+                    continue
+            except Exception:
+                pass
+            seen.add(dedupe)
             note = assignment_note(body_text, match.start(), match.end(), value)
             detail = f"Exposed {typed} in response body{note}"
             findings.append(
@@ -663,11 +675,13 @@ def extract_forms(html: str, page_url: str, content_type: str = "") -> List[Dict
     if not is_html_content(content_type, path, html):
         return forms
 
+    from urllib.parse import urljoin
     from bs4 import BeautifulSoup
 
     soup = BeautifulSoup(html, "html.parser")
     for form in soup.find_all("form"):
-        action = form.get("action") or page_url
+        raw_action = (form.get("action") or "").strip() or page_url
+        action = urljoin(page_url, raw_action)
         method = (form.get("method") or "GET").upper()
         fields = []
         file_fields = []
@@ -1705,6 +1719,13 @@ async def run_active_vuln_probes(
         from exploit_probes import probe_idor
 
         findings.extend(await probe_idor(client, url, max_params=min(4, max_params)))
+    except Exception:
+        pass
+    # Safe CSRF canary (same-origin only; skips tracking / destructive forms)
+    try:
+        from exploit_probes import probe_csrf
+
+        findings.extend(await probe_csrf(client, url, forms, max_forms=min(3, max_forms)))
     except Exception:
         pass
     try:

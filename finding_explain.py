@@ -706,8 +706,8 @@ def group_findings_for_report(findings: List[Dict[str, Any]], *, max_groups: int
             key = (severity, category, detail.strip().lower())
             url_cap = 5
         elif category == "secrets_exposure" and evidence:
-            # Keep separate groups per secret fingerprint so paths stay attached
-            key = (severity, category, f"{detail.strip().lower()[:120]}|{evidence.lower()}")
+            # One group per secret fingerprint (ignore product-label drift)
+            key = (severity, category, evidence.lower())
             url_cap = 80
         else:
             key = (severity, category, detail.strip().lower()[:160])
@@ -740,6 +740,17 @@ def group_findings_for_report(findings: List[Dict[str, Any]], *, max_groups: int
             }
         bucket = buckets[key]
         bucket["count"] += 1
+        # Prefer a more specific secret title when merging label variants
+        if category == "secrets_exposure" and detail:
+            cur = (bucket.get("detail") or "").lower()
+            if any(g in cur for g in ("generic api key", "api key", "text api key", "named credential")):
+                if detail.lower() not in cur and "exposed" in detail.lower():
+                    bucket["detail"] = detail
+                    expl = explain_finding(category, detail)
+                    bucket["title"] = expl["title"]
+                    bucket["what"] = expl["what"]
+                    bucket["attacker"] = expl["attacker"]
+                    bucket["fix"] = expl["fix"]
         # Prefer stronger impact labels when merging duplicates
         if item.get("impact") and (
             not bucket.get("impact")

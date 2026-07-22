@@ -714,6 +714,15 @@ def assess_api_leak(detail: str, severity: str) -> ImpactResult:
 
 def assess_csrf(detail: str, severity: str) -> ImpactResult:
     d = _detail_l(detail)
+    if "csrf canary accepted" in d or "forged origin" in d:
+        return ImpactResult(
+            role="csrf",
+            impact="possible",
+            severity=severity if severity in ("medium", "high") else "medium",
+            summary="Safe CSRF canary POST with forged Origin was accepted without a CSRF token.",
+            validation="confirmed",
+            issues=["Active canary: cross-site Origin/Referer accepted with dummy fields only"],
+        )
     if "session cookie" in d or "precise csrf" in d:
         return ImpactResult(
             role="csrf",
