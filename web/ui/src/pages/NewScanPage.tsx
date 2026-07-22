@@ -1,6 +1,13 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
+import FilePicker from "../components/FilePicker";
+
+const MODE_SHORT: Record<string, string> = {
+  full_audit: "Full Audit",
+  deep_audit: "Deep Audit",
+  fast_scan: "Fast Scan",
+};
 
 type FieldMeta = {
   key: string;
@@ -319,11 +326,20 @@ export default function NewScanPage() {
           directory enum. Fast Scan is enum-only.
         </p>
         {error && <div className="error">{error}</div>}
-        <div className="grid-2">
-          <div>
+        <div className="grid-2 scan-form">
+          <div className="scan-form-main">
             <div className="field">
               <label>Target URL</label>
-              <input required value={startUrl} onChange={(e) => setStartUrl(e.target.value)} />
+              <input
+                required
+                inputMode="url"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                value={startUrl}
+                onChange={(e) => setStartUrl(e.target.value)}
+                placeholder="https://example.com"
+              />
             </div>
             <div className="field">
               <label>Title (optional)</label>
@@ -334,48 +350,47 @@ export default function NewScanPage() {
               <select value={mode} onChange={(e) => setMode(e.target.value)}>
                 {Object.entries(meta.modes).map(([key, val]) => (
                   <option key={key} value={key}>
-                    {val.label}
+                    {MODE_SHORT[key] || val.label}
                   </option>
                 ))}
               </select>
-              <span className="setting-help-inline" style={{ display: "block", marginTop: ".45rem" }}>
-                Full Audit skips directory enum by default. Deep Audit / Fast Scan enable it.
-              </span>
+              <p className="setting-help-inline field-hint">
+                {meta.modes[mode]?.label ||
+                  "Full Audit skips directory enum by default. Deep Audit / Fast Scan enable it."}
+              </p>
             </div>
-            <div className="field">
-              <label className="checkbox" style={{ display: "flex", gap: ".65rem", alignItems: "flex-start" }}>
-                <input
-                  type="checkbox"
-                  checked={Boolean(settings.directory_enum) || mode === "fast_scan"}
-                  disabled={mode === "fast_scan"}
-                  onChange={(e) => {
-                    const on = e.target.checked;
-                    setSettings((prev) => ({
-                      ...prev,
-                      directory_enum: on,
-                      use_wordlist: on ? true : false,
-                      mutation_enum: on ? Boolean(prev.mutation_enum ?? true) : false,
-                    }));
-                  }}
-                />
-                <span>
-                  <strong>Run directory enum</strong>
-                  <br />
-                  <span className="muted">
-                    Opt-in folder/file name probing — usually the slowest phase. Off for Full Audit unless you check this.
-                  </span>
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={Boolean(settings.directory_enum) || mode === "fast_scan"}
+                disabled={mode === "fast_scan"}
+                onChange={(e) => {
+                  const on = e.target.checked;
+                  setSettings((prev) => ({
+                    ...prev,
+                    directory_enum: on,
+                    use_wordlist: on ? true : false,
+                    mutation_enum: on ? Boolean(prev.mutation_enum ?? true) : false,
+                  }));
+                }}
+              />
+              <span className="checkbox-copy">
+                <strong>Run directory enum</strong>
+                <span className="muted">
+                  Opt-in folder/file probing — usually the slowest phase. Off for Full Audit unless checked.
                 </span>
-              </label>
-            </div>
+              </span>
+            </label>
             <div className="field">
               <label>Parallelism</label>
               <select value={speed} onChange={(e) => setSpeed(e.target.value)}>
                 {Object.entries(meta.speeds).map(([key, val]) => (
                   <option key={key} value={key}>
-                    {val.label}
+                    {val.label.includes("–") ? val.label.split("–")[0].trim() : val.label}
                   </option>
                 ))}
               </select>
+              <p className="setting-help-inline field-hint">{meta.speeds[speed]?.label}</p>
             </div>
             <div className="field">
               <label>Extra targets (optional)</label>
@@ -385,13 +400,12 @@ export default function NewScanPage() {
                 onChange={(e) => setTargetsText(e.target.value)}
                 placeholder={"One URL per line\nhttps://a.example\nhttps://b.example"}
               />
-              <label className="setting-help-inline" style={{ display: "block", marginTop: ".55rem" }}>
-                Or upload a URL list file (.txt) — not a wordlist
-              </label>
-              <input
-                type="file"
+              <p className="setting-help-inline field-hint">Or upload a URL list (.txt) — not a wordlist</p>
+              <FilePicker
                 accept=".txt,text/plain"
-                onChange={(e) => setTargetsFile(e.target.files?.[0] || null)}
+                file={targetsFile}
+                onChange={setTargetsFile}
+                label="Upload URL list"
               />
             </div>
             {(Boolean(settings.directory_enum) || mode === "fast_scan" || mode === "deep_audit") && (
@@ -419,62 +433,62 @@ export default function NewScanPage() {
                     <option value="__upload__">Upload my own file…</option>
                   </select>
                   {(wordlistId === "__upload__" || wordlistFile) && (
-                    <input
-                      type="file"
+                    <FilePicker
                       accept=".txt,text/plain"
                       required={wordlistId === "__upload__" && !wordlistFile}
-                      onChange={(e) => setWordlistFile(e.target.files?.[0] || null)}
-                      style={{ marginTop: ".45rem" }}
+                      file={wordlistFile}
+                      onChange={setWordlistFile}
+                      label="Upload wordlist"
                     />
                   )}
-                  <p className="setting-help-inline" style={{ marginTop: ".35rem" }}>
-                    Bundled lists from the repo <code>Wordlist/</code> folder on the server — or upload your own .txt.
+                  <p className="setting-help-inline field-hint">
+                    Bundled lists from the server <code>Wordlist/</code> folder — or upload your own .txt.
                   </p>
                 </div>
                 <div className="field">
-                  <label>Extra wordlist (optional upload)</label>
-                  <input
-                    type="file"
+                  <label>Extra wordlist (optional)</label>
+                  <FilePicker
                     accept=".txt,text/plain"
-                    onChange={(e) => setExtraWordlistFile(e.target.files?.[0] || null)}
+                    file={extraWordlistFile}
+                    onChange={setExtraWordlistFile}
+                    label="Upload extra wordlist"
                   />
                 </div>
               </>
             )}
             <div className="field">
               <label>Postman collection (optional)</label>
-              <input
-                type="file"
+              <FilePicker
                 accept=".json,application/json"
-                onChange={(e) => setPostmanFile(e.target.files?.[0] || null)}
+                file={postmanFile}
+                onChange={setPostmanFile}
+                label="Upload Postman JSON"
               />
-              <p className="setting-help-inline" style={{ marginTop: ".35rem" }}>
-                Imported into API recon when provided.
-              </p>
+              <p className="setting-help-inline field-hint">Imported into API recon when provided.</p>
             </div>
             <div className="field">
               <label>HAR capture (optional)</label>
-              <input
-                type="file"
+              <FilePicker
                 accept=".har,.json,application/json"
-                onChange={(e) => setHarFile(e.target.files?.[0] || null)}
+                file={harFile}
+                onChange={setHarFile}
+                label="Upload HAR"
               />
             </div>
           </div>
-          <div>
+          <div className="scan-form-side">
             <label className="checkbox">
               <input
                 type="checkbox"
                 checked={authorized}
                 onChange={(e) => setAuthorized(e.target.checked)}
               />
-              <span>
+              <span className="checkbox-copy">
                 <strong>I confirm this target is authorized for testing.</strong>
-                <br />
                 <span className="muted">Required. Scans will not start without this confirmation.</span>
               </span>
             </label>
-            <button className="btn primary" type="submit" disabled={busy || !authorized}>
+            <button className="btn primary scan-submit" type="submit" disabled={busy || !authorized}>
               {busy ? "Starting…" : "Start scan"}
             </button>
           </div>

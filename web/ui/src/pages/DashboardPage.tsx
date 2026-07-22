@@ -3,6 +3,10 @@ import { Link } from "react-router-dom";
 import { api, Job } from "../api";
 import ScanActivity from "../components/ScanActivity";
 
+function modeLabel(mode: string) {
+  return mode.replace(/_/g, " ");
+}
+
 export default function DashboardPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [error, setError] = useState("");
@@ -26,36 +30,74 @@ export default function DashboardPage() {
     };
   }, []);
 
+  const running = jobs.filter((j) => j.status === "running").length;
+  const done = jobs.filter((j) => j.status === "completed").length;
+
+  const stats = (
+    <div className="stats stats-tri">
+      <div className="stat">
+        <div className="stat-num">{jobs.length}</div>
+        <div className="stat-label">Jobs</div>
+      </div>
+      <div className="stat">
+        <div className="stat-num">{running}</div>
+        <div className="stat-label">Running</div>
+      </div>
+      <div className="stat">
+        <div className="stat-num">{done}</div>
+        <div className="stat-label">Done</div>
+      </div>
+    </div>
+  );
+
   return (
-    <div>
-      <div className="grid-2">
-        <section className="card">
+    <div className="dash">
+      <header className="dash-hero mobile-only">
+        <div>
           <h1>Scan jobs</h1>
           <p className="lead">Live queue of crawls, enums, and security assessments.</p>
+        </div>
+        <Link className="btn primary dash-cta" to="/scans/new">
+          New scan
+        </Link>
+      </header>
+      <div className="mobile-only dash-stats">{stats}</div>
+
+      <div className="grid-2">
+        <section className="card dash-jobs-card">
+          <div className="desktop-only">
+            <h1>Scan jobs</h1>
+            <p className="lead">Live queue of crawls, enums, and security assessments.</p>
+          </div>
           {error && <div className="error">{error}</div>}
           {jobs.length === 0 ? (
-            <p className="muted">No jobs yet. Start your first authorized scan.</p>
+            <div className="dash-empty">
+              <p className="muted">No jobs yet. Start your first authorized scan.</p>
+              <Link className="btn primary" to="/scans/new">
+                New scan
+              </Link>
+            </div>
           ) : (
             <>
               <ul className="job-cards">
                 {jobs.map((job) => (
-                  <li key={job.id} className="job-card">
-                    <div className="job-card-top">
-                      <div className="job-card-title">{job.title}</div>
-                      <div className="status-cell">
-                        <span className={`badge ${job.status}`}>{job.status}</span>
-                        <ScanActivity status={job.status} compact />
+                  <li key={job.id}>
+                    <Link className="job-card" to={`/jobs/${job.id}`}>
+                      <div className="job-card-top">
+                        <div className="job-card-title">{job.title || "Untitled scan"}</div>
+                        <div className="status-cell">
+                          <span className={`badge ${job.status}`}>{job.status}</span>
+                          <ScanActivity status={job.status} compact />
+                        </div>
                       </div>
-                    </div>
-                    <div className="job-card-url mono" title={job.start_url}>
-                      {job.start_url}
-                    </div>
-                    <div className="job-card-foot">
-                      <span className="muted">{job.mode}</span>
-                      <Link className="btn" to={`/jobs/${job.id}`}>
-                        Open
-                      </Link>
-                    </div>
+                      <div className="job-card-url mono" title={job.start_url}>
+                        {job.start_url}
+                      </div>
+                      <div className="job-card-foot">
+                        <span className="job-card-mode">{modeLabel(job.mode)}</span>
+                        <span className="job-card-open">Open →</span>
+                      </div>
+                    </Link>
                   </li>
                 ))}
               </ul>
@@ -95,7 +137,7 @@ export default function DashboardPage() {
             </>
           )}
         </section>
-        <section className="card">
+        <section className="card desktop-only">
           <h2>Quick start</h2>
           <p className="muted">
             Confirm authorization, pick a mode, choose a bundled wordlist (or upload your own), tune speed, then
@@ -104,20 +146,7 @@ export default function DashboardPage() {
           <Link className="btn primary" to="/scans/new">
             New scan
           </Link>
-          <div className="stats" style={{ marginTop: "1.25rem" }}>
-            <div className="stat">
-              <div className="stat-num">{jobs.length}</div>
-              <div className="stat-label">Jobs</div>
-            </div>
-            <div className="stat">
-              <div className="stat-num">{jobs.filter((j) => j.status === "running").length}</div>
-              <div className="stat-label">Running</div>
-            </div>
-            <div className="stat">
-              <div className="stat-num">{jobs.filter((j) => j.status === "completed").length}</div>
-              <div className="stat-label">Done</div>
-            </div>
-          </div>
+          <div style={{ marginTop: "1.25rem" }}>{stats}</div>
         </section>
       </div>
     </div>
