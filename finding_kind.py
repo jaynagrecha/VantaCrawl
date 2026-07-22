@@ -19,6 +19,7 @@ _VULN_CATEGORIES = frozenset(
         "directory_traversal",
         "open_redirect",
         "csrf",
+        "idor",
         "authentication",
         "http_methods",
         "cors",
@@ -55,7 +56,22 @@ def classify_finding_kind(
     impact_l = (impact or "").lower().strip()
     detail_l = (detail or "").lower()
 
-    if cat in _HARDENING_CATEGORIES or role_l in _HARDENING_ROLES:
+    abuse_proven = (
+        "live abuse" in detail_l
+        or ("storage" in detail_l and "listable" in detail_l)
+        or "project config readable" in detail_l
+        or ("places api" in detail_l and "unrestricted" in detail_l)
+    )
+
+    # Client key with proven abuse is a vulnerability even if role says client_public_key
+    if cat == "secrets_exposure" and abuse_proven and severity in ("critical", "high", "medium"):
+        return "vulnerability"
+
+    if cat in _HARDENING_CATEGORIES or (
+        role_l in _HARDENING_ROLES and not (cat == "secrets_exposure" and abuse_proven)
+    ):
+        if role_l == "client_public_key" and abuse_proven and severity in ("high", "medium"):
+            return "vulnerability"
         return "hardening"
 
     # Client Google/Firebase keys stay hardening unless live abuse was proven
@@ -72,13 +88,21 @@ def classify_finding_kind(
             "no_impact",
         ):
             return "hardening"
-        if "aiza" in detail_l or "firebase" in detail_l or "google" in detail_l:
+        if "firebase" in detail_l or "google" in detail_l or "aiza" in detail_l:
             if severity in ("info", "low"):
                 return "hardening"
         if severity in ("critical", "high"):
             return "vulnerability"
         if severity == "medium" and impact_l in ("possible_credential", "stealable_credential"):
             return "vulnerability"
+        return "hardening"
+
+    if cat == "csrf":
+        if severity in ("info", "low") or "hardening" in detail_l or role_l == "hardening":
+            return "hardening"
+        return "vulnerability"
+
+    if cat == "idor" and severity in ("info",) and "candidate" in detail_l:
         return "hardening"
 
     if cat in _VULN_CATEGORIES:

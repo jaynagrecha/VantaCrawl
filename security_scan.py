@@ -1414,8 +1414,12 @@ def run_passive_vuln_scan(
     forms: Optional[List[dict]],
     headers: dict,
     content_type: str = "",
+    *,
+    cookies: Optional[List[dict]] = None,
 ) -> List[Finding]:
     """Run passive scanners. Each finding includes exact matched-pattern evidence."""
+    from exploit_probes import scan_csrf, scan_idor_passive, scan_js_sensitive_routes
+
     findings: List[Finding] = []
     findings.extend(scan_sql_injection(url, body_text, forms))
     findings.extend(scan_xss(url, body_text, forms))
@@ -1427,6 +1431,16 @@ def run_passive_vuln_scan(
     findings.extend(scan_authentication_flaws(url, headers, body_text))
     findings.extend(scan_api_leaks(url, body_text, headers, content_type))
     findings.extend(scan_mixed_content(url, body_text))
+    findings.extend(scan_csrf(url, forms, headers, cookies=cookies))
+    findings.extend(scan_idor_passive(url))
+    ct = (content_type or "").lower()
+    path = (urlparse(url).path or "").lower()
+    if (
+        "javascript" in ct
+        or path.endswith((".js", ".mjs", ".cjs"))
+        or (body_text and ("fetch(" in body_text or "axios." in body_text or "firebase" in body_text.lower()))
+    ):
+        findings.extend(scan_js_sensitive_routes(url, body_text))
     # Secrets are handled once via config.secret_scan → scan_secrets (avoid double-fire)
     return findings
 
@@ -1664,6 +1678,13 @@ async def run_active_vuln_probes(
 
     # GraphQL introspection confirmation (POST)
     findings.extend(await confirm_graphql_introspection(client, url))
+    # IDOR object-id mutation (multi-signal)
+    try:
+        from exploit_probes import probe_idor
+
+        findings.extend(await probe_idor(client, url, max_params=min(4, max_params)))
+    except Exception:
+        pass
     return findings
 
 

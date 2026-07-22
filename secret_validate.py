@@ -69,8 +69,20 @@ async def validate_secret(label: str, value: str, *, client: Any = None) -> Vali
             return await _virustotal(http, token)
         if "shodan" in label_l:
             return await _shodan(http, token)
-        if token.startswith("AIza") or "google" in label_l:
-            return await _google_api_key(http, token)
+        if token.startswith("AIza") or "google" in label_l or "firebase" in label_l:
+            google = await _google_api_key(http, token)
+            if google.status == "active":
+                return google
+            if "firebase" in label_l:
+                from exploit_probes import validate_firebase_abuse
+
+                fb = await validate_firebase_abuse(http, token)
+                if fb.status == "active":
+                    return fb
+                if google.status != "skipped":
+                    return google
+                return fb
+            return google
         if "twilio" in label_l and len(token) == 32:
             return _result("unknown", "Twilio Auth Token needs Account SID for a live check")
         if token.startswith("npm_") or "npm" in label_l:

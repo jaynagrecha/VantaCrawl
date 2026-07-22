@@ -576,7 +576,16 @@ def assess_open_redirect(detail: str, severity: str) -> ImpactResult:
 
 def assess_active_vuln(category: str, detail: str, severity: str) -> ImpactResult:
     role = category or "vuln"
-    if _is_active_confirmed(detail):
+    d = _detail_l(detail)
+    if role == "idor" and "candidate" in d and "active" not in d:
+        return ImpactResult(
+            role="idor",
+            impact="informational",
+            severity="info",
+            summary="Object-id parameter is an IDOR candidate — not confirmed until mutation proof.",
+            validation="unverified",
+        )
+    if _is_active_confirmed(detail) or (role == "idor" and "active idor" in d):
         return ImpactResult(
             role=role,
             impact="confirmed",
@@ -611,6 +620,22 @@ def assess_active_vuln(category: str, detail: str, severity: str) -> ImpactResul
 
 def assess_api_leak(detail: str, severity: str) -> ImpactResult:
     d = _detail_l(detail)
+    if "firebase" in d and ("storage" in d or "identity toolkit" in d or "listable" in d):
+        return ImpactResult(
+            role="api_leak",
+            impact="confirmed",
+            severity=severity if severity in ("medium", "high") else "medium",
+            summary="Firebase surface confirmed readable/listable with client API key.",
+            validation="confirmed",
+        )
+    if "sensitive route referenced" in d:
+        return ImpactResult(
+            role="api_leak",
+            impact="possible",
+            severity=severity or "low",
+            summary="Sensitive client-side route reference — verify authz on the live endpoint.",
+            validation="unverified",
+        )
     if "graphql" in d and ("schema json" in d or "__schema" in d or "querytype" in d):
         return ImpactResult(
             role="api_leak",
@@ -659,6 +684,25 @@ def assess_api_leak(detail: str, severity: str) -> ImpactResult:
         summary="API/debug path pattern without body proof — suppressed.",
         validation="unverified",
         suppress=True,
+    )
+
+
+def assess_csrf(detail: str, severity: str) -> ImpactResult:
+    d = _detail_l(detail)
+    if "session cookie" in d or "precise csrf" in d:
+        return ImpactResult(
+            role="csrf",
+            impact="possible",
+            severity=severity if severity in ("medium", "high") else "medium",
+            summary="State-changing form lacks CSRF token while a session cookie is present.",
+            validation="unverified",
+        )
+    return ImpactResult(
+        role="hardening",
+        impact="informational",
+        severity="info",
+        summary="State-changing form without CSRF token — hardening until session cookie + exploit path is shown.",
+        validation="unverified",
     )
 
 
@@ -788,8 +832,10 @@ async def assess_finding(
         return assess_mixed_content(detail, severity)
     if cat == "open_redirect":
         return assess_open_redirect(detail, severity)
-    if cat in ("sql_injection", "xss", "ssrf", "directory_traversal", "path_traversal", "rce", "form_probe"):
+    if cat in ("sql_injection", "xss", "ssrf", "directory_traversal", "path_traversal", "rce", "form_probe", "idor"):
         return assess_active_vuln(cat, detail, severity)
+    if cat == "csrf":
+        return assess_csrf(detail, severity)
     if cat == "api_leak":
         return assess_api_leak(detail, severity)
     if cat == "http_methods":
