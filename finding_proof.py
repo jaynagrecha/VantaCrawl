@@ -10,7 +10,7 @@ Only VERIFIED+ may raise above the detection ceiling (usually info/low).
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 # Detection ceiling: unverified detections stay at/below this unless verified
 _DETECTION_CEILING = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
