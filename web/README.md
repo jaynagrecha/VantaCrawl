@@ -61,29 +61,55 @@ cd ../
 docker compose up --build
 ```
 
-## Render
+## Render (current production layout)
 
-`render.yaml` at repo root defines:
+Live stack (Oregon):
 
-- Postgres
-- Redis (Key Value)
-- Web service (`vantacrawl-api`) — UI + API + **embedded job worker** (`EMBED_WORKER=true`)
+| Service | Role | Typical plan |
+|---------|------|----------------|
+| `vantacrawl-api` | FastAPI + SPA, job API, WebSockets | **Standard** (2 GB / 1 CPU) |
+| `vantacrawl-worker` | Queue consumer — runs crawls / enum / Chrome | **Standard** (2 GB / 1 CPU) |
+| `vantacrawl-db` | Postgres 16 | Often still **Free** until upgraded |
+| `vantacrawl-redis` | Valkey / Redis queue + pub/sub | Often still **Free** until upgraded |
 
-Render free plans cannot create Background Workers, so the queue consumer runs inside the web process. On a paid plan you can set `EMBED_WORKER=false` and run `python web/worker/worker.py` separately.
+`render.yaml` at repo root defines these. Blueprint-managed env vars sync on deploy; secrets marked `sync: false` stay in the Dashboard.
 
-Set in Dashboard (sync: false):
+### Worker handoff (important)
+
+With `vantacrawl-worker` Live, the web service must **not** also consume the queue:
+
+- Set **`EMBED_WORKER=false`** on `vantacrawl-api` (blueprint default is now `false`).
+- If both are `true`, two consumers fight over the same Redis jobs.
+
+Confirm in Dashboard → `vantacrawl-api` → Environment after the next deploy.
+
+### Persistent disk (web)
+
+`vantacrawl-api` mounts a **10 GB** disk at `/opt/render/project/src/web/data` (same as `DATA_DIR` / `REPORTS_DIR` / `JOBS_DIR`). Reports and job uploads survive redeploys. Disk size can grow later; it cannot shrink.
+
+Wordlist catalogs under repo `Wordlist/` are in the git checkout (not the disk).
+
+### Browser / Selenium
+
+Both web and worker builds run `scripts/install_chrome_linux.sh` (Chrome for Testing). The **worker** is where scans actually run Chromium. On Standard (2 GB) headless Chrome is practical for normal pages; if the binary is missing, the worker logs one skip line and continues over HTTP.
+
+### Data-plane plans to watch
+
+Compute can be Standard while **Postgres / Redis stay Free**:
+
+- **Postgres Free** expires after ~30 days unless upgraded — upgrade before the Dashboard expiry date or you lose job history / users.
+- **Key Value Free** is tiny (e.g. ~25 MB, low connection limit). Fine for light queues; upgrade if you see Redis connection errors under concurrent scans.
+
+### Dashboard secrets (`sync: false`)
 
 - `ADMIN_EMAIL`, `ADMIN_PASSWORD`
 - `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`
 - `PUBLIC_BASE_URL` = your `https://….onrender.com`
 
-**Storage:** free Render filesystems are ephemeral — `DATA_DIR` / `REPORTS_DIR` / `JOBS_DIR` reset on redeploy or spin-down. Attach a persistent disk (paid) mounting at `web/data`, or sync reports to object storage. Wordlist catalogs under repo `Wordlist/` survive deploys.
+### Security / ops notes
 
-**Browser render:** the build runs `scripts/install_chrome_linux.sh` (Chrome for Testing). If Chrome is missing at runtime, scans continue over HTTP and log one skip line. Free-tier RAM may still OOM on heavy JS pages.
-
-**SSRF guard:** job `start_url` / targets that resolve to loopback, private, link-local, or cloud metadata addresses are rejected.
-
-**Health:** `GET /api/health` checks API, database, Redis, and the embedded worker thread.
+- **SSRF guard:** job `start_url` / targets that resolve to loopback, private, link-local, or cloud metadata addresses are rejected.
+- **Health:** `GET /api/health` checks API, database, Redis, and (only if embedded) the in-process worker thread. With `EMBED_WORKER=false`, expect `embedded_worker: null` while Redis/DB stay green.
 
 ## Gmail SMTP
 

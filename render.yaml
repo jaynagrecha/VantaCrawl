@@ -3,9 +3,8 @@
 # Concurrent scans: MAX_CONCURRENT_SCANS=8 (raise further in Dashboard if needed).
 # Per-user cap: MAX_CONCURRENT_SCANS_PER_USER=1.
 #
-# Web embeds the job consumer (EMBED_WORKER=true). If you run the dedicated
-# Background Worker below, set EMBED_WORKER=false on the web service so jobs
-# are not double-consumed.
+# Production layout: vantacrawl-api (web + disk) + vantacrawl-worker (scans).
+# Keep EMBED_WORKER=false on the web service so the dedicated worker owns the queue.
 #
 # Set secret env vars in the Dashboard (do not commit real SMTP/admin secrets).
 # If the Live service is named differently (e.g. santascan-api), set the same
@@ -58,7 +57,7 @@ services:
       - key: PYTHONPATH
         value: /opt/render/project/src:/opt/render/project/src/web/api
       - key: EMBED_WORKER
-        value: "true"
+        value: "false"
       - key: MAX_CONCURRENT_SCANS
         value: "8"
       - key: MAX_CONCURRENT_SCANS_PER_USER
