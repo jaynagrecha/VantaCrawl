@@ -16,6 +16,18 @@ def test_simplify_hit_line():
     assert "blocked" in line
 
 
+def test_simplify_enum_followup_curl28():
+    line = simplify_log_line(
+        "Hit follow-up scan failed: https://app.netlify.app/a.zip "
+        "(Failed to perform, curl: (28) Connection timed out after 12001 milliseconds. "
+        "See https://curl.se/libcurl/c/libcurl-errors.html)"
+    )
+    assert "https://app.netlify.app/a.zip" in line
+    assert "curl 28" in line
+    assert "directory scan can continue" in line
+    assert "Failed to perform" not in line
+
+
 def test_simplify_finding_line():
     line = simplify_log_line(
         "FINDING [high] sql_injection: https://example.com?id=1 — SQL error pattern in response body"
