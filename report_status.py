@@ -22,33 +22,44 @@ def scan_status_from_stats(stats: Any) -> Dict[str, Any]:
     pages = int(getattr(stats, "pages_crawled", 0) or 0)
     enum_total = int(getattr(stats, "enum_words_total", 0) or 0)
     enum_done = int(getattr(stats, "enum_words_tested", 0) or 0)
+
+    enum_configured = bool(
+        getattr(stats, "enum_configured", None)
+        if getattr(stats, "enum_configured", None) is not None
+        else getattr(stats, "_directory_enum_enabled", None)
+        if getattr(stats, "_directory_enum_enabled", None) is not None
+        else (enum_total > 0 or bool(getattr(stats, "enum_started_at", None)))
+    )
     enum_started = bool(
         getattr(stats, "_directory_enum_started", None)
-        if hasattr(stats, "_directory_enum_started")
+        if getattr(stats, "_directory_enum_started", None) is not None
         else getattr(stats, "enum_started_at", None)
     )
-    enum_enabled = bool(
-        getattr(stats, "_directory_enum_enabled", None)
-        if hasattr(stats, "_directory_enum_enabled")
-        else (enum_total > 0 or enum_started)
+    enum_complete = bool(
+        getattr(stats, "enum_complete", None)
+        if getattr(stats, "enum_complete", None) is not None
+        else (enum_started and enum_total > 0 and enum_done >= enum_total)
     )
+    enum_skip_reason = getattr(stats, "enum_skip_reason", None)
+
+    # Legacy alias — do NOT treat "enabled=false" as "configured but not started"
+    enum_enabled = enum_configured
+
     finished = bool(getattr(stats, "finished_at", None))
     crawl_complete = remaining <= 0 and pages > 0
-    enum_complete = (not enum_enabled) or (enum_total > 0 and enum_done >= enum_total)
 
     explicit = str(getattr(stats, "_scan_status", "") or "").strip().lower()
     if explicit in ("partial", "final", "stopped"):
         status = explicit
-    elif finished and crawl_complete and enum_complete:
+    elif finished and crawl_complete and (enum_complete or not enum_configured):
         status = "final"
     elif finished:
         status = "stopped"
     else:
         status = "partial"
 
-    # Rough completion: blend crawl queue drain + enum progress when applicable
     crawl_pct = 100.0 if crawl_complete else max(0.0, min(95.0, 100.0 * pages / max(pages + remaining, 1)))
-    if enum_enabled and enum_total > 0:
+    if enum_configured and enum_total > 0:
         enum_pct = min(100.0, 100.0 * enum_done / enum_total)
         completion = round(0.7 * crawl_pct + 0.3 * enum_pct, 1)
     else:
@@ -57,29 +68,29 @@ def scan_status_from_stats(stats: Any) -> Dict[str, Any]:
     if status == "final":
         phase = "complete"
     elif enum_started and not crawl_complete:
-        phase = "crawl"
-    elif enum_started:
+        phase = "crawl+enum"
+    elif enum_started and crawl_complete and not enum_complete:
         phase = "enum"
     elif pages > 0:
         phase = "crawl"
     else:
         phase = "starting"
 
-    if not enum_started:
-        if status in ("partial", "stopped") or not finished:
-            enum_message = (
-                "Directory enumeration not started because the crawl phase was still in progress."
-            )
-        else:
-            enum_message = "Directory enumeration disabled for this scan."
-    elif enum_total > 0 and enum_done < enum_total and status != "final":
+    if not enum_configured:
+        enum_message = "Directory enumeration disabled for this scan."
+    elif enum_skip_reason:
+        enum_message = f"Directory enumeration did not complete ({enum_skip_reason})."
+    elif not enum_started:
+        enum_message = (
+            "Directory enumeration configured but not started yet "
+            "(runs in parallel after initial crawl pages)."
+        )
+    elif enum_total > 0 and enum_done < enum_total and not enum_complete:
         enum_message = (
             f"Directory enumeration in progress ({enum_done:,}/{enum_total:,} words)."
         )
     elif enum_complete and enum_total > 0:
         enum_message = f"Directory enumeration completed ({enum_done:,} words tested)."
-    elif not enum_enabled:
-        enum_message = "Directory enumeration disabled for this scan."
     else:
         enum_message = "Directory enumeration status unavailable."
 
@@ -89,6 +100,12 @@ def scan_status_from_stats(stats: Any) -> Dict[str, Any]:
         "completion_percent": completion if status != "final" else 100.0,
         "remaining_jobs": remaining,
         "report_generated_during_scan": status == "partial",
+        # New explicit state model
+        "enum_configured": enum_configured,
+        "enum_started": enum_started,
+        "enum_complete": enum_complete,
+        "enum_skip_reason": enum_skip_reason,
+        # Legacy aliases for older report templates
         "directory_enum_enabled": enum_enabled,
         "directory_enum_started": enum_started,
         "directory_enum_message": enum_message,
@@ -121,6 +138,8 @@ def assessment_state_for_finding(
         return "Attack-surface observation"
     if "deep-link flow" in detail_l or "password-reset deep-link" in detail_l:
         return "Attack-surface observation"
+    if "source-to-sink flow not established" in detail_l or "potential dom execution sink" in detail_l:
+        return "Needs manual validation"
     if kind == "hardening" or cat in ("header_audit", "bot_management", "http_methods"):
         return "Informational technology finding"
     if ver in ("exploitable", "confirmed") or val == "confirmed":
@@ -152,7 +171,6 @@ def demonstrated_severity_counts(findings: list) -> Dict[str, int]:
         imp = str(f.get("impact") or "").lower()
         sev = str(f.get("severity") or "info").lower()
         cat = str(f.get("category") or "").lower()
-        # Unverified inventory / attack-surface must not drive High Risk
         if cat in ("file_upload", "rate_limit", "mass_assignment") and ver not in (
             "exploitable",
             "confirmed",
@@ -163,7 +181,6 @@ def demonstrated_severity_counts(findings: list) -> Dict[str, int]:
             "high",
             "critical",
         ):
-            # Downgrade contribution: treat as medium/info for risk rollup
             continue
         if ver in ("exploitable", "confirmed") or val == "confirmed" or imp in (
             "confirmed",

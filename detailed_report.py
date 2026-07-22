@@ -92,7 +92,14 @@ def _takeaways(stats: CrawlStats, finding_groups: List[dict], defense: Optional[
     if defense and defense.get("gap_rate_percent", 0) > 50:
         items.append("Bot/WAF catch rate looks low — many requests completed without a challenge signal.")
     if stats.broken_links:
-        items.append(f"{len(stats.broken_links)} broken link(s) sampled.")
+        summary = CrawlStats.summarize_broken_links(stats.broken_links)
+        items.append(
+            f"{summary.get('unique_urls', 0)} unique broken/denied URL(s) "
+            f"({summary.get('unique_404', 0)}×404, "
+            f"{summary.get('unique_access_denied', 0)}×access-denied, "
+            f"{summary.get('unique_fetch_errors', 0)}×fetch-error; "
+            f"{summary.get('rows_total', 0)} raw row(s))."
+        )
     if not items:
         items.append("No urgent standout items; review the chapters below for coverage details.")
     return items[:8]
@@ -171,6 +178,9 @@ def build_report_model(
         "enum_hits": list(stats.enum_hit_urls),
         "sensitive": list(stats.sensitive_urls),
         "broken": list(stats.broken_links),
+        "broken_summary": CrawlStats.summarize_broken_links(stats.broken_links),
+        "route_templates": list(getattr(stats, "route_templates", []) or []),
+        "request_ledger_count": len(getattr(stats, "request_ledger", []) or []),
         "historical": list(stats.historical_seed_urls),
         "subdomains": list(stats.subdomain_urls),
         "js_routes": list(stats.js_route_urls),
@@ -243,7 +253,11 @@ def render_detailed_text(model: Dict[str, Any]) -> str:
     lines.append(f"  • Sensitive paths:        {len(model['sensitive']):,}")
     lines.append(f"  • Subdomains found:       {len(model['subdomains']):,}")
     lines.append(f"  • Cloud bucket hits:      {len(model['s3']) + len(model['gcs']):,}")
-    lines.append(f"  • Broken links (sample):  {len(model['broken']):,}")
+    lines.append(
+        f"  • Broken links (unique):  "
+        f"{(model.get('broken_summary') or {}).get('unique_urls', len(model['broken'])):,}"
+        f"  (raw rows {len(model['broken']):,})"
+    )
     lines.append(f"  • Data downloaded:        {_format_bytes(int(model.get('bytes_downloaded') or 0))}")
     lines.append(f"  • Note: {model['noise_note']}")
     lines.append("")

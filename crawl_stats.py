@@ -49,6 +49,9 @@ class CrawlStats:
     technologies: Counter = field(default_factory=Counter)
     findings: List[Dict[str, Any]] = field(default_factory=list)
     broken_links: List[Dict[str, str]] = field(default_factory=list)
+    # Append-only request ledger (capped) for auditable aggregates
+    request_ledger: List[Dict[str, Any]] = field(default_factory=list)
+    _request_ledger_cap: int = 8000
     sensitive_urls: List[str] = field(default_factory=list)
     forms: List[Dict[str, Any]] = field(default_factory=list)
     parameters: List[Dict[str, Any]] = field(default_factory=list)
@@ -160,6 +163,88 @@ class CrawlStats:
             self.enum_status_codes[status_code] += 1
         else:
             self.status_codes[status_code] += 1
+
+    def record_request(
+        self,
+        *,
+        phase: str = "crawl",
+        source: str = "",
+        url: str = "",
+        depth: int = 0,
+        status: Any = None,
+        final_url: str = "",
+        response_type: str = "",
+        bytes_: int = 0,
+        content_hash: str = "",
+        duration_ms: float = 0.0,
+        outcome: str = "",
+    ) -> None:
+        """Append-only request ledger row (fetch-queue inventory stays separate)."""
+        if len(self.request_ledger) >= int(getattr(self, "_request_ledger_cap", 8000) or 8000):
+            return
+        self.request_ledger.append(
+            {
+                "phase": phase,
+                "source": source,
+                "url": url,
+                "canonical_url": url,
+                "depth": int(depth or 0),
+                "status": status,
+                "final_url": final_url or url,
+                "response_type": response_type,
+                "bytes": int(bytes_ or 0),
+                "hash": content_hash,
+                "duration_ms": float(duration_ms or 0.0),
+                "outcome": outcome,
+                "ts": time.time(),
+            }
+        )
+
+    @staticmethod
+    def summarize_broken_links(rows: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """Unique broken-link tallies — never inflate by repeated rows."""
+        rows = list(rows or [])
+        by_url: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            url = str(row.get("url") or "").strip()
+            if not url:
+                continue
+            by_url[url] = row
+        unique = list(by_url.values())
+        class_counts: Counter = Counter()
+        status_counts: Counter = Counter()
+        for row in unique:
+            status = str(row.get("status") or "error")
+            status_counts[status] += 1
+            class_ = str(row.get("class") or "")
+            if not class_:
+                if status == "404":
+                    class_ = "not_found"
+                elif status in ("401", "403", "405"):
+                    class_ = "access_denied"
+                elif status.startswith("5"):
+                    class_ = "temporary_unavailable"
+                elif status == "error":
+                    class_ = "fetch_error"
+                else:
+                    class_ = "other"
+            class_counts[class_] += 1
+        return {
+            "rows_total": len(rows),
+            "unique_urls": len(unique),
+            "by_class": dict(class_counts),
+            "by_status": dict(status_counts),
+            "unique_404": int(class_counts.get("not_found", 0)),
+            "unique_access_denied": int(class_counts.get("access_denied", 0)),
+            "unique_5xx": int(class_counts.get("temporary_unavailable", 0)),
+            "unique_fetch_errors": int(
+                class_counts.get("fetch_error", 0)
+                + class_counts.get("dns_failure", 0)
+                + class_counts.get("connection_failure", 0)
+            ),
+        }
 
     def record_finding(
         self,
@@ -534,6 +619,9 @@ class CrawlStats:
             "enum_status_codes": dict(self.enum_status_codes),
             "findings_count": len(self.findings),
             "broken_links_count": len(self.broken_links),
+            "broken_links_summary": self.summarize_broken_links(self.broken_links),
+            "request_ledger_count": len(self.request_ledger),
+            "request_ledger_cap": int(getattr(self, "_request_ledger_cap", 8000) or 8000),
             "technologies": dict(self.technologies.most_common(20)),
             "paused": self.paused,
             "backoff_remaining_seconds": round(backoff_rem, 1),

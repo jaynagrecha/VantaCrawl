@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import time
 from collections import Counter
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from crawl_stats import CrawlStats
 from finding_explain import group_findings_for_report
+from report_time import format_dual
 from search_report import build_search_conclusion
 
 
@@ -273,7 +273,8 @@ def build_assessment_document(
         "start_url": start_url,
         "host": host,
         "mode": mode or str(meta.get("mode") or meta.get("profile") or "full"),
-        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+        "generated_at": format_dual(),
+        "generated_at_note": "Primary clock is IST (India Standard Time); UTC shown in parentheses.",
         "risk_level": risk_level,
         "exec_headline": exec_headline,
         "verdict_title": conclusion.get("verdict_title") or risk_level,

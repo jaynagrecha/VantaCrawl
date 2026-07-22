@@ -40,7 +40,7 @@ async def run_concurrent_bfs(
             if not queue:
                 return None
             if use_priority:
-                _, _, url = heapq.heappop(queue)
+                url = heapq.heappop(queue)[-1]
                 return url
             return queue.popleft()
 

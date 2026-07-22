@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from html import escape
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from report_time import format_dual
 
 
 def write_summary_report(
@@ -34,7 +35,7 @@ def write_summary_report(
     enum_hits = progress.get("enum_hits", 0) or 0
     enum_urls: List[str] = list(progress.get("enum_hit_urls") or [])[:40]
     findings_preview = list(progress.get("findings_preview") or [])[:40]
-    stamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    stamp = format_dual()
     reason = note or (
         "This scan ended before the full HTML report was generated "
         "(stopped early, force-cancelled, or blocked — e.g. Cloudflare)."
