@@ -731,14 +731,21 @@ async def probe_cloud_urls(client, body_text: str, page_url: str) -> List[Findin
                     _meta("confirmed", "high", confidence="high", confidence_reason="GCS listing markers without auth"),
                 )
             )
-    # Inventory cloudfront/gcp mentions as info
+    # Inventory cloudfront mentions as infrastructure observation (not a misconfig by default)
     if _CLOUDFRONT_RE.search(text) and not any("cloudfront" in f[2].lower() for f in findings):
+        m = _CLOUDFRONT_RE.search(text)
         findings.append(
             (
                 "cloud",
                 "info",
-                "CloudFront origin URL referenced in client assets",
-                _ev(_CLOUDFRONT_RE.search(text).group(0)[:160], label="cloudfront"),
+                "Cloud/CDN dependency observed (CloudFront) — security status not assessed",
+                _ev(m.group(0)[:160] if m else "cloudfront", label="cloudfront"),
+                _meta(
+                    "detected",
+                    "info",
+                    confidence="low",
+                    confidence_reason="Intentional third-party CDN reference; not a proven misconfiguration",
+                ),
             )
         )
     return findings

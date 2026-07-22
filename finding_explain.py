@@ -521,7 +521,7 @@ EXPLAINERS: List[Tuple[tuple, Dict[str, str]]] = [
         },
     ),
     (
-        ("cloud", "s3", "blob", "lambda-url", "cloudfront"),
+        ("cloud", "s3", "blob", "lambda-url"),
         {
             "title": "Cloud misconfiguration",
             "what": (
@@ -532,6 +532,24 @@ EXPLAINERS: List[Tuple[tuple, Dict[str, str]]] = [
             ),
             "fix": (
                 "Block anonymous list/read; tighten IAM/ACLs; keep Function URLs private or authenticated."
+            ),
+        },
+    ),
+    (
+        ("cloudfront", "cdn dependency", "cloud/cdn dependency"),
+        {
+            "title": "Cloud/CDN dependency observed",
+            "what": (
+                "Client assets reference a CloudFront or similar CDN hostname. This is typically an "
+                "intentional third-party dependency, not evidence of a cloud misconfiguration."
+            ),
+            "attacker": (
+                "CDN hostnames alone do not grant access; treat as infrastructure inventory unless "
+                "anonymous list/read of private objects is proven."
+            ),
+            "fix": (
+                "No action required for intentionally public CDN resources. Assess only if private "
+                "buckets or signed-URL bypasses are demonstrated."
             ),
         },
     ),
@@ -610,7 +628,7 @@ def explain_finding(category: str = "", detail: str = "") -> Dict[str, str]:
         "idor": ("idor", "insecure direct object"),
         "well_known": ("well_known",),
         "cloud_url": ("cloud_url", "firebase", "supabase", "azure"),
-        "cloud": ("cloud", "s3", "blob", "lambda-url", "cloudfront"),
+        "cloud": ("cloud", "s3", "blob", "lambda-url", "cloudfront", "cdn dependency"),
         "file_metadata": ("file_metadata", "gps", "exif", "author"),
         "oauth": ("oauth", "redirect_uri", "missing state", "token leakage", "sso"),
         "jwt": ("jwt", "alg=none", "alg confusion"),
@@ -639,6 +657,13 @@ def explain_finding(category: str = "", detail: str = "") -> Dict[str, str]:
 
     preferred = category_aliases.get(cat)
     if preferred:
+        # CloudFront CDN references are infrastructure observations, not S3 misconfigs
+        if cat == "cloud" and (
+            "cloudfront" in detail_l or "cdn dependency" in detail_l or "not assessed" in detail_l
+        ):
+            for keys, payload in EXPLAINERS:
+                if "cloudfront" in keys or "cdn dependency" in keys:
+                    return dict(payload)
         # Cookie impact findings share category=authentication — match on detail first.
         if cat == "authentication":
             cookie_detail_keys = (

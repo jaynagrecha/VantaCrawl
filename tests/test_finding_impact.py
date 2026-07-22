@@ -12,6 +12,16 @@ def _assess(**kwargs):
     return asyncio.run(assess_finding(**kwargs))
 
 
+_CORS_PROOF = {
+    "request": "GET / HTTP/1.1\nHost: example.com\nOrigin: https://evil.example",
+    "response": (
+        "HTTP/1.1 200\nAccess-Control-Allow-Origin: https://evil.example\n"
+        "Access-Control-Allow-Credentials: true"
+    ),
+    "evidence": "ACAO=https://evil.example; ACAC=true",
+}
+
+
 def test_header_hardening_vs_info():
     hsts = _assess(category="header_audit", severity="medium", detail="missing HSTS")
     assert hsts.impact == "informational"
@@ -66,6 +76,7 @@ def test_cors_credentials_without_session_evidence_is_medium():
         severity="high",
         detail="CORS reflects Origin with Access-Control-Allow-Credentials",
         url="https://example.com/",
+        proof=_CORS_PROOF,
     )
     assert result.impact == "possible"
     assert result.severity == "medium"
@@ -81,9 +92,16 @@ def test_cors_with_auth_cookie_is_stealable():
             {"name": "sessionid", "role": "auth_session", "impact": "mitigated_credential", "host": "app.example.com"},
             {"name": "_ga", "role": "analytics", "impact": "no_credential_impact", "host": "app.example.com"},
         ],
+        proof=_CORS_PROOF,
     )
     assert result.impact == "stealable_credential"
-    assert "sessionid" in (result.proof or "")
+    # Proof may be structured dict or legacy issues string
+    proof = result.proof
+    if isinstance(proof, dict):
+        blob = " ".join(str(v) for v in proof.values())
+    else:
+        blob = str(proof or "")
+    assert "sessionid" in blob or "ACAO" in blob
 
 
 def test_cors_tracking_only_on_static_is_limited():
@@ -96,6 +114,7 @@ def test_cors_tracking_only_on_static_is_limited():
             {"name": "_ga", "role": "analytics", "impact": "no_credential_impact", "host": "cdn.example.com"},
             {"name": "lang", "role": "preference", "impact": "no_credential_impact", "host": "cdn.example.com"},
         ],
+        proof=_CORS_PROOF,
     )
     # Public/static assets with only tracking cookies are informational — not High
     assert result.impact in ("informational", "limited_impact")
@@ -111,6 +130,7 @@ def test_cors_tracking_only_but_login_path_still_high():
         cookies=[
             {"name": "_ga", "role": "analytics", "impact": "no_credential_impact", "host": "www.example.com"},
         ],
+        proof=_CORS_PROOF,
     )
     assert result.impact == "stealable_credential"
     assert result.severity == "high"

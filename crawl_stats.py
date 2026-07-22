@@ -68,6 +68,8 @@ class CrawlStats:
     historical_seed_urls: List[str] = field(default_factory=list)
     subdomain_urls: List[str] = field(default_factory=list)
     js_route_urls: List[str] = field(default_factory=list)
+    route_templates: List[str] = field(default_factory=list)
+    protection_artifacts: List[str] = field(default_factory=list)
     openapi_doc_urls: List[str] = field(default_factory=list)
     openapi_endpoints: List[str] = field(default_factory=list)
     api_endpoint_urls: List[str] = field(default_factory=list)
@@ -206,6 +208,19 @@ class CrawlStats:
         elif category == "authentication" and cookie_name:
             # Same Set-Cookie on every HTML page → one finding per host+cookie name
             dedupe_key = f"authentication|cookie|{host}|{cookie_name}"
+        elif category == "authentication" and evidence_label in (
+            "auth_otp_surface",
+            "auth_email_change",
+            "auth_token_reuse",
+            "otp/mfa",
+            "change-email",
+        ):
+            # Shared JS bundle auth surface refs → one finding per host+signal
+            dedupe_key = f"authentication|surface|{host}|{evidence_label or detail_key[:80]}"
+        elif category == "authentication" and evidence_key and (
+            "otp" in evidence_key or "change-email" in evidence_key or "mfa" in evidence_key
+        ):
+            dedupe_key = f"authentication|surface|{host}|{evidence_key[:80]}"
         elif (
             category == "authentication"
             and evidence_key
@@ -213,6 +228,20 @@ class CrawlStats:
         ):
             # Fallback when detail lacks Cookie `name` — same token value per host
             dedupe_key = f"authentication|cred|{host}|{evidence_key}"
+        elif category == "cloud" and (
+            "cloudfront" in detail_key or evidence_label == "cloudfront"
+        ):
+            # CDN references group by provider + evidence, not per page
+            dedupe_key = f"cloud|cloudfront|{host}|{evidence_key[:120] or detail_key[:80]}"
+        elif category == "file_upload":
+            # Dedupe uploads by endpoint template (path without query)
+            try:
+                from urllib.parse import urlparse as _up
+
+                upath = (_up(url).path or "/").rstrip("/") or "/"
+            except Exception:
+                upath = url
+            dedupe_key = f"file_upload|{host}|{upath}"
         elif category in ("js_intel", "business_logic", "bot_management") or (
             category == "mass_assignment" and sev_l == "info"
         ):
@@ -514,7 +543,11 @@ class CrawlStats:
             "historical_seed_count": len(self.historical_seed_urls),
             "subdomain_count": len(self.subdomain_urls),
             "js_route_count": len(self.js_route_urls),
+            "route_template_count": len(self.route_templates),
+            "protection_artifact_count": len(self.protection_artifacts),
             "openapi_doc_count": len(self.openapi_doc_urls),
+            "discovered_url_export_cap": 5000,
+            "discovered_urls_exported": min(len(self.discovered_urls), 5000),
             "openapi_endpoint_count": len(self.openapi_endpoints),
             "rss_feed_count": len(self.rss_feed_urls),
             "form_count": len(self.forms),
@@ -568,17 +601,50 @@ class CrawlStats:
         return True
 
     def record_cookie_inventory(self, cookies: List[Dict[str, str]], *, limit: int = 200) -> None:
+        """Deduplicate cookies by name+domain+path; track rotations and attribute variations."""
         if not cookies:
             return
-        seen = {(c.get("name", ""), c.get("flags", "")) for c in self.cookie_inventory}
+        index: Dict[tuple, Dict[str, Any]] = {}
+        for existing in self.cookie_inventory:
+            key = (
+                str(existing.get("name") or ""),
+                str(existing.get("domain") or ""),
+                str(existing.get("path") or ""),
+            )
+            if key[0]:
+                index[key] = existing
+        now = time.time()
         for cookie in cookies:
-            key = (cookie.get("name", ""), cookie.get("flags", ""))
-            if not key[0] or key in seen:
+            name = str(cookie.get("name") or "")
+            if not name:
+                continue
+            key = (
+                name,
+                str(cookie.get("domain") or ""),
+                str(cookie.get("path") or ""),
+            )
+            if key in index:
+                row = index[key]
+                row["observed_rotations"] = int(row.get("observed_rotations") or 1) + 1
+                row["last_seen"] = now
+                # Track attribute variations
+                flags = str(cookie.get("flags") or "")
+                variations = row.setdefault("attribute_variations", [])
+                if flags and flags not in variations and len(variations) < 8:
+                    variations.append(flags)
+                # Prefer richer role classification when available
+                if cookie.get("role") and not row.get("role"):
+                    row["role"] = cookie.get("role")
                 continue
             if len(self.cookie_inventory) >= limit:
                 break
-            seen.add(key)
-            self.cookie_inventory.append(cookie)
+            row = dict(cookie)
+            row.setdefault("observed_rotations", 1)
+            row.setdefault("first_seen", now)
+            row["last_seen"] = now
+            row.setdefault("attribute_variations", [str(cookie.get("flags") or "")] if cookie.get("flags") else [])
+            index[key] = row
+            self.cookie_inventory.append(row)
 
     def record_dict_rows(self, attr: str, rows: List[Dict[str, str]], key_fields: tuple, *, limit: int = 300) -> None:
         target: List[Dict[str, str]] = getattr(self, attr)

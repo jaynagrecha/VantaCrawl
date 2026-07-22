@@ -604,6 +604,16 @@ async def run_full_crawl_async(
 
                 body_text = body.decode("utf-8", errors="replace") if body else ""
 
+                # Telemetry: always record status + response bytes for crawl pages
+                try:
+                    status_code_t = int(resp_headers.get("_status_code") or 0) or 0
+                except (TypeError, ValueError):
+                    status_code_t = 0
+                if status_code_t:
+                    stats.record_status(status_code_t, enum=False)
+                if body:
+                    stats.bytes_downloaded += len(body)
+
                 if body:
                     _ingest_file_metadata(
                         stats, current_url, body, content_type, output_callback
@@ -624,9 +634,19 @@ async def run_full_crawl_async(
                             await safe_enqueue(endpoint, link_depth=current_depth + 1)
 
                 if config.js_bundle_analysis and body_text and ("javascript" in content_type or current_url.endswith(".js")):
-                    for route in extract_js_routes(body_text, current_url):
-                        stats.record_url("js", route)
-                        await safe_enqueue(route, link_depth=current_depth + 1)
+                    try:
+                        from discovery_extra import extract_js_route_templates, extract_js_routes
+
+                        for tmpl in extract_js_route_templates(body_text):
+                            if tmpl not in stats.route_templates and len(stats.route_templates) < 2000:
+                                stats.route_templates.append(tmpl)
+                        for route in extract_js_routes(body_text, current_url):
+                            stats.record_url("js", route)
+                            await safe_enqueue(route, link_depth=current_depth + 1)
+                    except Exception:
+                        for route in extract_js_routes(body_text, current_url):
+                            stats.record_url("js", route)
+                            await safe_enqueue(route, link_depth=current_depth + 1)
 
                 if body_text:
                     for map_url in extract_sourcemap_urls(body_text, current_url):
@@ -773,7 +793,7 @@ async def run_full_crawl_async(
                                     update_progress,
                                     return_asset_urls=True,
                                 )
-                            stats.bytes_downloaded += len(body)
+                            # bytes_downloaded already counted at page fetch for telemetry
                             if getattr(config, "mirror_page_assets", True) and asset_urls:
                                 await download_referenced_assets(
                                     client,
@@ -1212,6 +1232,7 @@ async def _run_security_checks(
                     "client": client,
                     "cookies": list(getattr(stats, "cookie_inventory", []) or []),
                     "login_surfaces": list(getattr(stats, "login_surfaces", []) or []),
+                    "proof": out_proof,
                 }
                 # Cap live secret checks
                 if (
@@ -1266,6 +1287,29 @@ async def _run_security_checks(
                             "evidence": str(applied["proof"])[:2000],
                             "impact": impact_summary or "",
                         }
+                # Confirmed requires non-empty request+response proof
+                try:
+                    from finding_proof import downgrade_unproven_confirmation
+
+                    validation, out_verification = downgrade_unproven_confirmation(
+                        validation=str(validation or ""),
+                        verification=str(out_verification or ""),
+                        proof=out_proof,
+                    )
+                    if validation == "unverified" and str(applied.get("validation") or "").lower() == "confirmed":
+                        impact_summary = (
+                            impact_summary
+                            or "Finding lacks raw request/response proof — treated as unverified."
+                        )
+                        if category == "cors":
+                            out_detail = (
+                                "CORS configuration signal — impact unverified"
+                                if "CORS configuration signal" not in str(out_detail)
+                                else out_detail
+                            )
+                            out_severity = "info"
+                except Exception:
+                    pass
                 if not out_verification and validation in (
                     "confirmed",
                     "active",
@@ -1459,10 +1503,20 @@ async def _run_security_checks(
         should_cors = (not static_like) and bool(host_key) and host_key not in cors_hosts
         if should_cors:
             stats._cors_hosts.add(host_key)
-            cors_issue = await check_cors(client, url)
-            if cors_issue:
-                sev = "high" if "credentials" in cors_issue.lower() else "medium"
-                await emit("cors", sev, url, cors_issue)
+            cors_result = await check_cors(client, url)
+            if cors_result:
+                if isinstance(cors_result, tuple) and len(cors_result) >= 2:
+                    cors_issue, cors_proof = cors_result[0], cors_result[1]
+                else:
+                    cors_issue, cors_proof = cors_result, None
+                sev = "high" if "credentials" in str(cors_issue).lower() else "medium"
+                await emit(
+                    "cors",
+                    sev,
+                    url,
+                    cors_issue,
+                    proof=cors_proof if isinstance(cors_proof, dict) else None,
+                )
     # OPTIONS/TRACE once per host
     host = urlparse(url).netloc.lower()
     if host and host not in stats._http_methods_hosts and config.security_scan and config.vuln_scan:

@@ -140,12 +140,19 @@ def classify_finding_kind(
 
 
 def apply_hardening_context(groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Rescore header hardening using co-observed attack findings on the same host."""
+    """Rescore header hardening using co-observed *confirmed* XSS on the same host."""
     xss_hosts: Set[str] = set()
     for g in groups:
         cat = str(g.get("category") or "").lower()
         detail = str(g.get("detail") or "").lower()
-        if cat == "xss" or "xss" in detail or "cross-site scripting" in detail:
+        ver = str(g.get("verification") or "").lower()
+        val = str(g.get("validation") or "").lower()
+        # Only confirmed/verified XSS elevates CSP — not document.cookie heuristics
+        if cat == "xss" or "cross-site scripting" in detail:
+            if ver not in ("confirmed", "verified", "exploitable") and val != "confirmed":
+                continue
+            if "cookie manipulation" in detail or "document.cookie" in detail:
+                continue
             for h in g.get("hosts") or []:
                 xss_hosts.add(str(h).lower())
             for u in g.get("urls") or []:
@@ -170,11 +177,11 @@ def apply_hardening_context(groups: List[Dict[str, Any]]) -> List[Dict[str, Any]
             if "csp" in detail or "content-security" in detail:
                 if hosts & xss_hosts:
                     g["severity"] = "medium"
-                    note = "Elevated: XSS also observed on this host — CSP would limit impact."
+                    note = "Elevated: confirmed XSS also observed on this host — CSP would limit impact."
                     if note.lower() not in str(g.get("detail") or "").lower():
                         g["detail"] = f"{g.get('detail') or ''} [{note}]".strip()
                     g["impact_summary"] = (
-                        "Missing CSP combined with observed XSS — defense-in-depth gap with attack path."
+                        "Missing CSP combined with confirmed XSS — defense-in-depth gap with attack path."
                     )
                 else:
                     g["severity"] = "info"
@@ -182,7 +189,7 @@ def apply_hardening_context(groups: List[Dict[str, Any]]) -> List[Dict[str, Any]
                     g["impact"] = g.get("impact") or "informational"
                     g["impact_summary"] = (
                         g.get("impact_summary")
-                        or "Missing CSP without demonstrated XSS — hardening observation only."
+                        or "Missing CSP without confirmed XSS — defence-in-depth hardening observation only."
                     )
             elif "hsts" in detail or "strict-transport" in detail:
                 g["severity"] = "info"

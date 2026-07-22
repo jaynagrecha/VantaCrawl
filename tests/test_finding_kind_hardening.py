@@ -45,6 +45,8 @@ def test_csp_elevates_when_xss_on_same_host():
                 "hosts": ["app.example"],
                 "role": "finding",
                 "impact": "confirmed",
+                "verification": "confirmed",
+                "validation": "confirmed",
             },
         ]
     )

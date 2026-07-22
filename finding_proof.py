@@ -10,7 +10,7 @@ Only VERIFIED+ may raise above the detection ceiling (usually info/low).
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 # Detection ceiling: unverified detections stay at/below this unless verified
 _DETECTION_CEILING = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
@@ -118,15 +118,45 @@ def proof_from_http(
     evidence: str = "",
     impact: str = "",
     request_extra: str = "",
+    response_headers: str = "",
 ) -> FindingProof:
     req = f"{method.upper()} {url}"
     if request_extra:
-        req = f"{req} | {request_extra}"
+        req = f"{req}\n{request_extra}" if "\n" in request_extra or ":" in request_extra else f"{req} | {request_extra}"
     resp = f"HTTP {status}"
+    if response_headers:
+        resp = f"{resp}\n{response_headers}"
     if body_snippet:
         snippet = re_sub_ws(body_snippet)[:400]
-        resp = f"{resp}: {snippet}"
+        resp = f"{resp}\n{snippet}" if response_headers else f"{resp}: {snippet}"
     return FindingProof(request=req, response=resp, evidence=evidence, impact=impact)
+
+
+def proof_has_http_exchange(proof: Any) -> bool:
+    """True when proof carries non-empty raw request and response (required for confirmed)."""
+    if proof is None:
+        return False
+    if isinstance(proof, FindingProof):
+        return bool((proof.request or "").strip() and (proof.response or "").strip())
+    if isinstance(proof, dict):
+        return bool(str(proof.get("request") or "").strip() and str(proof.get("response") or "").strip())
+    return False
+
+
+def downgrade_unproven_confirmation(
+    *,
+    validation: str,
+    verification: str = "",
+    proof: Any = None,
+) -> tuple[str, str]:
+    """Confirmed findings without request/response proof become unverified/detected."""
+    val = (validation or "").lower()
+    ver = (verification or "").lower()
+    if val == "confirmed" and not proof_has_http_exchange(proof):
+        return "unverified", "detected"
+    if ver == "confirmed" and not proof_has_http_exchange(proof):
+        return (val if val and val != "confirmed" else "unverified"), "detected"
+    return validation, verification or validation
 
 
 def re_sub_ws(text: str) -> str:

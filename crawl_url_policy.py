@@ -596,3 +596,156 @@ def host_in_exact_origin_scope(url: str, start_url: str) -> bool:
         return (a.netloc or "").lower() == (b.netloc or "").lower()
     except Exception:
         return False
+
+
+# --- JavaScript string → URL classification (safer than blind urljoin) --------
+
+PLACEHOLDER_PATTERN = re.compile(
+    r"(\[[^\]]+\]|\{[^}]+\}|<[^>]+>|:\w+|\[\[[^\]]+\]\])"
+)
+
+_STATIC_ASSET_HINT_RE = re.compile(
+    r"(?i)(?:^|/)_next/static/|/static/chunks/|/chunks/|/\.map$|\.(?:js|mjs|css|woff2?|png|jpe?g|gif|svg|webp)(?:$|\?)"
+)
+
+_ANALYTICS_PATH_RE = re.compile(
+    r"(?i)^/\d{8,}/(?:wu_web|gtm|analytics|pixel|events?)/|"
+    r"^/(?:collect|g/collect|pagead|gtag|beacon|telemetry)/"
+)
+
+_AKAMAI_CHALLENGE_SEG_RE = re.compile(
+    r"(?i)^/(?:[A-Za-z0-9_-]{16,}/){1,}[A-Za-z0-9_-]{8,}(?:/|$)"
+)
+
+_HIGH_ENTROPY_SEG_RE = re.compile(r"^[A-Za-z0-9_-]{20,}$")
+
+
+def path_has_route_placeholder(path: str) -> bool:
+    return bool(PLACEHOLDER_PATTERN.search(path or ""))
+
+
+def normalize_route_template(path: str) -> str:
+    """Convert Next.js ``[param]`` / ``[[...slug]]`` style into ``{param}`` templates."""
+    p = path or "/"
+    p = re.sub(r"\[\[\.\.\.([^\]]+)\]\]", r"{{\1}}", p)
+    p = re.sub(r"\[([^\]]+)\]", r"{\1}", p)
+    p = re.sub(r":([A-Za-z_][A-Za-z0-9_]*)", r"{\1}", p)
+    return p
+
+
+def is_protection_artifact_path(path: str) -> bool:
+    """Akamai/challenge high-entropy paths — WAF telemetry only, not app inventory."""
+    p = path or ""
+    if not p.startswith("/"):
+        return False
+    if path_has_route_placeholder(p):
+        return False
+    segs = [s for s in p.split("/") if s]
+    if not segs:
+        return False
+    # Single long opaque token or multi-segment challenge style
+    if len(segs) >= 1 and _HIGH_ENTROPY_SEG_RE.match(segs[0]) and len(segs[0]) >= 20:
+        # Avoid treating real app slugs; require challenge-like mix of case/digits
+        s0 = segs[0]
+        if any(c.isdigit() for c in s0) and any(c.isupper() for c in s0) and any(c.islower() for c in s0):
+            return True
+    if _AKAMAI_CHALLENGE_SEG_RE.match(p) and len(segs[0]) >= 16:
+        s0 = segs[0]
+        if any(c.isdigit() for c in s0) and any(c.isalpha() for c in s0):
+            return True
+    return False
+
+
+def is_analytics_like_path(path: str) -> bool:
+    return bool(_ANALYTICS_PATH_RE.search(path or ""))
+
+
+def origin_of(url: str) -> str:
+    try:
+        parts = urlsplit(url)
+        if not parts.scheme or not parts.netloc:
+            return ""
+        return f"{parts.scheme}://{parts.netloc}"
+    except Exception:
+        return ""
+
+
+def script_dir_is_static_bundle(script_url: str) -> bool:
+    path = (urlsplit(script_url).path or "").lower()
+    return any(
+        m in path
+        for m in (
+            "/_next/static/",
+            "/static/chunks/",
+            "/chunks/",
+            "/webpack/",
+            "/assets/js/",
+        )
+    )
+
+
+def classify_js_candidate(value: str, script_url: str, origin: str) -> Tuple[str, str]:
+    """Classify a JS string for crawl/inventory.
+
+    Returns ``(kind, payload)`` where kind is one of:
+      absolute_url | root_relative_url | route_template | static_asset |
+      protection_artifact | analytics_path | unverified_string
+    """
+    raw = (value or "").strip().strip("'\"")
+    if not raw or len(raw) < 2 or len(raw) > 300:
+        return "unverified_string", raw
+    if " " in raw or "${" in raw:
+        return "unverified_string", raw
+    low = raw.lower()
+    if low.startswith(("http://", "https://")):
+        return "absolute_url", raw
+    if low.startswith("//") and origin:
+        try:
+            scheme = urlsplit(origin).scheme or "https"
+            return "absolute_url", f"{scheme}:{raw}"
+        except Exception:
+            return "unverified_string", raw
+    if path_has_route_placeholder(raw):
+        return "route_template", normalize_route_template(raw if raw.startswith("/") else f"/{raw}")
+    if is_protection_artifact_path(raw if raw.startswith("/") else f"/{raw}"):
+        return "protection_artifact", raw if raw.startswith("/") else f"/{raw}"
+    if is_analytics_like_path(raw if raw.startswith("/") else f"/{raw}"):
+        return "analytics_path", raw if raw.startswith("/") else f"/{raw}"
+    if raw.startswith("/"):
+        if _STATIC_ASSET_HINT_RE.search(raw) and not raw.endswith((".html", ".htm", "/")):
+            # Still allow root-relative app paths; only mark pure assets when extension-like
+            if re.search(r"(?i)\.(?:js|mjs|css|map|woff2?|png|jpe?g|gif|svg|webp)(?:$|\?)", raw):
+                return "static_asset", urljoin(origin or script_url, raw)
+        return "root_relative_url", urljoin(origin or "", raw)
+    # Bare relative — never resolve against deep /_next/static/chunks/… bases
+    if script_dir_is_static_bundle(script_url):
+        if _STATIC_ASSET_HINT_RE.search(raw):
+            return "static_asset", raw
+        return "unverified_string", raw
+    if _STATIC_ASSET_HINT_RE.search(raw):
+        return "static_asset", urljoin(script_url or origin or "", raw)
+    return "unverified_string", raw
+
+
+def js_candidate_enqueue_url(value: str, script_url: str, origin: str = "") -> Optional[str]:
+    """Return an absolute http(s) URL safe to enqueue from a JS string, else None.
+
+    Route templates, protection artifacts, analytics paths, and unverified relative
+    strings are inventoried by the caller but never returned for enqueue.
+    """
+    origin = origin or origin_of(script_url)
+    kind, payload = classify_js_candidate(value, script_url, origin)
+    if kind in ("absolute_url", "root_relative_url"):
+        resolved = resolve_http_target(payload, origin or script_url)
+        if not resolved:
+            return None
+        path = urlsplit(resolved).path or ""
+        if path_has_route_placeholder(path):
+            return None
+        if is_protection_artifact_path(path) or is_analytics_like_path(path):
+            return None
+        # Never fabricate HTML under static chunk directories
+        if "/_next/static/" in path.lower() and path.lower().endswith((".html", ".htm")):
+            return None
+        return resolved
+    return None

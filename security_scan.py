@@ -698,29 +698,70 @@ def discover_parameters(url: str, body_text: str = "", forms: Optional[List[dict
     return params
 
 
-async def check_cors(client, url: str, origin: str = "https://evil.example") -> Optional[str]:
-    """Report only high-confidence CORS misconfigurations (credentials + open origin)."""
+async def check_cors(
+    client, url: str, origin: str = "https://evil.example"
+) -> Optional[tuple]:
+    """Probe CORS; return (detail, proof_dict) only for credentialed open/reflected Origin.
+
+    Proof always includes raw request/response header lines so confirmation is evidence-backed.
+    """
     try:
+        from finding_proof import FindingProof
+
         response = await client.get(
             url,
             headers={"Origin": origin},
             timeout=10,
         )
         acao = (response.headers.get("access-control-allow-origin") or "").strip()
-        acac = (response.headers.get("access-control-allow-credentials") or "").lower()
-        creds = acac == "true"
+        acac = (response.headers.get("access-control-allow-credentials") or "").strip()
+        acac_l = acac.lower()
+        creds = acac_l == "true"
+        detail = None
         if acao == "*" and creds:
-            return "CORS allows any origin (*) with credentials — high risk"
-        if acao == origin and creds:
-            return f"CORS reflects arbitrary Origin ({origin}) with credentials — high risk"
-        # Reflection without credentials is common for public assets; keep as low-noise info only
-        if acao == origin and not creds:
+            detail = "CORS allows any origin (*) with credentials — high risk"
+        elif acao == origin and creds:
+            detail = f"CORS reflects arbitrary Origin ({origin}) with credentials — high risk"
+        else:
+            # Reflection without credentials is common for public assets; keep quiet
             return None
-        if acao == "*" and not creds:
-            return None
+
+        host = ""
+        try:
+            from urllib.parse import urlparse
+
+            host = urlparse(url).netloc or ""
+        except Exception:
+            host = ""
+        cookie_hdr = ""
+        try:
+            cookie_hdr = (response.request.headers.get("cookie") or "")[:120]
+        except Exception:
+            cookie_hdr = ""
+        req_lines = [
+            f"GET {url} HTTP/1.1",
+            f"Host: {host}" if host else "",
+            f"Origin: {origin}",
+        ]
+        if cookie_hdr:
+            req_lines.append(f"Cookie: {cookie_hdr}")
+        resp_lines = [
+            f"HTTP/1.1 {int(getattr(response, 'status_code', 0) or 0)}",
+            f"Access-Control-Allow-Origin: {acao}",
+            f"Access-Control-Allow-Credentials: {acac or 'true'}",
+        ]
+        vary = (response.headers.get("vary") or "").strip()
+        if vary:
+            resp_lines.append(f"Vary: {vary}")
+        proof = FindingProof(
+            request="\n".join(x for x in req_lines if x),
+            response="\n".join(resp_lines),
+            evidence=f"ACAO={acao}; ACAC={acac or 'true'}",
+            impact="Cross-origin credentialed reads possible if session cookies are present",
+        )
+        return detail, proof.as_dict()
     except Exception:
         return None
-    return None
 
 
 def extract_forms(html: str, page_url: str, content_type: str = "") -> List[Dict[str, Any]]:
@@ -990,18 +1031,35 @@ def scan_sql_injection(url: str, body_text: str, forms: Optional[List[dict]] = N
 
 
 def scan_xss(url: str, body_text: str, forms: Optional[List[dict]] = None) -> List[Finding]:
-    """Precise passive XSS with second-signal gating for inline cookie/eval scripts."""
+    """Precise passive XSS — only dangerous executable sinks (not document.cookie assignment)."""
     findings: List[Finding] = []
     if not body_text:
         return findings
     params = _query_params(url)
+    # document.cookie = is standard browser API usage; report as cookie manipulation only,
+    # never as XSS and never as a reason to elevate CSP.
     if not _looks_like_code_listing(body_text):
+        cookie_assign = re.search(
+            r"(?is)<script[^>]*>.*?document\.cookie\s*=.*?</script>",
+            body_text[:200000],
+        )
+        if cookie_assign and not re.search(
+            r"(?i)(eval\s*\(|new\s+Function\s*\(|\.innerHTML\s*=|\.outerHTML\s*=|"
+            r"document\.write\s*\(|insertAdjacentHTML\s*\()",
+            cookie_assign.group(0),
+        ):
+            # Observation only — do not create an XSS finding from cookie assignment alone
+            pass
         for match in re.finditer(
             r"(?is)<script[^>]*>(.*?)</script>",
             body_text[:200000],
         ):
             block = match.group(1) or ""
-            sink = re.search(r"(?i)(document\.cookie\s*=|eval\s*\()", block)
+            sink = re.search(
+                r"(?i)(eval\s*\(|new\s+Function\s*\(|\.innerHTML\s*=|\.outerHTML\s*=|"
+                r"document\.write\s*\(|insertAdjacentHTML\s*\()",
+                block,
+            )
             if not sink:
                 continue
             sink_ev = _match_evidence(sink, block, label="xss_sink")
@@ -1021,7 +1079,7 @@ def scan_xss(url: str, body_text: str, forms: Optional[List[dict]] = None) -> Li
                     (
                         "xss",
                         "high",
-                        "Inline script with cookie/eval sink and reflected parameter (precise passive XSS)",
+                        "Inline script with executable sink and reflected parameter (precise passive XSS)",
                         f"{sink_ev} | reflected_param: {reflected_name}",
                     )
                 )
@@ -1030,7 +1088,7 @@ def scan_xss(url: str, body_text: str, forms: Optional[List[dict]] = None) -> Li
                     (
                         "xss",
                         "low",
-                        "Inline script with cookie/eval sink (no reflected input; verify ownership)",
+                        "Inline script with executable sink (no reflected input; verify source→sink ownership)",
                         sink_ev,
                     )
                 )
