@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from sqlmodel import Session
 
 from ..database import get_session
+from ..job_access import assert_job_owner
 from ..models import ScanJob, User
 from ..security import decode_access_token
 from ..services.report_paths import find_report_file, heal_job_report_paths, job_report_roots
@@ -61,9 +62,8 @@ UserAuth = Annotated[User, Depends(resolve_user)]
 
 
 def _owned_job(session: Session, job_id: str, user: User) -> ScanJob:
-    job = session.get(ScanJob, job_id)
-    if not job or (job.user_id != user.id and not user.is_admin):
-        raise HTTPException(status_code=404, detail="Job not found")
+    """Owner-only — reports/logs are never shared across users (including admins)."""
+    job = assert_job_owner(session.get(ScanJob, job_id), user)
     return heal_job_report_paths(session, job)
 
 

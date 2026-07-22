@@ -12,7 +12,8 @@ from sqlmodel import select
 
 from ..config import get_settings
 from ..deps import CurrentUser, SessionDep
-from ..models import ScanJob
+from ..job_access import assert_job_owner, select_jobs_for_user
+from ..models import ScanJob, User
 from ..schemas import JobCreateRequest, JobListOut, JobOut, JobSettingsPatch, MessageOut
 from ..security import decode_access_token
 from ..services.queue import clear_job_command, enqueue_job, publish_progress, redis_client, set_job_command
@@ -44,9 +45,8 @@ def _to_out(job: ScanJob) -> JobOut:
 
 
 def _owned(job: Optional[ScanJob], user) -> ScanJob:
-    if not job or (job.user_id != user.id and not user.is_admin):
-        raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    """Owner-only access — admins do not see or open other users' jobs."""
+    return assert_job_owner(job, user)
 
 
 def _build_config_json(body: JobCreateRequest) -> dict:
@@ -235,10 +235,7 @@ async def create_job_with_files(
 
 @router.get("", response_model=JobListOut)
 def list_jobs(session: SessionDep, user: CurrentUser):
-    q = select(ScanJob).where(ScanJob.user_id == user.id).order_by(ScanJob.created_at.desc())
-    if user.is_admin:
-        q = select(ScanJob).order_by(ScanJob.created_at.desc())
-    jobs = session.exec(q).all()
+    jobs = session.exec(select_jobs_for_user(user)).all()
     return JobListOut(jobs=[_to_out(j) for j in jobs])
 
 
@@ -550,7 +547,12 @@ async def job_ws(websocket: WebSocket, job_id: str):
 
     with Session(engine) as session:
         job = session.get(ScanJob, job_id)
-        if not job or (job.user_id != user_id and not payload.get("admin")):
+        owner = session.get(User, user_id) if user_id else None
+        try:
+            job = assert_job_owner(job, owner) if owner else None
+        except HTTPException:
+            job = None
+        if not job:
             await websocket.close(code=4404)
             return
         await websocket.send_json(
