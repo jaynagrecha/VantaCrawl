@@ -17,10 +17,12 @@ def test_header_hardening_vs_info():
     assert hsts.impact == "informational"
     assert hsts.role == "hardening"
     assert hsts.severity == "medium"
+    assert hsts.suppress is False
 
     ref = _assess(category="header_audit", severity="info", detail="missing Referrer-Policy")
     assert ref.severity == "info"
     assert ref.role == "hygiene"
+    assert ref.suppress is True
 
 
 def test_cookie_stealable_and_analytics_suppress():
@@ -58,15 +60,15 @@ def test_active_vs_passive_xss():
     assert passive.validation == "unverified"
 
 
-def test_cors_credentials_confirmed():
+def test_cors_credentials_without_session_evidence_is_medium():
     result = _assess(
         category="cors",
         severity="high",
         detail="CORS reflects Origin with Access-Control-Allow-Credentials",
         url="https://example.com/",
     )
-    assert result.impact == "confirmed"
-    assert result.severity == "high"
+    assert result.impact == "possible"
+    assert result.severity == "medium"
 
 
 def test_cors_with_auth_cookie_is_stealable():

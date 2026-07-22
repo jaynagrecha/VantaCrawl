@@ -9,11 +9,14 @@ from urllib.parse import urlparse
 GIT_PATH_RE = re.compile(r"(?i)/(?:\.git(?:/|$)|\.git/HEAD|\.git/config)")
 ENV_PATH_RE = re.compile(r"(?i)/(?:\.env(?:\.[a-z0-9_-]+)?|env\.local)(?:$|\?)")
 BACKUP_PATH_RE = re.compile(
-    r"(?i)/(?:[^/]+\.(?:zip|tar|gz|tgz|sql|bak|7z|rar)|backup(?:\.(?:zip|tar|gz|sql|bak))?|dump(?:\.(?:sql|zip))?)$"
+    r"(?i)/(?:(?:backup|dump|site-backup|db-backup|www-backup)\.(?:zip|tar|gz|tgz|sql|bak|7z|rar)|"
+    r"[^/]+\.(?:zip|tar|gz|tgz|sql|bak|7z|rar))$"
 )
 CONFIG_PATH_RE = re.compile(
     r"(?i)/(?:web\.config|wp-config\.php|config\.php|\.htpasswd|id_rsa)(?:$|\?)"
 )
+PHPINFO_PATH_RE = re.compile(r"(?i)/phpinfo(?:\.php)?(?:$|/|\?)")
+AWS_PATH_RE = re.compile(r"(?i)/\.aws(?:/|$)")
 
 GIT_HEAD_RE = re.compile(r"(?i)^ref:\s+refs/")
 GIT_CONFIG_RE = re.compile(r"(?i)\[core\]|\[remote\s+\"origin\"\]")
@@ -22,6 +25,8 @@ HTMLISH_RE = re.compile(r"(?i)<!doctype\s+html|<html[\s>]|<head[\s>]")
 CONFIG_HINT_RE = re.compile(
     r"(?i)(DB_|password|connectionstring|<configuration|wp-settings|BEGIN (?:RSA |OPENSSH )?PRIVATE KEY)"
 )
+PHPINFO_BODY_RE = re.compile(r"(?i)(?:phpinfo\s*\(|PHP Version\s*\d|PHP Credits)")
+AWS_CREDS_RE = re.compile(r"(?i)(?:\[default\]|aws_access_key_id|aws_secret_access_key)")
 
 
 def classify_bucket_response(
@@ -50,12 +55,15 @@ def classify_bucket_response(
 
 
 def needs_content_gate(url: str) -> bool:
+    """True when a sensitive-path finding must be body-proven before emit."""
     path = urlparse(url).path or ""
     return bool(
         GIT_PATH_RE.search(path)
         or ENV_PATH_RE.search(path)
         or BACKUP_PATH_RE.search(path)
         or CONFIG_PATH_RE.search(path)
+        or PHPINFO_PATH_RE.search(path)
+        or AWS_PATH_RE.search(path)
     )
 
 
@@ -123,6 +131,20 @@ def validate_sensitive_content(
             return "Confirmed config-like content in response"
         if status in (200, 401, 403) and text.strip() and not looks_html:
             return f"Config path returned non-HTML HTTP {status}"
+        return None
+
+    if PHPINFO_PATH_RE.search(path):
+        if PHPINFO_BODY_RE.search(text[:12000]):
+            return "Confirmed phpinfo() output in response body"
+        return None
+
+    if AWS_PATH_RE.search(path):
+        if AWS_CREDS_RE.search(text[:8000]):
+            return "Confirmed AWS credentials/config content"
+        if looks_html or status == 404:
+            return None
+        if status in (200, 401, 403) and text.strip() and not looks_html:
+            return f".aws path returned non-HTML HTTP {status}"
         return None
 
     return "ok"

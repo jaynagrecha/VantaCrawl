@@ -83,12 +83,14 @@ def assess_header_audit(detail: str, severity: str) -> ImpactResult:
             validation="confirmed",
         )
     if _INFO_HEADERS.search(d):
+        # Hygiene headers stay in the security-header inventory; do not emit findings
         return ImpactResult(
             role="hygiene",
             impact="informational",
             severity="info",
-            summary="Header hygiene / disclosure — low direct exploit impact.",
+            summary="Header hygiene / disclosure — tracked in inventory, not raised as a finding.",
             validation="confirmed",
+            suppress=True,
         )
     return ImpactResult(
         role="hardening",
@@ -381,18 +383,34 @@ def assess_cors(
             proof="; ".join(issues[:4]) if issues else None,
         )
 
-    # Default: credentials + open origin — assume session cookies may exist for real users
+    # No auth cookies / auth path / login surface observed → do not default to high.
+    # Credentialed CORS is still a misconfig, but without session evidence keep it medium.
+    if tracking_cookies and not other_cookies:
+        summary = (
+            "CORS allows credentials, but only tracking/preference cookies were observed and "
+            "no auth-sensitive path or login surface was found. Verify origin-wide session cookies "
+            "before treating as high impact."
+        )
+        return ImpactResult(
+            role="cors",
+            impact="limited_impact",
+            severity="medium",
+            summary=summary,
+            validation="confirmed",
+            issues=issues,
+            proof="; ".join(issues[:4]) if issues else None,
+        )
+
     summary = (
-        "CORS reflects Origin with credentials. Even if the scanner mostly saw tracking cookies, "
-        "browsers will attach any eligible cookies for this origin when a logged-in victim visits "
-        "an attacker's site — treat as high until proven session-free."
+        "CORS reflects Origin with credentials. No session/auth cookies or auth endpoints were "
+        "observed on this pass — medium until session cookies or login surfaces are confirmed."
     )
     return ImpactResult(
         role="cors",
-        impact="confirmed",
-        severity=severity if severity in ("high", "critical") else "high",
+        impact="possible",
+        severity="medium",
         summary=summary,
-        validation="confirmed",
+        validation="unverified",
         issues=issues,
         proof="; ".join(issues[:4]) if issues else None,
     )
@@ -408,12 +426,14 @@ def assess_sensitive_path(detail: str, severity: str, evidence: str = "") -> Imp
             validation="confirmed",
             proof=evidence,
         )
+    # Unverified path matches are inventory-only — suppress if emitted
     return ImpactResult(
         role="sensitive_file",
-        impact="possible",
-        severity=severity or "medium",
-        summary="Sensitive path pattern matched — content not verified.",
+        impact="no_impact",
+        severity="info",
+        summary="Sensitive path pattern matched without body proof — suppressed.",
         validation="unverified",
+        suppress=True,
     )
 
 
@@ -448,8 +468,8 @@ def assess_open_redirect(detail: str, severity: str) -> ImpactResult:
     return ImpactResult(
         role="open_redirect",
         impact="possible",
-        severity=severity or "medium",
-        summary="Off-site URL in a redirect-style parameter — verify allow-list behavior.",
+        severity="low" if severity in ("medium", "high", "critical", "", None) else (severity or "low"),
+        summary="Off-site URL in a redirect-style parameter — verify allow-list behavior (passive).",
         validation="unverified",
     )
 
