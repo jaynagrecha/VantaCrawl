@@ -720,8 +720,25 @@ def assignment_note(body_text: str, start: int, end: int, value: str) -> str:
     return f" (assigned to `{ident}`)"
 
 
-def severity_for_kind(label: str, default: str = "high") -> str:
+def is_client_public_key(label: str, evidence: str = "") -> bool:
+    """True for intentionally browser-embeddable / publishable credentials."""
     low = (label or "").lower()
+    ev = (evidence or "").strip()
+    if "publishable" in low:
+        return True
+    if "client id" in low or "client_id" in low:
+        return True
+    if ev.startswith("pk_live_") or ev.startswith("pk_test_"):
+        return True
+    if ev.startswith("AIza") or "maps api" in low or "google cloud / maps" in low:
+        return True
+    return False
+
+
+def severity_for_kind(label: str, default: str = "high", evidence: str = "") -> str:
+    low = (label or "").lower()
+    if is_client_public_key(label, evidence):
+        return "medium" if ("publishable" in low or "maps" in low or "google" in low or (evidence or "").startswith("AIza")) else "low"
     if any(x in low for x in ("password", "private key", "secret access", "client secret", "auth token")):
         return "critical" if "publishable" not in low else "medium"
     if "publishable" in low or "client id" in low:

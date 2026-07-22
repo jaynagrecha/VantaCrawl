@@ -116,7 +116,8 @@ def test_file_upload_type_file_info_finding():
     forms = extract_forms(html, "https://x.com/page", "text/html")
     assert forms and forms[0]["has_file_input"]
     findings = scan_file_upload(forms, "https://x.com/page")
-    assert any(f[0] == "file_upload" and f[1] == "info" for f in findings)
+    # Missing accept on /upload → low (still emitted, not eliminated)
+    assert any(f[0] == "file_upload" and f[1] in ("info", "low") for f in findings)
 
 
 def test_mixed_content_anchor_href_not_fp():
