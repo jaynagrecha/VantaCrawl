@@ -737,8 +737,15 @@ export default function JobPage() {
                   {findings.map((f, i) => {
                     const secretKey = `${f.url || ""}-${i}`;
                     const impact = String(f.impact || "");
+                    const title = String(f.title || "");
+                    const impactFromTitle =
+                      /Impact:\s*(possible_credential|stealable_credential)/i.exec(title)?.[1] ||
+                      "";
+                    const effectiveImpact = impact || impactFromTitle;
                     const isCredentialImpact =
-                      impact === "possible_credential" || impact === "stealable_credential";
+                      effectiveImpact === "possible_credential" ||
+                      effectiveImpact === "stealable_credential" ||
+                      /Cookie\s+`[^`]+`/i.test(title);
                     const isSecretCategory =
                       f.category === "secrets_exposure" ||
                       Boolean(f.secret_type) ||
@@ -746,25 +753,27 @@ export default function JobPage() {
                     const hasEvidence = Boolean(f.evidence_full || f.evidence_masked);
                     const masked = f.evidence_masked || "";
                     const full = f.evidence_full || "";
+                    const looksMasked = (s: string) => /…|\.\.\./.test(s) || s.includes("***");
                     const canReveal =
                       isSecretCategory &&
                       Boolean(full) &&
-                      (full.length > masked.length || (masked && full !== masked));
+                      !looksMasked(full) &&
+                      (full.length > masked.length || full !== masked || Boolean(masked));
                     const patternEvidence = !isSecretCategory
                       ? full || masked || ""
                       : "";
                     const shown = revealedSecrets[secretKey]
                       ? full || masked || ""
-                      : masked || (full ? "••••" : "");
+                      : masked || (canReveal ? "••••" : full || "");
                     return (
                       <li key={secretKey} className="finding-item">
                         <div className="finding-meta">
                           <strong className={`badge ${f.severity || "info"}`}>
                             {f.severity || "info"}
                           </strong>
-                          {f.impact ? (
+                          {effectiveImpact ? (
                             <span className="secret-type-pill" title={f.impact_summary || ""}>
-                              {f.impact}
+                              {effectiveImpact}
                               {f.validation ? `/${f.validation}` : ""}
                             </span>
                           ) : null}

@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import re
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 _PAGE_RE = re.compile(
     r"Page\s+(\d+)\s+of\s+~?(\d+)\s*·\s*queue\s+(\d+)",
@@ -17,53 +23,12 @@ _HITS_RE = re.compile(r"·\s*(\d+)\s+found so far", re.IGNORECASE)
 
 
 def _findings_preview(stats) -> List[Dict[str, str]]:
-    out: List[Dict[str, str]] = []
     try:
-        from security_scan import mask_secret_value
+        from findings_preview import build_findings_preview
 
-        for item in list(getattr(stats, "findings", []) or [])[:80]:
-            if not isinstance(item, dict):
-                continue
-            evidence = str(item.get("evidence") or "")
-            detail = str(item.get("detail") or item.get("title") or "")
-            secret_type = ""
-            category = str(item.get("category") or "")
-            impact = str(item.get("impact") or "")
-            if category == "secrets_exposure":
-                if detail.lower().startswith("exposed "):
-                    secret_type = detail[8:].split(" in response", 1)[0].strip()
-                elif ":" in detail:
-                    secret_type = detail.split(":", 1)[0].strip()
-            title = detail[:160]
-            if secret_type and secret_type.lower() not in title.lower():
-                title = f"{secret_type}: {title}"[:160]
-            # Mask secret / credential values for display; keep pattern evidence readable
-            credentialish = category == "secrets_exposure" or impact in (
-                "possible_credential",
-                "stealable_credential",
-            )
-            if credentialish and evidence:
-                evidence_masked = mask_secret_value(evidence)
-            else:
-                evidence_masked = evidence
-            out.append(
-                {
-                    "severity": str(item.get("severity") or item.get("severity_label") or ""),
-                    "title": title,
-                    "url": str(item.get("url") or ""),
-                    "category": category,
-                    "secret_type": secret_type,
-                    "impact": impact,
-                    "validation": str(item.get("validation") or ""),
-                    "impact_summary": str(item.get("impact_summary") or ""),
-                    "role": str(item.get("role") or ""),
-                    "evidence_masked": evidence_masked,
-                    "evidence_full": evidence,
-                }
-            )
+        return build_findings_preview(getattr(stats, "findings", []) or [], limit=80)
     except Exception:
         return []
-    return out
 
 
 def infer_phase(progress_text: str, *, enum_only: bool = False, previous: str = "") -> str:

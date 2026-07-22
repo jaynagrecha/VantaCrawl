@@ -330,7 +330,7 @@ def analyze_set_cookie_headers(
             impact == "stealable_credential" and role in ("auth_session", "jwt")
         ) or (impact == "possible_credential" and bool(assessment.get("stealable")))
         if emit:
-            dedupe = f"{name}|{impact}|{row['flags']}"
+            dedupe = f"{name}|{impact}"
             if dedupe in seen_names:
                 continue
             seen_names.add(dedupe)
@@ -341,9 +341,10 @@ def analyze_set_cookie_headers(
                 f"Flags: {row['flags']}. Impact: {impact}."
             )
             evidence = None
-            if assessment.get("stealable") and parsed.get("value"):
-                # Full value for tap-to-reveal; UI/live progress mask by default
-                evidence = str(parsed["value"])
+            raw_value = str(parsed.get("value") or "")
+            if assessment.get("stealable") and raw_value:
+                # Always store the raw value for tap-to-reveal (preview masks it)
+                evidence = raw_value
             elif row.get("value_masked"):
                 evidence = row.get("value_masked")
             findings.append(("authentication", str(assessment["severity"]), detail, evidence))
