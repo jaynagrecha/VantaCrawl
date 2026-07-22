@@ -370,12 +370,18 @@ class EvasionSession:
         headers = self.build_headers(url, is_navigation=is_navigation)
         return headers
 
-    def after_request(self, url: str, status_code: int, body_preview: str = ""):
+    def after_request(
+        self,
+        url: str,
+        status_code: int,
+        body_preview: str = "",
+        headers: Optional[Dict[str, str]] = None,
+    ):
         self._last_url = url
         if not self.config.challenge_detect and not self.config.adaptive_backoff:
             return
 
-        challenge = detect_challenge(status_code, body_preview)
+        challenge = detect_challenge(status_code, body_preview, headers=headers)
         if challenge:
             self._challenge_hits += 1
             self.last_challenge = challenge
@@ -415,14 +421,29 @@ class EvasionSession:
         )
 
 
-def detect_challenge(status_code: int, body: str) -> str:
+def detect_challenge(
+    status_code: int,
+    body: str = "",
+    headers: Optional[Dict[str, str]] = None,
+) -> str:
     """Detect bot-wall / rate-limit signals that justify adaptive backoff.
 
-    Hard blocks (403/429/503) always count. Soft Akamai/CF interstitial pages that
-    return HTTP 200 with an explicit denial body also count — bare CDN headers on
-    a normal 200 page do not (that false positive used to park the whole crawl).
+    Requires WAF/challenge evidence (body markers or known WAF response headers).
+    Bare HTTP 403 from static hosts (Netlify/Vercel permission denials, missing
+    files) must NOT arm WAF backoff — that was parking enum scans with
+    Protections=none and Blocks climbing on every 403.
     """
     body_l = (body or "").lower()[:8000]
+    header_blob = ""
+    if headers:
+        try:
+            header_blob = " ".join(
+                f"{str(k).lower()}:{str(v).lower()}" for k, v in dict(headers).items()
+            )
+        except Exception:
+            header_blob = ""
+    combined = f"{body_l}\n{header_blob}"
+
     if status_code == 429:
         return "rate_limit"
 
@@ -442,16 +463,60 @@ def detect_challenge(status_code: int, body: str) -> str:
 
     if status_code not in CHALLENGE_STATUS:
         return ""
+
+    # Static / PaaS hosts often 403 missing paths — not a bot wall.
+    static_hosts = (
+        "netlify",
+        "vercel",
+        "github.com",
+        "gitlab.io",
+        "pages.dev",
+        "cloudflare pages",
+        "render.com",
+        "heroku",
+        "amazon s3",
+        "amazons3",
+    )
+    server_l = ""
+    if headers:
+        for key, value in dict(headers).items():
+            if str(key).lower() == "server":
+                server_l = str(value).lower()
+                break
+    is_static_paas = any(tok in server_l or tok in header_blob for tok in static_hosts)
+
     for marker in CHALLENGE_MARKERS:
-        if marker in body_l:
+        if marker in body_l or marker in header_blob:
+            # Don't let generic "access denied" alone on Netlify count as WAF
+            if is_static_paas and marker in ("access denied", "request blocked") and not any(
+                w in combined
+                for w in (
+                    "cloudflare",
+                    "cf-ray",
+                    "akamai",
+                    "sucuri",
+                    "datadome",
+                    "perimeterx",
+                    "x-amzn-waf",
+                )
+            ):
+                continue
             return marker
-    if status_code == 403 and ("cloudflare" in body_l or "cf-ray" in body_l):
+    if status_code == 403 and ("cloudflare" in combined or "cf-ray" in combined):
         return "cloudflare_block"
-    if status_code == 403 and ("akamai" in body_l or "edgesuite" in body_l or "akamaighost" in body_l):
+    if status_code == 403 and any(
+        x in combined for x in ("akamai", "edgesuite", "akamaighost")
+    ):
         return "akamai_block"
-    if status_code == 403:
-        return "blocked"
-    if status_code == 503:
+    if status_code == 403 and any(x in combined for x in ("sucuri", "cloudproxy", "x-sucuri")):
+        return "sucuri"
+    if status_code == 403 and any(x in combined for x in ("datadome", "perimeterx", "x-amzn-waf", "aws waf")):
+        return "waf_block"
+    # Bare 403/503 with no WAF evidence — common for Netlify/authz/missing files.
+    # Do NOT arm adaptive WAF backoff.
+    if status_code == 503 and any(
+        x in combined for x in ("cloudflare", "akamai", "sucuri", "checking your browser")
+    ):
         return "unavailable"
     return ""
 
@@ -555,7 +620,7 @@ def make_httpx_hooks(session: Optional[EvasionSession] = None, output_callback=N
 
         if session is not None and session.config.enabled:
             before = session._challenge_hits
-            session.after_request(url, response.status_code, body_preview)
+            session.after_request(url, response.status_code, body_preview, headers=header_map)
             if output_callback and session._challenge_hits > before and session.last_challenge:
                 wait = max(1, int(session.backoff_remaining() + 0.99))
                 output_callback(

@@ -27,6 +27,33 @@ def test_browser_headers_include_sec_fetch_in_stealth():
     assert "X11" not in headers["User-Agent"]
 
 
+def test_netlify_403_is_not_waf_backoff():
+    """Permission / missing-path 403s on Netlify must not arm WAF backoff."""
+    assert detect_challenge(403, "Not Found", headers={"Server": "Netlify"}) == ""
+    assert detect_challenge(403, "Access denied", headers={"server": "Netlify"}) == ""
+    session = EvasionSession(EvasionConfig(enabled=True, adaptive_backoff=True, challenge_detect=True))
+    session.after_request(
+        "https://app.netlify.app/missing.aspx",
+        403,
+        "Access denied",
+        headers={"Server": "Netlify"},
+    )
+    assert session.backoff_remaining() < 0.05
+    assert session._challenge_hits == 0
+
+
+def test_akamai_empty_body_403_still_detected_via_headers():
+    assert detect_challenge(403, "", headers={"Server": "AkamaiGHost"}) in (
+        "akamai",
+        "akamai_block",
+        "akamaighost",
+    )
+    session = EvasionSession(EvasionConfig(enabled=True, adaptive_backoff=True, challenge_detect=True))
+    session.after_request("https://lab.local/x", 403, "", headers={"Server": "AkamaiGHost"})
+    assert session._challenge_hits >= 1
+    assert session.backoff_remaining() > 0
+
+
 def test_sticky_host_keeps_same_ua():
     session = EvasionSession(
         EvasionConfig(enabled=True, level="aggressive", ua_strategy="sticky_host", browser_profile="firefox")

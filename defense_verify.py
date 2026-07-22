@@ -268,7 +268,7 @@ class DefenseTracker:
             bits.append(name.replace("_", " "))
         preview = " ".join(bits)
 
-        signal = detect_challenge(status_code, preview)
+        signal = detect_challenge(status_code, body_preview, headers=headers)
         preview_l = preview.lower()
         if not signal:
             for marker, label in (
@@ -282,6 +282,11 @@ class DefenseTracker:
                 ("request blocked", "request blocked"),
             ):
                 if marker in preview_l:
+                    # Netlify/Vercel permission 403s often say "Access denied" without a WAF.
+                    if label in ("access denied", "request blocked") and any(
+                        tok in server for tok in ("netlify", "vercel", "github.com", "pages.dev")
+                    ) and not on_response:
+                        continue
                     signal = label
                     break
 
