@@ -18,6 +18,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from evasion_layer import detect_challenge, is_permission_or_storage_deny
+from protection_evidence import (
+    VendorDetection,
+    extract_response_evidence,
+    format_protections_label,
+    merge_cookie_inventory_evidence,
+    sort_detections,
+)
 
 # Akamai Bot Manager client cookies (presence = BM deployed; values are not forged here)
 _BM_COOKIE_NAMES = frozenset(
@@ -285,8 +292,27 @@ class DefenseTracker:
     sample_unchallenged: List[DefenseEvent] = field(default_factory=list)
     block_events: List[DefenseEvent] = field(default_factory=list)
     fingerprint_notes: List[str] = field(default_factory=list)
+    # Evidence-backed vendor inventory (replaces flat-name-only UX)
+    vendor_detections: Dict[str, VendorDetection] = field(default_factory=dict)
     _max_samples: int = 40
     _max_block_events: int = 120
+
+    def _ingest_evidence(
+        self,
+        by_vendor: Dict[str, Set[str]],
+        *,
+        url: str = "",
+        challenged: bool = False,
+    ) -> None:
+        for vendor, items in (by_vendor or {}).items():
+            det = self.vendor_detections.get(vendor)
+            if det is None:
+                det = VendorDetection(vendor=vendor)
+                self.vendor_detections[vendor] = det
+            det.add_evidence(items)
+            if url:
+                det.note_url(url, challenged=challenged)
+            self.protections_seen.add(vendor)
 
     def observe_headers(self, headers: Dict[str, str], body_preview: str = ""):
         for name in _fingerprint_protections(headers, body_preview):
@@ -398,6 +424,15 @@ class DefenseTracker:
                 if status_code == 429:
                     signal = "rate_limit"
 
+        challenged = bool(signal)
+        evidence_map = extract_response_evidence(
+            headers,
+            body_preview,
+            status_code=status_code,
+            signal=signal if challenged else "",
+        )
+        self._ingest_evidence(evidence_map, url=url, challenged=challenged)
+
         if signal:
             self.caught_count += 1
             self.signal_counts[signal] += 1
@@ -493,6 +528,11 @@ class DefenseTracker:
             name = str(row.get("name") or "").strip().lower()
             if name in _BM_COOKIE_NAMES or name.startswith("bm_"):
                 self.bm_cookies_seen.add(name)
+        self._ingest_evidence(merge_cookie_inventory_evidence(cookies))
+
+    def protections_detail(self) -> List[Dict[str, Any]]:
+        rows = [det.to_dict() for det in self.vendor_detections.values()]
+        return sort_detections(rows)
 
     def akamai_bot_manager_present(self) -> bool:
         if self.bm_cookies_seen:
@@ -550,9 +590,12 @@ class DefenseTracker:
         verdict_title, verdict_body = self.posture_verdict()
         journal = [e.journal_dict() for e in self.block_events[-30:]]
         forensic = [e.forensic_dict() for e in self.block_events]
+        detail = self.protections_detail()
         return {
             "start_url": self.start_url,
             "protections_detected": sorted(self.protections_seen),
+            "protections_detail": detail,
+            "protections_label": format_protections_label(detail),
             "security_headers_present": sorted(self.security_headers_present),
             "security_headers_missing": sorted(self.security_headers_missing),
             "caught_by_protection": self.caught_count,
@@ -586,6 +629,8 @@ class DefenseTracker:
                 "not that a CAPTCHA or bot wall was cracked. "
                 "access_deny_count is bare HTTP 401/403/405 without a WAF fingerprint "
                 "(common on Netlify/Vercel) — shown with status codes but not counted as WAF Blocks. "
+                "protections_detail separates confirmed-active edge WAFs from page-level CAPTCHAs "
+                "and passive JS/cookie shadows using evidence groups. "
                 "block_events_forensic includes status, protections, headers, and body snippets."
             ),
         }
@@ -605,10 +650,22 @@ class DefenseTracker:
             "-" * 70,
         ]
         if data["protections_detected"]:
+            detail_by_vendor = {d["vendor"]: d for d in data.get("protections_detail") or []}
             for name in data["protections_detected"]:
+                row = detail_by_vendor.get(name)
                 count = data["protection_block_counts"].get(name, 0)
                 suffix = f" ({count} block event(s))" if count else ""
-                lines.append(f"  • {name.replace('_', ' ').title()}{suffix}")
+                if row:
+                    ev = ", ".join((row.get("evidence") or [])[:4])
+                    lines.append(
+                        f"  • {row.get('display') or name} — {row.get('tier')} / "
+                        f"{row.get('confidence_label')} confidence / scope={row.get('scope')}"
+                        f"{suffix}"
+                    )
+                    if ev:
+                        lines.append(f"      evidence: {ev}")
+                else:
+                    lines.append(f"  • {name.replace('_', ' ').title()}{suffix}")
         else:
             lines.append("  • None clearly identified from headers/body signals")
         lines.append("")

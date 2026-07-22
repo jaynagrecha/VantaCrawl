@@ -469,14 +469,45 @@ export default function JobPage() {
               label: "Protections",
               value: String(progress.protections_label || "none"),
               hint:
-                Array.isArray(progress.protections) && progress.protections.length
-                  ? `Detected: ${(progress.protections as string[]).join(", ")}`
-                  : "Bot/WAF fingerprints seen so far (kept for the whole job)",
+                Array.isArray(progress.protections_detail) && progress.protections_detail.length
+                  ? "Evidence-backed inventory below — active vs passive"
+                  : Array.isArray(progress.protections) && progress.protections.length
+                    ? `Detected: ${(progress.protections as string[]).join(", ")}`
+                    : "Bot/WAF fingerprints seen so far",
               tone: "text",
-            },
-            { label: "Mode", value: job.mode, tone: "text" },
+            },            { label: "Mode", value: job.mode, tone: "text" },
           ];
           const journal = Array.isArray(progress.block_journal) ? progress.block_journal : [];
+          const protectionsDetail = Array.isArray(progress.protections_detail)
+            ? (progress.protections_detail as Array<{
+                vendor?: string;
+                display?: string;
+                category_label?: string;
+                confidence?: number;
+                confidence_label?: string;
+                scope?: string;
+                active?: boolean;
+                tier?: string;
+                evidence?: string[];
+                challenge_count?: number;
+                sample_urls?: string[];
+              }>)
+            : [];
+          const outcome = (progress.outcome_breakdown || {}) as Record<string, number>;
+          const outcomeLine = [
+            outcome.waf_challenge_responses != null
+              ? `WAF challenges: ${outcome.waf_challenge_responses}`
+              : "",
+            outcome.http_403_responses != null ? `HTTP 403: ${outcome.http_403_responses}` : "",
+            outcome.http_429_responses != null ? `HTTP 429: ${outcome.http_429_responses}` : "",
+            outcome.access_denies != null ? `Access denies: ${outcome.access_denies}` : "",
+            outcome.scope_denied_urls != null ? `Scope skipped: ${outcome.scope_denied_urls}` : "",
+            outcome.connection_failures != null
+              ? `Conn. failures: ${outcome.connection_failures}`
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" · ");
           const statusCounts = (progress.block_status_counts || {}) as Record<string, number>;
           const denyCounts = (progress.access_deny_status_counts || {}) as Record<string, number>;
           const statusSummary = Object.entries(statusCounts)
@@ -489,6 +520,22 @@ export default function JobPage() {
             .slice(0, 4)
             .map(([code, count]) => `${code}×${count}`)
             .join(" · ");
+          const tierLabel = (tier?: string) => {
+            switch (tier) {
+              case "confirmed_active":
+                return "Confirmed active";
+              case "page_level":
+                return "Page-level control";
+              case "passive":
+                return "Passive indicator";
+              case "unconfirmed":
+                return "Unconfirmed";
+              case "conflicting":
+                return "Conflicting fingerprint";
+              default:
+                return tier || "Detected";
+            }
+          };
           return (
             <div className="progress-panel" style={{ marginTop: "1.1rem" }}>
               <div className="progress-track" aria-hidden="true">
@@ -526,6 +573,50 @@ export default function JobPage() {
                   </div>
                 ))}
               </div>
+              {outcomeLine ? (
+                <p className="muted outcome-breakdown" title="Request outcome split — not the same as Blocks vs Denies tiles">
+                  {outcomeLine}
+                </p>
+              ) : null}
+              {protectionsDetail.length > 0 ? (
+                <div className="protections-inventory">
+                  <div className="block-journal-head">
+                    <h3>Protections inventory</h3>
+                    <span className="muted">Evidence · confidence · scope</span>
+                  </div>
+                  <p className="muted block-journal-help">
+                    Confirmed active needs vendor identity (cookie/header) plus challenge behaviour.
+                    Page-level CAPTCHAs stay separate from site-wide edge WAFs. Passive = JS/string
+                    shadow only.
+                  </p>
+                  <ul className="protections-list">
+                    {protectionsDetail.map((row) => (
+                      <li key={row.vendor || row.display} className={`prot-item tier-${row.tier || "unconfirmed"}`}>
+                        <div className="prot-item-head">
+                          <strong>{row.display || row.vendor}</strong>
+                          <span className="badge prot-tier">{tierLabel(row.tier)}</span>
+                          <span className="muted">
+                            {row.confidence_label || "Low"} · {row.category_label || ""} · scope{" "}
+                            {row.scope || "host"}
+                          </span>
+                        </div>
+                        {row.evidence && row.evidence.length ? (
+                          <div className="prot-evidence mono">
+                            {row.evidence.slice(0, 6).join(" · ")}
+                            {row.evidence.length > 6 ? ` · +${row.evidence.length - 6}` : ""}
+                          </div>
+                        ) : null}
+                        {row.sample_urls && row.sample_urls.length ? (
+                          <div className="prot-urls muted" title={row.sample_urls.join("\n")}>
+                            Affects: {row.sample_urls[0]}
+                            {row.challenge_count ? ` · ${row.challenge_count} challenge hit(s)` : ""}
+                          </div>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
               {(journal.length > 0 || statusSummary || denySummary) && (
                 <div className="block-journal">
                   <div className="block-journal-head">
