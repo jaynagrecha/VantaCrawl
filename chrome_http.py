@@ -216,7 +216,23 @@ async def open_scan_client(
     auth = config.httpx_auth() if hasattr(config, "httpx_auth") else None
     cookie = (getattr(config, "cookie_string", "") or "").strip()
     headers = dict(default_headers or {})
-    if cookie:
+    # Do NOT put a flattened multi-host Cookie on every request — BM cookie volume
+    # is a Bot Manager tell. Seed cookies are applied per-URL via SessionCookieStore.
+    start_url = str(getattr(config, "start_url", "") or "")
+    if cookie and start_url:
+        try:
+            from session_cookies import SessionCookieStore
+
+            seed = SessionCookieStore()
+            seed.load_cookie_string(cookie, host=start_url)
+            scoped = seed.header_for(start_url)
+            if scoped:
+                headers["Cookie"] = scoped
+        except Exception:
+            # Fall back: only if cookie string is small (manual paste for one host)
+            if cookie.count("=") <= 12:
+                headers["Cookie"] = cookie
+    elif cookie and cookie.count("=") <= 12:
         headers["Cookie"] = cookie
 
     if use_chrome_tls and HAS_CURL_CFFI and CurlAsyncSession is not None:

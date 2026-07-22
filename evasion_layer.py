@@ -15,8 +15,12 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 # Keep major version aligned with chrome_http.DEFAULT_IMPERSONATE (chrome146).
+# curl_cffi 0.15's newest Chrome TLS profile is chrome146 — do NOT advertise
+# Chrome/150+ in the UA while TLS still looks like 146 (Akamai flags that mismatch).
+# Chrome 146 (Mar 2026) is still a real stable release; prefer TLS/UA/CH consistency
+# over chasing the absolute newest major.
 CHROME_MAJOR = "146"
-CHROME_FULL = "146.0.7680.0"
+CHROME_FULL = "146.0.7680.153"
 
 # ---------------------------------------------------------------------------
 # Browser impersonation profiles
@@ -24,16 +28,19 @@ CHROME_FULL = "146.0.7680.0"
 
 BROWSER_PROFILES: Dict[str, Dict] = {
     "chrome": {
-        # Windows-only when paired with curl_cffi chrome146 JA3 — Linux UA vs Win TLS
-        # is a classic Akamai Bot Manager fingerprint mismatch.
+        # Windows-only when paired with curl_cffi chrome146 JA3 — Mac/Linux UA vs
+        # Windows TLS is a classic Akamai Bot Manager fingerprint mismatch.
         "user_agents": [
             f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36",
             f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36",
-            f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36",
         ],
-        "sec_ch_ua": f'"Chromium";v="{CHROME_MAJOR}", "Not A(Brand";v="24", "Google Chrome";v="{CHROME_MAJOR}"',
+        # Greased brand order similar to real Chromium desktop Client Hints
+        "sec_ch_ua": (
+            f'"Google Chrome";v="{CHROME_MAJOR}", "Not)A;Brand";v="8", "Chromium";v="{CHROME_MAJOR}"'
+        ),
         "sec_ch_ua_full_version_list": (
-            f'"Chromium";v="{CHROME_FULL}", "Not A(Brand";v="10.0.0.0", "Google Chrome";v="{CHROME_FULL}"'
+            f'"Google Chrome";v="{CHROME_FULL}", "Not)A;Brand";v="10.0.0.0", '
+            f'"Chromium";v="{CHROME_FULL}"'
         ),
         "sec_ch_ua_full_version": f'"{CHROME_FULL}"',
         "sec_ch_ua_platform": '"Windows"',
@@ -99,9 +106,12 @@ BROWSER_PROFILES: Dict[str, Dict] = {
             f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36 Edg/{CHROME_MAJOR}.0.0.0",
             f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36 Edg/{CHROME_MAJOR}.0.0.0",
         ],
-        "sec_ch_ua": f'"Microsoft Edge";v="{CHROME_MAJOR}", "Chromium";v="{CHROME_MAJOR}", "Not A(Brand";v="24"',
+        "sec_ch_ua": (
+            f'"Microsoft Edge";v="{CHROME_MAJOR}", "Chromium";v="{CHROME_MAJOR}", "Not)A;Brand";v="8"'
+        ),
         "sec_ch_ua_full_version_list": (
-            f'"Microsoft Edge";v="{CHROME_FULL}", "Chromium";v="{CHROME_FULL}", "Not A(Brand";v="10.0.0.0"'
+            f'"Microsoft Edge";v="{CHROME_FULL}", "Chromium";v="{CHROME_FULL}", '
+            f'"Not)A;Brand";v="10.0.0.0"'
         ),
         "sec_ch_ua_full_version": f'"{CHROME_FULL}"',
         "sec_ch_ua_platform": '"Windows"',
@@ -196,15 +206,24 @@ class EvasionSession:
     _challenge_hits: int = 0
     _request_count: int = 0
     last_challenge: str = ""
+    # Hosts that asked for high-entropy Client Hints via Accept-CH
+    _accept_ch_hints: Dict[str, set] = field(default_factory=dict)
 
     def __post_init__(self):
         self._session_profile = self._pick_profile_name()
         profile = BROWSER_PROFILES[self._session_profile]
-        self._session_ua = random.choice(profile["user_agents"])
+        self._session_ua = self._windows_safe_ua(random.choice(profile["user_agents"]), profile)
         if self.config.language_rotate:
             self._accept_language = random.choice(profile["accept_language"])
         else:
             self._accept_language = profile["accept_language"][0]
+
+    def _windows_safe_ua(self, ua: str, profile: Dict) -> str:
+        """When Chrome TLS is on, never emit Mac/Linux UA (JA3 is Windows Chrome)."""
+        if self.config.chrome_tls and self._session_profile in ("chrome", "edge"):
+            if any(tok in ua for tok in ("Macintosh", "Mac OS X", "Linux", "X11", "Android", "iPhone")):
+                return profile["user_agents"][0]
+        return ua
 
     def backoff_remaining(self) -> float:
         """Seconds left on adaptive WAF/rate-limit pause (0 if idle)."""
@@ -255,26 +274,32 @@ class EvasionSession:
             self._session_profile = profile_name
 
         profile = BROWSER_PROFILES[profile_name]
-        ua = self._select_ua(url, profile)
+        ua = self._windows_safe_ua(self._select_ua(url, profile), profile)
+        self._session_ua = ua
         # Prefer desktop Windows identity when Chrome TLS impersonation is on —
         # curl_cffi chrome146 JA3 is a Windows Chrome fingerprint.
         if self.config.chrome_tls and profile_name in ("chrome", "edge") and (
-            "Linux" in ua or "X11" in ua or "Android" in ua
+            "Linux" in ua or "X11" in ua or "Android" in ua or "Macintosh" in ua or "Mac OS X" in ua
         ):
             ua = profile["user_agents"][0]
             self._session_ua = ua
         mobile = "?1" if ("iPhone" in ua or ("Android" in ua and "Mobile" in ua)) else "?0"
-        platform = profile.get("sec_ch_ua_platform") or '"Windows"'
-        platform_version = profile.get("sec_ch_ua_platform_version") or '"15.0.0"'
-        if "Macintosh" in ua or "Mac OS X" in ua:
-            platform = '"macOS"'
-            platform_version = '"14.3.0"'
-        elif "Linux" in ua or "X11" in ua:
-            platform = '"Linux"'
-            platform_version = '"6.5.0"'
-        elif "iPhone" in ua:
-            platform = '"iOS"'
-            platform_version = '"17.2.0"'
+        # With Chrome TLS we always advertise Windows — matches JA3, not UA platform drift
+        if self.config.chrome_tls and profile_name in ("chrome", "edge"):
+            platform = '"Windows"'
+            platform_version = profile.get("sec_ch_ua_platform_version") or '"15.0.0"'
+        else:
+            platform = profile.get("sec_ch_ua_platform") or '"Windows"'
+            platform_version = profile.get("sec_ch_ua_platform_version") or '"15.0.0"'
+            if "Macintosh" in ua or "Mac OS X" in ua:
+                platform = '"macOS"'
+                platform_version = '"14.3.0"'
+            elif "Linux" in ua or "X11" in ua:
+                platform = '"Linux"'
+                platform_version = '"6.5.0"'
+            elif "iPhone" in ua:
+                platform = '"iOS"'
+                platform_version = '"17.2.0"'
 
         headers: Dict[str, str] = {
             "User-Agent": ua,
@@ -286,22 +311,38 @@ class EvasionSession:
             "Cache-Control": "max-age=0",
         }
 
-        # Full Client Hints bundle (Chrome/Edge) — closes Akamai CH-missing rules
+        # Low-entropy Client Hints only by default (real Chrome behaviour).
+        # High-entropy hints (full version / arch / bitness) only after Accept-CH.
         if profile.get("sec_ch_ua"):
             headers["Sec-CH-UA"] = profile["sec_ch_ua"]
             headers["Sec-CH-UA-Mobile"] = mobile
             headers["Sec-CH-UA-Platform"] = platform
-            if profile.get("sec_ch_ua_full_version_list"):
-                headers["Sec-CH-UA-Full-Version-List"] = profile["sec_ch_ua_full_version_list"]
-            if profile.get("sec_ch_ua_full_version"):
-                headers["Sec-CH-UA-Full-Version"] = profile["sec_ch_ua_full_version"]
-            headers["Sec-CH-UA-Platform-Version"] = platform_version
-            if profile.get("sec_ch_ua_arch"):
-                headers["Sec-CH-UA-Arch"] = profile["sec_ch_ua_arch"]
-            if profile.get("sec_ch_ua_bitness"):
-                headers["Sec-CH-UA-Bitness"] = profile["sec_ch_ua_bitness"]
-            if "sec_ch_ua_model" in profile:
-                headers["Sec-CH-UA-Model"] = profile.get("sec_ch_ua_model") or '""'
+            host_key = (urlparse(url).netloc or "").lower()
+            asked = {h.lower() for h in self._accept_ch_hints.get(host_key, set())}
+            wants_all = "*" in asked or "sec-ch-ua" in asked
+            if wants_all or any(
+                h in asked
+                for h in (
+                    "sec-ch-ua-full-version-list",
+                    "ua-full-version-list",
+                    "sec-ch-ua-full-version",
+                )
+            ):
+                if profile.get("sec_ch_ua_full_version_list"):
+                    headers["Sec-CH-UA-Full-Version-List"] = profile["sec_ch_ua_full_version_list"]
+                if profile.get("sec_ch_ua_full_version"):
+                    headers["Sec-CH-UA-Full-Version"] = profile["sec_ch_ua_full_version"]
+            if wants_all or "sec-ch-ua-platform-version" in asked or "ua-platform-version" in asked:
+                headers["Sec-CH-UA-Platform-Version"] = platform_version
+            if wants_all or "sec-ch-ua-arch" in asked or "ua-arch" in asked:
+                if profile.get("sec_ch_ua_arch"):
+                    headers["Sec-CH-UA-Arch"] = profile["sec_ch_ua_arch"]
+            if wants_all or "sec-ch-ua-bitness" in asked or "ua-bitness" in asked:
+                if profile.get("sec_ch_ua_bitness"):
+                    headers["Sec-CH-UA-Bitness"] = profile["sec_ch_ua_bitness"]
+            if wants_all or "sec-ch-ua-model" in asked or "ua-model" in asked:
+                if "sec_ch_ua_model" in profile:
+                    headers["Sec-CH-UA-Model"] = profile.get("sec_ch_ua_model") or '""'
             # Do NOT send Accept-CH on requests — browsers only receive that header.
 
         # Always emit Sec-Fetch-* when stealth is on (basic included) — closes missing-header gaps
@@ -392,6 +433,15 @@ class EvasionSession:
         headers: Optional[Dict[str, str]] = None,
     ):
         self._last_url = url
+        # Remember Accept-CH so subsequent requests only send high-entropy hints when asked
+        headers_l = _header_map(headers)
+        accept_ch = headers_l.get("accept-ch") or ""
+        if accept_ch:
+            host_key = (urlparse(url).netloc or "").lower()
+            hints = {part.strip().lower() for part in accept_ch.split(",") if part.strip()}
+            if hints:
+                bucket = self._accept_ch_hints.setdefault(host_key, set())
+                bucket.update(hints)
         if not self.config.challenge_detect and not self.config.adaptive_backoff:
             return
 

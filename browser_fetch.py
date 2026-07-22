@@ -422,7 +422,7 @@ def make_browser_fetcher(
         loop = asyncio.get_running_loop()
         cookie_header = ""
         if bool(getattr(config, "auto_sync_cookies", True)):
-            cookie_header = store.header_for(url) or store.as_cookie_string()
+            cookie_header = store.header_for(url)
         bm_wait = float(getattr(config, "bm_cookie_wait_seconds", 12.0) or 0)
         bm_settle = float(getattr(config, "bm_post_cookie_settle_seconds", 1.5) or 0)
         # Overall timeout must cover BM wait + page load
@@ -601,15 +601,27 @@ def _ingest_set_cookie_headers(store: SessionCookieStore, url: str, headers) -> 
             one = headers_l.get("set-cookie")
             if one:
                 raw_list = [one]
+        default_host = _host_label(url)
         for item in raw_list:
-            # name=value; Path=...
-            first = str(item).split(";", 1)[0]
-            if "=" in first:
-                name, value = first.split("=", 1)
-                store.ingest_selenium_cookies(
-                    [{"name": name.strip(), "value": value.strip(), "domain": _host_label(url)}],
-                    url,
-                )
+            text = str(item)
+            # name=value; Domain=...; Path=...
+            first = text.split(";", 1)[0]
+            if "=" not in first:
+                continue
+            name, value = first.split("=", 1)
+            domain = default_host
+            for attr in text.split(";")[1:]:
+                attr = attr.strip()
+                if "=" not in attr:
+                    continue
+                ak, av = attr.split("=", 1)
+                if ak.strip().lower() == "domain":
+                    domain = av.strip() or default_host
+                    break
+            store.ingest_selenium_cookies(
+                [{"name": name.strip(), "value": value.strip(), "domain": domain}],
+                url,
+            )
     except Exception:
         pass
 

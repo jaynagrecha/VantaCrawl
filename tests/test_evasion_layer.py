@@ -21,10 +21,13 @@ def test_browser_headers_include_sec_fetch_in_stealth():
     assert headers.get("Sec-Fetch-Mode") == "navigate"
     assert headers.get("Referer") == "https://lab.local/home"
     assert "Sec-CH-UA" in headers
-    assert "Sec-CH-UA-Full-Version-List" in headers
+    assert "Sec-CH-UA-Full-Version-List" not in headers
     assert "Accept-CH" not in headers
     assert "Linux" not in headers["User-Agent"]
     assert "X11" not in headers["User-Agent"]
+    assert "Macintosh" not in headers["User-Agent"]
+    assert '"Windows"' in headers.get("Sec-CH-UA-Platform", "")
+    assert "Google Chrome" in headers["Sec-CH-UA"]
 
 
 def test_netlify_403_is_not_waf_backoff():
