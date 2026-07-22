@@ -148,12 +148,25 @@ def test_secrets_static_unverified():
     result = _assess(
         category="secrets_exposure",
         severity="high",
-        detail="Exposed Boomr API Key in response body",
+        detail="Exposed Generic API Key in response body",
         evidence="Fc8f46b5abcdef0123456789abcdef01",
         validate_secrets_live=False,
     )
     assert result.impact == "possible_credential"
     assert result.validation == "unverified"
+
+
+def test_boomr_static_is_client_public_key():
+    result = _assess(
+        category="secrets_exposure",
+        severity="high",
+        detail="Exposed Boomr API Key in response body (assigned to `window.BOOMR_API_key`)",
+        evidence="Fc8f46b5abcdef0123456789abcdef01",
+        validate_secrets_live=False,
+    )
+    assert result.role == "client_public_key"
+    assert result.impact == "limited_impact"
+    assert result.severity in ("info", "low")
 
 
 def test_record_finding_stores_impact_fields():

@@ -753,6 +753,32 @@ def assignment_note(body_text: str, start: int, end: int, value: str) -> str:
     return f" (assigned to `{ident}`)"
 
 
+# Browser RUM / analytics / telemetry keys that are designed to ship in JS.
+# Same policy as Google Maps/Firebase browser keys: limited_impact, not stealable.
+_CLIENT_RUM_LABEL_MARKERS = (
+    "boomr",
+    "boomerang",
+    "akamai mpulse",
+    "mpulse",
+    "new relic browser",
+    "nr browser",
+    "browser monitoring",
+    "datadog rum",
+    "dd rum",
+    "sentry dsn",
+    "sentry public",
+    "segment write",
+    "mixpanel",
+    "amplitude api",
+    "hotjar",
+    "fullstory",
+    "heap analytics",
+    "google analytics",
+    "gtm container",
+    "googletagmanager",
+)
+
+
 def is_client_public_key(label: str, evidence: str = "") -> bool:
     """True for intentionally browser-embeddable / publishable credentials."""
     low = (label or "").lower()
@@ -770,6 +796,11 @@ def is_client_public_key(label: str, evidence: str = "") -> bool:
         or "firebase api" in low
         or "google maps" in low
     ):
+        return True
+    if any(marker in low for marker in _CLIENT_RUM_LABEL_MARKERS):
+        return True
+    # Assignment names often appear in detail notes: window.BOOMR_API_key
+    if re.search(r"(?i)\bboomr(?:_api)?(?:_key)?\b", low):
         return True
     return False
 

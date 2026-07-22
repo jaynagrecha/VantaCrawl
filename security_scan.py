@@ -475,6 +475,14 @@ def _secret_looks_real(raw: str) -> bool:
     return True
 
 
+def _lhs_is_html_data_or_aria_attr(raw: str) -> bool:
+    """True for HTML data-* / aria-* attributes mistaken for credential assignments."""
+    lhs = _lhs_from_raw(raw).lower().rsplit(".", 1)[-1]
+    if not lhs:
+        return False
+    return lhs.startswith("data-") or lhs.startswith("aria-") or lhs.startswith("data_")
+
+
 def _should_skip_secret_match(
     *,
     label: str,
@@ -488,6 +496,13 @@ def _should_skip_secret_match(
     if label not in _GENERIC_SECRET_LABELS_FOR_FP:
         return False
     if _value_is_form_field_noise(value, raw):
+        return True
+    # data-api-key="…" / aria-* attributes are markup metadata, not credentials.
+    if _lhs_is_html_data_or_aria_attr(raw):
+        return True
+    # Generic pattern often matches *inside* data-api-key=… (match starts at "api-key").
+    pre = body_text[max(0, start - 8) : start]
+    if re.search(r"(?i)(?:data|aria)-$", pre):
         return True
     # Assignments living inside <input|textarea|select|label|…> are form markup, not secrets.
     if _in_html_form_control_tag(body_text, start):
