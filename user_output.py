@@ -75,15 +75,15 @@ def sanitize_error_message(error: Any, *, max_len: int = 240) -> str:
 
 def _http_label(code: int) -> str:
     if code in HTTP_STATUS_LABELS:
-        return HTTP_STATUS_LABELS[code]
+        return f"HTTP {code} — {HTTP_STATUS_LABELS[code]}"
     if 200 <= code < 300:
-        return "page found"
+        return f"HTTP {code} — page found"
     if 300 <= code < 400:
-        return "redirect"
+        return f"HTTP {code} — redirect"
     if 400 <= code < 500:
-        return "client error"
-    if code >= 500:
-        return "server error"
+        return f"HTTP {code} — client error"
+    if 500 <= code < 600:
+        return f"HTTP {code} — server error"
     return f"HTTP {code}"
 
 

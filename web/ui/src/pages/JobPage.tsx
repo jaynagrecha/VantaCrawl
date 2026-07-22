@@ -419,7 +419,15 @@ export default function JobPage() {
             {
               label: "Blocks",
               value: tileValue(progress.challenge_events ?? progress.blocks),
-              hint: "WAF/bot challenges (403/429/etc.) — not the same as Errors",
+              hint:
+                Number(progress.access_deny_count || 0) > 0
+                  ? `WAF/bot challenges — separate from ${progress.access_deny_count} HTTP access denie(s) (401/403)`
+                  : "WAF/bot challenges (403/429/etc.) — not the same as Errors or bare Netlify 403s",
+            },
+            {
+              label: "Denies",
+              value: tileValue(progress.access_deny_count),
+              hint: "HTTP 401/403/405 without a WAF fingerprint (common on Netlify/Vercel)",
             },
             {
               label: "Errors",
@@ -442,9 +450,15 @@ export default function JobPage() {
           ];
           const journal = Array.isArray(progress.block_journal) ? progress.block_journal : [];
           const statusCounts = (progress.block_status_counts || {}) as Record<string, number>;
+          const denyCounts = (progress.access_deny_status_counts || {}) as Record<string, number>;
           const statusSummary = Object.entries(statusCounts)
             .sort((a, b) => Number(b[1]) - Number(a[1]))
             .slice(0, 6)
+            .map(([code, count]) => `${code}×${count}`)
+            .join(" · ");
+          const denySummary = Object.entries(denyCounts)
+            .sort((a, b) => Number(b[1]) - Number(a[1]))
+            .slice(0, 4)
             .map(([code, count]) => `${code}×${count}`)
             .join(" · ");
           return (
@@ -484,17 +498,20 @@ export default function JobPage() {
                   </div>
                 ))}
               </div>
-              {(journal.length > 0 || statusSummary) && (
+              {(journal.length > 0 || statusSummary || denySummary) && (
                 <div className="block-journal">
                   <div className="block-journal-head">
                     <h3>Block / challenge journal</h3>
                     {statusSummary ? <span className="muted">Statuses: {statusSummary}</span> : null}
                   </div>
                   <p className="muted block-journal-help">
-                    Live view of what was blocked and why. Full headers + body snippets land in the defense report.
+                    WAF Blocks stay at 0 on bare Netlify/Vercel 403s (not a bot wall). Those still
+                    show here as access_deny with HTTP status codes.
+                    {denySummary ? ` Access denies: ${denySummary}.` : ""} Full headers + body
+                    snippets land in the defense report.
                   </p>
                   {journal.length === 0 ? (
-                    <p className="muted">Waiting for the first catch event…</p>
+                    <p className="muted">Waiting for the first catch/deny event…</p>
                   ) : (
                     <ul className="block-journal-list">
                       {[...journal].reverse().map((ev: any, idx: number) => {

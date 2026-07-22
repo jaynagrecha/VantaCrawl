@@ -212,6 +212,11 @@ class DefenseTracker:
     signal_counts: Counter = field(default_factory=Counter)
     block_status_counts: Counter = field(default_factory=Counter)
     protection_block_counts: Counter = field(default_factory=Counter)
+    # Non-WAF HTTP denies (Netlify/Vercel permission 403s, auth walls) — visible
+    # in the cockpit without counting as WAF Blocks / arming backoff.
+    access_deny_count: int = 0
+    access_deny_status_counts: Counter = field(default_factory=Counter)
+    access_deny_events: List[DefenseEvent] = field(default_factory=list)
     caught_count: int = 0
     unchallenged_count: int = 0
     error_count: int = 0
@@ -250,6 +255,7 @@ class DefenseTracker:
         body_preview: str = "",
     ):
         headers = dict(headers or {})
+        headers_l = {str(k).lower(): v for k, v in headers.items()}
         self.observe_headers(headers, body_preview)
         on_response = _fingerprint_protections(headers, body_preview)
         forensic_headers = _extract_forensic_headers(headers)
@@ -257,12 +263,12 @@ class DefenseTracker:
 
         # Enrich preview with header tokens for detect_challenge
         bits = [body_preview]
-        server = (headers.get("server") or "").lower()
+        server = str(headers_l.get("server") or "").lower()
         if "cloudflare" in server:
             bits.append("cloudflare")
-        if headers.get("cf-ray") or headers.get("cf-mitigated"):
+        if headers_l.get("cf-ray") or headers_l.get("cf-mitigated"):
             bits.append("cf-challenge")
-        if headers.get("cf-mitigated"):
+        if headers_l.get("cf-mitigated"):
             bits.append("challenge-platform")
         for name in on_response:
             bits.append(name.replace("_", " "))
@@ -329,6 +335,30 @@ class DefenseTracker:
                 self.block_events.pop(0)
                 self.block_events.append(event)
             return
+
+        # Bare access denies (static PaaS 403/401) — still journal with status codes
+        # so the cockpit shows HTTP denies without treating them as WAF catches.
+        if status_code in (401, 403, 405):
+            self.access_deny_count += 1
+            self.access_deny_status_counts[str(status_code)] += 1
+            deny_event = DefenseEvent(
+                url=url,
+                status=status_code,
+                outcome="access_deny",
+                signal="access_deny",
+                protections=on_response,
+                reason=(
+                    f"HTTP {status_code} without WAF/bot fingerprint "
+                    f"(permission/auth deny or missing path — not counted as a WAF Block)."
+                ),
+                headers=forensic_headers,
+                body_snippet=snippet[:160],
+            )
+            if len(self.access_deny_events) < self._max_block_events:
+                self.access_deny_events.append(deny_event)
+            elif self.access_deny_events:
+                self.access_deny_events.pop(0)
+                self.access_deny_events.append(deny_event)
 
         if status_code >= 500:
             self.error_count += 1
@@ -414,6 +444,9 @@ class DefenseTracker:
             "signal_breakdown": dict(self.signal_counts),
             "block_status_counts": dict(self.block_status_counts),
             "protection_block_counts": dict(self.protection_block_counts),
+            "access_deny_count": self.access_deny_count,
+            "access_deny_status_counts": dict(self.access_deny_status_counts),
+            "access_deny_journal": [e.journal_dict() for e in self.access_deny_events[-30:]],
             "fingerprint_notes": list(self.fingerprint_notes),
             "verdict_title": verdict_title,
             "verdict_body": verdict_body,
@@ -428,6 +461,8 @@ class DefenseTracker:
             "note": (
                 "completed_without_challenge means no challenge/block signal was detected — "
                 "not that a CAPTCHA or bot wall was cracked. "
+                "access_deny_count is bare HTTP 401/403/405 without a WAF fingerprint "
+                "(common on Netlify/Vercel) — shown with status codes but not counted as WAF Blocks. "
                 "block_events_forensic includes status, protections, headers, and body snippets."
             ),
         }
@@ -475,10 +510,18 @@ class DefenseTracker:
         lines.append(f"  Rate-limit events (429 etc.):      {data['rate_limit_events']}")
         lines.append(f"  CAPTCHA-related signals:           {data['captcha_signals']}")
         lines.append(f"  Bot-wall / WAF-style signals:      {data['bot_wall_signals']}")
+        lines.append(f"  HTTP access denies (non-WAF):      {data.get('access_deny_count', 0)}")
         lines.append("")
         if data["block_status_counts"]:
             lines.append("Block / challenge HTTP status codes:")
             for code, count in sorted(data["block_status_counts"].items(), key=lambda x: -int(x[1])):
+                lines.append(f"  • HTTP {code}: {count}")
+            lines.append("")
+        if data.get("access_deny_status_counts"):
+            lines.append("Access-deny HTTP status codes (not WAF Blocks):")
+            for code, count in sorted(
+                data["access_deny_status_counts"].items(), key=lambda x: -int(x[1])
+            ):
                 lines.append(f"  • HTTP {code}: {count}")
             lines.append("")
         lines.append(
