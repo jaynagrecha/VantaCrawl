@@ -1336,7 +1336,12 @@ async def _run_security_checks(
             await emit(category, severity, origin, detail, evidence=evidence)
     if config.security_scan and config.vuln_scan:
         for item in run_passive_vuln_scan(
-            url, body_text, forms, headers or {}, content_type
+            url,
+            body_text,
+            forms,
+            headers or {},
+            content_type,
+            cookies=list(getattr(stats, "cookie_inventory", []) or []),
         ):
             if len(item) >= 4:
                 category, severity, detail, evidence = item[0], item[1], item[2], item[3]
@@ -1356,6 +1361,18 @@ async def _run_security_checks(
                 else:
                     category, severity, detail, evidence = item[0], item[1], item[2], None
                 await emit(category, severity, url, detail, evidence=evidence)
+            # Firebase Auth/Storage abuse when JS embeds firebaseConfig
+            try:
+                from exploit_probes import probe_firebase_from_body
+
+                for item in await probe_firebase_from_body(client, url, body_text or ""):
+                    if len(item) >= 4:
+                        category, severity, detail, evidence = item[0], item[1], item[2], item[3]
+                    else:
+                        category, severity, detail, evidence = item[0], item[1], item[2], None
+                    await emit(category, severity, url, detail, evidence=evidence)
+            except Exception:
+                pass
 
 
 async def _probe_form_actions(client, forms, output_callback, stats):

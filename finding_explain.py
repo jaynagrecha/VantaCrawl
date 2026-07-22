@@ -381,6 +381,41 @@ EXPLAINERS: List[Tuple[tuple, Dict[str, str]]] = [
             "fix": "Remove or genericize Server / X-Powered-By headers; keep software patched.",
         },
     ),
+    (
+        ("csrf", "cross-site request forgery"),
+        {
+            "title": "Cross-Site Request Forgery (CSRF) risk",
+            "what": (
+                "A state-changing form may be submittable from another site because no CSRF token "
+                "was found. Severity rises when a session cookie is also present."
+            ),
+            "attacker": (
+                "They lure a logged-in user to a malicious page that auto-submits your form "
+                "(change email, place order, delete account)."
+            ),
+            "fix": (
+                "Add anti-CSRF tokens (Synchronizer Token / double-submit cookie), prefer SameSite=Lax/Strict "
+                "session cookies, and require re-auth for sensitive actions."
+            ),
+        },
+    ),
+    (
+        ("idor", "insecure direct object"),
+        {
+            "title": "Insecure Direct Object Reference (IDOR)",
+            "what": (
+                "Object identifiers in requests may allow accessing another user’s records if "
+                "authorization is missing. Active confirmation requires divergent responses for swapped IDs."
+            ),
+            "attacker": (
+                "They change id/user_id/order_id in API calls to read or modify other tenants’ data."
+            ),
+            "fix": (
+                "Enforce server-side authorization on every object access; use opaque IDs; never trust "
+                "client-supplied ownership."
+            ),
+        },
+    ),
 ]
 
 
@@ -405,6 +440,8 @@ def explain_finding(category: str = "", detail: str = "") -> Dict[str, str]:
         "form_probe": ("form",),
         "mixed_content": ("mixed_content",),
         "http_methods": ("http_methods", "trace", "options"),
+        "csrf": ("csrf", "cross-site request"),
+        "idor": ("idor", "insecure direct object"),
         "well_known": ("well_known",),
         "cloud_url": ("cloud_url", "firebase", "supabase", "azure"),
         "file_metadata": ("file_metadata", "gps", "exif", "author"),
