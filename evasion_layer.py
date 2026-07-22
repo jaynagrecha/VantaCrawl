@@ -139,8 +139,8 @@ CHALLENGE_MARKERS = (
     "edgesuite",
     "x-amzn-waf",
     "aws waf",
-    "access denied",
-    "request blocked",
+    # NOTE: bare "access denied" / "request blocked" are NOT challenge markers —
+    # S3/Netlify permission pages use those strings. Matched only with WAF context below.
     "bot detection",
     "perimeterx",
     "datadome",
@@ -150,6 +150,20 @@ CHALLENGE_MARKERS = (
 )
 
 CHALLENGE_STATUS = {403, 429, 503}
+
+# Hosts / servers that emit permission 403s without a bot wall
+_STATIC_PERMISSION_SERVERS = (
+    "netlify",
+    "vercel",
+    "github.com",
+    "gitlab.io",
+    "pages.dev",
+    "cloudflare pages",
+    "render.com",
+    "heroku",
+    "amazon s3",
+    "amazons3",
+)
 
 
 @dataclass
@@ -421,6 +435,67 @@ class EvasionSession:
         )
 
 
+def _header_map(headers: Optional[Dict[str, str]]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    if not headers:
+        return out
+    try:
+        for key, value in dict(headers).items():
+            out[str(key).lower()] = str(value)
+    except Exception:
+        pass
+    return out
+
+
+def is_permission_or_storage_deny(
+    status_code: int,
+    body: str = "",
+    headers: Optional[Dict[str, str]] = None,
+) -> bool:
+    """True for S3/Netlify/generic Access Denied — not a bot-wall challenge.
+
+    These must not arm WAF backoff or force Chrome escalation; the crawl should
+    skip the path and keep moving.
+    """
+    if status_code not in (401, 403, 405):
+        return False
+    headers_l = _header_map(headers)
+    server = (headers_l.get("server") or "").lower()
+    body_l = (body or "").lower()[:8000]
+    header_blob = " ".join(f"{k}:{v}" for k, v in headers_l.items())
+    combined = f"{body_l}\n{header_blob}\n{server}"
+
+    # Real bot / WAF walls — never treat as soft permission deny
+    bot_tokens = (
+        "akamaighost",
+        "edgesuite",
+        "errors.edgesuite.net",
+        "x-amzn-waf",
+        "aws waf",
+        "cf-ray",
+        "cf-mitigated",
+        "challenge-platform",
+        "datadome",
+        "perimeterx",
+        "sucuri",
+    )
+    if any(tok in combined for tok in bot_tokens):
+        return False
+    if "akamai" in server or "cloudflare" in server:
+        return False
+
+    if any(tok in server for tok in _STATIC_PERMISSION_SERVERS):
+        return True
+    # S3 XML error body (often behind CloudFront with Server: AmazonS3)
+    compact = body_l.replace(" ", "")
+    if "<error>" in body_l and "accessdenied" in compact:
+        return True
+    if "access denied" in body_l or "request blocked" in body_l:
+        # Generic deny copy with no bot markers above
+        return True
+    return False
+
+
 def detect_challenge(
     status_code: int,
     body: str = "",
@@ -429,23 +504,22 @@ def detect_challenge(
     """Detect bot-wall / rate-limit signals that justify adaptive backoff.
 
     Requires WAF/challenge evidence (body markers or known WAF response headers).
-    Bare HTTP 403 from static hosts (Netlify/Vercel permission denials, missing
+    Bare HTTP 403 from static hosts (Netlify/Vercel/S3 permission denials, missing
     files) must NOT arm WAF backoff — that was parking enum scans with
     Protections=none and Blocks climbing on every 403.
     """
     body_l = (body or "").lower()[:8000]
-    header_blob = ""
-    if headers:
-        try:
-            header_blob = " ".join(
-                f"{str(k).lower()}:{str(v).lower()}" for k, v in dict(headers).items()
-            )
-        except Exception:
-            header_blob = ""
+    headers_l = _header_map(headers)
+    header_blob = " ".join(f"{k}:{v}" for k, v in headers_l.items())
     combined = f"{body_l}\n{header_blob}"
+    server_l = (headers_l.get("server") or "").lower()
 
     if status_code == 429:
         return "rate_limit"
+
+    # Permission / object-storage denies — never a challenge
+    if is_permission_or_storage_deny(status_code, body, headers):
+        return ""
 
     soft_denied = (
         ("access denied" in body_l and ("akamai" in body_l or "edgesuite" in body_l or "reference #" in body_l))
@@ -464,44 +538,35 @@ def detect_challenge(
     if status_code not in CHALLENGE_STATUS:
         return ""
 
-    # Static / PaaS hosts often 403 missing paths — not a bot wall.
-    static_hosts = (
-        "netlify",
-        "vercel",
-        "github.com",
-        "gitlab.io",
-        "pages.dev",
-        "cloudflare pages",
-        "render.com",
-        "heroku",
-        "amazon s3",
-        "amazons3",
-    )
-    server_l = ""
-    if headers:
-        for key, value in dict(headers).items():
-            if str(key).lower() == "server":
-                server_l = str(value).lower()
-                break
-    is_static_paas = any(tok in server_l or tok in header_blob for tok in static_hosts)
+    is_static_paas = any(tok in server_l or tok in header_blob for tok in _STATIC_PERMISSION_SERVERS)
 
     for marker in CHALLENGE_MARKERS:
-        if marker in body_l or marker in header_blob:
-            # Don't let generic "access denied" alone on Netlify count as WAF
-            if is_static_paas and marker in ("access denied", "request blocked") and not any(
-                w in combined
-                for w in (
-                    "cloudflare",
-                    "cf-ray",
-                    "akamai",
-                    "sucuri",
-                    "datadome",
-                    "perimeterx",
-                    "x-amzn-waf",
-                )
-            ):
+        if marker in body_l or marker in header_blob or marker in server_l:
+            if is_static_paas and marker in ("access denied", "request blocked"):
                 continue
             return marker
+    # Explicit generic deny phrases only count with bot context (already handled above)
+    if "access denied" in body_l or "request blocked" in body_l:
+        if any(
+            w in combined
+            for w in (
+                "cloudflare",
+                "cf-ray",
+                "akamai",
+                "akamaighost",
+                "edgesuite",
+                "sucuri",
+                "datadome",
+                "perimeterx",
+                "x-amzn-waf",
+            )
+        ):
+            if "akamai" in combined or "akamaighost" in combined or "edgesuite" in combined:
+                return "akamai_block"
+            if "cloudflare" in combined or "cf-ray" in combined:
+                return "cloudflare_block"
+            return "waf_block"
+        return ""
     if status_code == 403 and ("cloudflare" in combined or "cf-ray" in combined):
         return "cloudflare_block"
     if status_code == 403 and any(

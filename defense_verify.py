@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
-from evasion_layer import detect_challenge
+from evasion_layer import detect_challenge, is_permission_or_storage_deny
 
 try:
     from zoneinfo import ZoneInfo
@@ -44,7 +44,9 @@ PROTECTION_SIGNATURES = (
     ("akamai", ("akamai", "akamai-origin-hop", "x-akamai", "edgesuite", "akamaighost")),
     ("imperva", ("imperva", "incapsula", "x-iinfo")),
     ("sucuri", ("sucuri", "x-sucuri")),
-    ("aws_waf", ("x-amzn-waf", "awselb", "x-amz-cf", "x-amzn-requestid", "aws waf")),
+    # Strict: do NOT treat CloudFront (x-amz-cf-*) or generic x-amzn-requestid as AWS WAF —
+    # those ride on normal S3/CF Access Denied pages and falsely inflate Blocks.
+    ("aws_waf", ("x-amzn-waf", "aws waf", "awswaf")),
     ("modsecurity", ("mod_security", "modsecurity")),
     ("rate_limit", ("retry-after",)),
 )
@@ -279,7 +281,10 @@ class DefenseTracker:
 
         signal = detect_challenge(status_code, body_preview, headers=headers)
         preview_l = preview.lower()
-        if not signal and status_code in CATCH_STATUSES:
+        # Permission / S3 / generic Access Denied → journal as access_deny, never WAF Blocks
+        if is_permission_or_storage_deny(status_code, body_preview, headers):
+            signal = ""
+        elif not signal and status_code in CATCH_STATUSES:
             for marker, label in (
                 ("turnstile", "cloudflare_turnstile"),
                 ("hcaptcha", "hcaptcha"),
@@ -287,24 +292,54 @@ class DefenseTracker:
                 ("g-recaptcha", "recaptcha"),
                 ("akamai", "akamai"),
                 ("x-amzn-waf", "aws_waf"),
-                ("access denied", "access denied"),
-                ("request blocked", "request blocked"),
             ):
                 if marker in preview_l:
-                    # Netlify/Vercel permission 403s often say "Access denied" without a WAF.
-                    if label in ("access denied", "request blocked") and any(
-                        tok in server for tok in ("netlify", "vercel", "github.com", "pages.dev")
-                    ) and not on_response:
-                        continue
                     signal = label
                     break
+            # Bare "access denied" / "request blocked" without bot markers → not a catch
+            if not signal and (
+                "access denied" in preview_l or "request blocked" in preview_l
+            ):
+                if not any(
+                    tok in preview_l
+                    for tok in (
+                        "akamai",
+                        "akamaighost",
+                        "edgesuite",
+                        "cloudflare",
+                        "cf-ray",
+                        "x-amzn-waf",
+                        "datadome",
+                        "sucuri",
+                    )
+                ):
+                    signal = ""
 
-        # Hard deny statuses with a known WAF fingerprint still count as caught
-        if not signal and status_code in CATCH_STATUSES and on_response:
-            preferred = [p for p in on_response if p != "rate_limit"]
-            signal = preferred[0] if preferred else on_response[0]
-            if status_code == 429:
-                signal = "rate_limit"
+        # Hard deny statuses with a known *bot* WAF fingerprint still count as caught.
+        # Ignore CloudFront/CDN-only fingerprints that are not real bot walls.
+        bot_protections = [
+            p
+            for p in on_response
+            if p
+            in (
+                "cloudflare",
+                "cloudflare_turnstile",
+                "akamai",
+                "aws_waf",
+                "datadome",
+                "perimeterx",
+                "imperva",
+                "sucuri",
+                "recaptcha",
+                "hcaptcha",
+            )
+        ]
+        if not signal and status_code in CATCH_STATUSES and bot_protections:
+            if not is_permission_or_storage_deny(status_code, body_preview, headers):
+                preferred = [p for p in bot_protections if p != "rate_limit"]
+                signal = preferred[0] if preferred else bot_protections[0]
+                if status_code == 429:
+                    signal = "rate_limit"
 
         if signal:
             self.caught_count += 1

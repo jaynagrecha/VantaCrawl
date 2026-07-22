@@ -591,7 +591,50 @@ def normalize_raw_url(raw, base_url):
     full_url = raw if raw.startswith(("http://", "https://")) else urljoin(base_url, raw)
     if "${" in full_url or not is_valid_url(full_url):
         return None
-    return full_url
+    return canonicalize_crawl_url(full_url, base_url=base_url)
+
+
+def canonicalize_crawl_url(url: str, *, base_url: str = "") -> str:
+    """Strip default ports and prefer HTTPS when the crawl base is HTTPS.
+
+    Cleartext ``http://host:80/`` trips Akamai bot rules and is useless when the
+    scan started on HTTPS — rewrite to ``https://host/``.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+    if parsed.scheme not in ("http", "https"):
+        return url
+    host = parsed.hostname
+    if not host:
+        return url
+    base_scheme = ""
+    try:
+        base_scheme = (urlparse(base_url).scheme or "").lower() if base_url else ""
+    except Exception:
+        base_scheme = ""
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    # When the crawl origin is HTTPS, never follow cleartext http twin URLs
+    if scheme == "http" and base_scheme == "https":
+        scheme = "https"
+        if port in (80, 443):
+            port = None
+    elif scheme == "http" and port == 80:
+        port = None
+    elif scheme == "https" and port == 443:
+        port = None
+    netloc = f"{host}:{port}" if port else host
+    if parsed.username:
+        user = parsed.username
+        if parsed.password:
+            user = f"{user}:{parsed.password}"
+        netloc = f"{user}@{netloc}"
+    path = parsed.path or "/"
+    from urllib.parse import urlunparse
+
+    return urlunparse((scheme, netloc, path, parsed.params, parsed.query, ""))
 
 
 def filter_scoped_urls(urls, base_domain, restrict_domain):
@@ -750,6 +793,7 @@ def extract_links(soup, page_url):
 
 
 def seed_urls(start_url, restrict_domain, ignore_robots=True):
+    start_url = canonicalize_crawl_url(start_url, base_url=start_url)
     seeds = [start_url]
     if restrict_domain:
         base = start_url if start_url.endswith("/") else start_url + "/"
@@ -757,7 +801,7 @@ def seed_urls(start_url, restrict_domain, ignore_robots=True):
         if not ignore_robots:
             extra_paths.insert(0, "robots.txt")
         for path in extra_paths:
-            seeds.append(urljoin(base, path))
+            seeds.append(canonicalize_crawl_url(urljoin(base, path), base_url=start_url))
     return seeds
 
 
@@ -1694,6 +1738,10 @@ def enqueue_discovered_url(
 ):
     if max_link_depth and link_depth > max_link_depth:
         return False
+    try:
+        url = canonicalize_crawl_url(url, base_url=url)
+    except Exception:
+        pass
     if url in discovered:
         return False
     discovered.add(url)

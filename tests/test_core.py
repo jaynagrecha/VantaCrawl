@@ -37,7 +37,8 @@ def test_skip_tracking_pixel():
 
 def test_init_crawl_state():
     discovered, queue = init_crawl_state("https://example.com", True, True)
-    assert "https://example.com" in discovered
+    assert "https://example.com/" in discovered or "https://example.com" in discovered
+    assert any(u.endswith("sitemap.xml") for u in discovered)
 
 
 def test_invalid_ipv6_url_rejected():

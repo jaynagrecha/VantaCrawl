@@ -42,6 +42,14 @@ def test_apply_to_dict_headers_client():
 
 
 def test_challenge_heuristic():
-    assert _response_looks_challenged(403, "Access Denied")
+    # Bare permission deny is not a bot wall
+    assert not _response_looks_challenged(403, "Access Denied")
+    assert not _response_looks_challenged(
+        403,
+        "Access Denied",
+        headers={"Server": "AmazonS3"},
+    )
+    # Real Akamai / rate-limit still escalate
+    assert _response_looks_challenged(403, "Access Denied", headers={"Server": "AkamaiGHost"})
     assert _response_looks_challenged(429, "")
     assert not _response_looks_challenged(200, "<html><body>Welcome</body></html>")

@@ -19,7 +19,7 @@ import httpx
 
 from auth_login import selenium_login
 from crawler_common import get_random_user_agent, is_html_url
-from evasion_layer import detect_challenge, pick_user_agent_for_selenium
+from evasion_layer import detect_challenge, is_permission_or_storage_deny, pick_user_agent_for_selenium
 from session_cookies import SessionCookieStore
 
 _executor = ThreadPoolExecutor(max_workers=1)
@@ -214,23 +214,31 @@ def quit_selenium_driver() -> None:
         _driver_ua = ""
 
 
-def _response_looks_challenged(status_code: int, body_text: str) -> bool:
-    if detect_challenge(status_code, body_text or ""):
+def _response_looks_challenged(
+    status_code: int,
+    body_text: str,
+    headers: Optional[dict] = None,
+) -> bool:
+    """True only for real bot-wall / rate-limit challenges.
+
+    Bare 403 Access Denied (S3/Netlify/permission) must NOT escalate to Chrome
+    or look like a WAF block — that was stalling crawls on every missing path.
+    """
+    if is_permission_or_storage_deny(status_code, body_text or "", headers):
+        return False
+    if detect_challenge(status_code, body_text or "", headers=headers):
+        return True
+    if status_code == 429:
         return True
     low = (body_text or "").lower()
-    if status_code in (401, 403, 429, 503):
-        return True
-    # Soft challenges sometimes return 200 with interstitial markup
+    # Soft interstitials sometimes return 200
     markers = (
-        "access denied",
         "attention required",
         "checking your browser",
         "cf-browser-verification",
-        "robots or humans",
-        "akamai",
-        "edgesuite",
+        "challenge-platform",
     )
-    return any(m in low for m in markers[:6]) and ("challenge" in low or "denied" in low or "captcha" in low)
+    return any(m in low for m in markers)
 
 
 def make_browser_fetcher(
@@ -301,7 +309,11 @@ def make_browser_fetcher(
                     body_text = response.text
                 except Exception:
                     body_text = (response.content or b"").decode("utf-8", errors="replace")
-                challenged = _response_looks_challenged(response.status_code, body_text)
+                challenged = _response_looks_challenged(
+                    response.status_code,
+                    body_text,
+                    headers=dict(response.headers) if response.headers is not None else None,
+                )
                 if not challenged and 200 <= response.status_code < 400:
                     # Opportunistic Set-Cookie capture from HTTP path
                     if auto_cookies:
