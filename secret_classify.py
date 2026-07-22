@@ -229,6 +229,39 @@ _STOP_PRODUCTS = {
     "component",
     "template",
     "doctype",
+    # Browser storage / DOM helpers — never product names ("Set Item API Key")
+    "setitem",
+    "getitem",
+    "removeitem",
+    "clear",
+    "localstorage",
+    "sessionstorage",
+    "storage",
+    "indexeddb",
+    "cookie",
+    "cookies",
+    "document",
+    "window",
+    "navigator",
+    "location",
+    "history",
+    "redux",
+    "toolkit",
+    "react",
+    "vue",
+    "angular",
+    "jquery",
+    "axios",
+    "fetch",
+    "xhr",
+    "xmlhttprequest",
+    "console",
+    "error",
+    "errors",
+    "length",
+    "prototype",
+    "tostring",
+    "valueof",
 }
 
 _KIND_STOP = {
@@ -730,15 +763,34 @@ def is_client_public_key(label: str, evidence: str = "") -> bool:
         return True
     if ev.startswith("pk_live_") or ev.startswith("pk_test_"):
         return True
-    if ev.startswith("AIza") or "maps api" in low or "google cloud / maps" in low:
+    if (
+        ev.startswith("AIza")
+        or "maps api" in low
+        or "google cloud / maps" in low
+        or "firebase api" in low
+        or "google maps" in low
+    ):
         return True
     return False
 
 
 def severity_for_kind(label: str, default: str = "high", evidence: str = "") -> str:
+    """Static severity before live checks.
+
+    Browser Google/Firebase ``AIza…`` keys default to **low** — they are often
+    intentional client keys. Live validation may raise to medium when a probe
+    proves the key is broadly usable / unrestricted.
+    """
     low = (label or "").lower()
+    ev = (evidence or "").strip()
     if is_client_public_key(label, evidence):
-        return "medium" if ("publishable" in low or "maps" in low or "google" in low or (evidence or "").startswith("AIza")) else "low"
+        # Stripe publishable stays medium (known payment surface); Google/AIza stays low
+        # until live proof of unrestricted use.
+        if "publishable" in low or ev.startswith("pk_live_") or ev.startswith("pk_test_"):
+            return "medium"
+        if ev.startswith("AIza") or "maps" in low or "google" in low or "firebase" in low:
+            return "low"
+        return "low"
     if any(x in low for x in ("password", "private key", "secret access", "client secret", "auth token")):
         return "critical" if "publishable" not in low else "medium"
     if "publishable" in low or "client id" in low:
