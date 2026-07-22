@@ -123,3 +123,27 @@ def test_to_dict_includes_protections_detail():
     assert data["protections_detail"]
     assert data["protections_label"] != "none"
     assert any(r["vendor"] in ("cloudflare", "rate_limit") for r in data["protections_detail"])
+
+
+def test_akamai_rate_burst_in_inventory_and_journal():
+    tracker = DefenseTracker(start_url="https://wu.example/")
+    body = (
+        "Access Denied — traffic classified as DoS under rule: Rate-Burst. "
+        "Reference #18.abc AkamaiGHost errors.edgesuite.net"
+    )
+    tracker.record_response(
+        "https://wu.example/send",
+        403,
+        {"Server": "AkamaiGHost", "Set-Cookie": "_abck=tok; Path=/"},
+        body,
+    )
+    assert tracker.signal_counts.get("akamai_rate_burst") == 1
+    assert tracker.rate_limit_count == 1
+    event = tracker.block_events[-1]
+    assert event.signal == "akamai_rate_burst"
+    assert "Rate-Burst" in event.reason
+    detail = {row["vendor"]: row for row in tracker.protections_detail()}
+    assert "akamai" in detail
+    assert any("rate" in e.lower() or "burst" in e.lower() for e in detail["akamai"]["evidence"])
+    assert "rate_limit" in detail
+    assert detail["rate_limit"]["active"] is True
