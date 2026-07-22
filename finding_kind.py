@@ -24,14 +24,12 @@ _VULN_CATEGORIES = frozenset(
         "http_methods",
         "cors",
         "api_leak",
-        "file_upload",
         "mixed_content",
         "sensitive_path",
         "oauth",
         "jwt",
         "graphql",
         "mass_assignment",
-        "rate_limit",
         "business_logic",
         "cloud",
         "websocket",
@@ -39,7 +37,7 @@ _VULN_CATEGORIES = frozenset(
 )
 
 # Recon / intel categories — hardening unless severity proves abuse
-_INTEL_CATEGORIES = frozenset({"js_intel"})
+_INTEL_CATEGORIES = frozenset({"js_intel", "file_upload", "rate_limit"})
 
 _HARDENING_CATEGORIES = frozenset({"header_audit", "bot_management"})
 

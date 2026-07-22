@@ -634,7 +634,11 @@ footer.meta {{ color: var(--muted); font-size: .85rem; margin-top: 1.5rem; }}
   <section class="card section" id="b2" data-section="b2">
     <div class="section-head"><h2>B2. Hidden paths</h2><span class="chev">▾</span></div>
     <div class="section-body">
-      <p>{escape(str(snap.get('enum_words_tested', 0)))} / {escape(str(snap.get('enum_words_total', 0)))} names tried · <strong>{len(model.get('enum_hits') or [])}</strong> hit(s).</p>
+      <p>{escape(str((model.get('scan_status_meta') or {}).get('directory_enum_message') or (
+          f"{snap.get('enum_words_tested', 0)} / {snap.get('enum_words_total', 0)} names tried · "
+          f"{len(model.get('enum_hits') or [])} hit(s)."
+      )))}</p>
+      {'' if (model.get('scan_status_meta') or {}).get('directory_enum_started') or (model.get('enum_hits')) else '<p class="muted">Directory enumeration has not produced hits yet — this is not the same as “0 hidden paths found” after a completed enum.</p>'}
       {url_table_html(model.get('enum_hits'), limit=40)}
     </div>
   </section>

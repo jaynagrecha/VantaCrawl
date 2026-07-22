@@ -445,10 +445,13 @@ def assess_cors(
     )
     static_like_path = bool(
         re.search(
-            r"(?i)\.(?:css|js|mjs|map|png|jpe?g|gif|svg|ico|woff2?|ttf|eot|webp|avif)(?:$|\?)",
+            r"(?i)\.(?:css|js|mjs|map|png|jpe?g|gif|svg|ico|woff2?|ttf|eot|webp|avif|"
+            r"xml|txt|json|csv|pdf)(?:$|\?)",
             path,
         )
-    ) or path.startswith(("/static/", "/assets/", "/cdn/", "/_next/static/", "/dist/"))
+    ) or path.startswith(("/static/", "/assets/", "/cdn/", "/_next/static/", "/dist/")) or bool(
+        re.search(r"(?i)/(?:sitemap|robots\.txt|favicon)", path)
+    )
 
     auth_cookies: List[str] = []
     tracking_cookies: List[str] = []
@@ -476,10 +479,12 @@ def assess_cors(
         if role in ("auth_session", "jwt") or impact in (
             "stealable_credential",
             "mitigated_credential",
-            "possible_credential",
         ):
             auth_cookies.append(name)
-        elif role in ("analytics", "preference"):
+        elif role in ("analytics", "preference", "cdn") or impact in (
+            "possible_credential",
+            "no_credential_impact",
+        ):
             tracking_cookies.append(name)
         else:
             other_cookies.append(name)
@@ -533,15 +538,30 @@ def assess_cors(
     if static_like_path and tracking_cookies and not other_cookies:
         summary = (
             "CORS allows credentials, but this URL looks like a static/public asset and only "
-            "tracking cookies were observed here. Still risky if the same origin sets session "
-            "cookies elsewhere — verify origin-wide cookie scope."
+            "tracking/CDN cookies were observed here. Reading a public sitemap/asset cross-origin "
+            "has limited credential impact — verify origin-wide session cookies before raising severity."
         )
         return ImpactResult(
             role="cors",
-            impact="limited_impact",
-            severity="medium",
+            impact="informational",
+            severity="info",
             summary=summary,
             validation="confirmed",
+            issues=issues,
+            proof="; ".join(issues[:4]) if issues else None,
+        )
+
+    if static_like_path and not auth_cookies and not auth_like_path:
+        summary = (
+            "CORS reflects Origin with credentials on a public/static resource. "
+            "Without observed session cookies on an auth-sensitive endpoint, keep this informational."
+        )
+        return ImpactResult(
+            role="cors",
+            impact="informational",
+            severity="info",
+            summary=summary,
+            validation="unverified",
             issues=issues,
             proof="; ".join(issues[:4]) if issues else None,
         )
@@ -756,6 +776,15 @@ def assess_api_leak(detail: str, severity: str) -> ImpactResult:
 
 def assess_csrf(detail: str, severity: str) -> ImpactResult:
     d = _detail_l(detail)
+    # Redirect-only / 3xx canaries are not confirmation
+    if "http 301" in d or "http 302" in d or "http 303" in d or "http 307" in d or "http 308" in d:
+        return ImpactResult(
+            role="hardening",
+            impact="informational",
+            severity="info",
+            summary="CSRF probe saw only a redirect — that does not prove request acceptance or state change.",
+            validation="unverified",
+        )
     if "csrf canary accepted" in d or "forged origin" in d:
         return ImpactResult(
             role="csrf",
@@ -765,7 +794,16 @@ def assess_csrf(detail: str, severity: str) -> ImpactResult:
             validation="confirmed",
             issues=["Active canary: cross-site Origin/Referer accepted with dummy fields only"],
         )
-    if "session cookie" in d or "precise csrf" in d:
+    # Avoid contradictory summaries: detail saying no session cookie must not claim one is present
+    if "no session cookie" in d:
+        return ImpactResult(
+            role="hardening",
+            impact="informational",
+            severity="info",
+            summary="State-changing form without CSRF token — no session cookie observed.",
+            validation="unverified",
+        )
+    if "session cookie present" in d or "precise csrf" in d:
         return ImpactResult(
             role="csrf",
             impact="possible",
@@ -805,8 +843,8 @@ def assess_file_upload(detail: str, severity: str) -> ImpactResult:
     return ImpactResult(
         role="file_upload",
         impact="informational",
-        severity=severity or "info",
-        summary="File upload surface (type=file) — verify extension/MIME validation server-side.",
+        severity="info",
+        summary="File-upload surface discovered; server-side validation not assessed.",
         validation="unverified",
     )
 
@@ -836,14 +874,74 @@ def assess_tier_category(category: str, detail: str, severity: str, evidence: st
     """Impact for Tier 2–6 categories (OAuth/JWT/GraphQL/mass-assignment/etc.)."""
     d = _detail_l(detail)
     cat = (category or "").lower()
+    if cat == "mass_assignment":
+        # HTML shell / non-API handlers are never confirmed high
+        if "html" in d and ("shell" in d or "doctype" in d or "application content" in d):
+            return ImpactResult(
+                role="mass_assignment",
+                impact="no_impact",
+                severity="info",
+                summary="Mass-assignment probe hit a generic HTML response — not an API handler.",
+                validation="invalid",
+                suppress=True,
+            )
+        if "persisted in json" in d or "privilege field persisted" in d:
+            return ImpactResult(
+                role="mass_assignment",
+                impact="confirmed",
+                severity="high",
+                summary="Privilege-shaped field persisted in a structured JSON API response.",
+                validation="confirmed",
+                proof=evidence or None,
+            )
+        # Client-side parameter name inventory only
+        return ImpactResult(
+            role="mass_assignment",
+            impact="informational",
+            severity="info",
+            summary=(
+                "Privilege/debug field names observed in client code — unconfirmed until a "
+                "mutating API response shows persistence or authorization change."
+            ),
+            validation="unverified",
+            proof=evidence or None,
+        )
+    if cat == "rate_limit":
+        return ImpactResult(
+            role="rate_limit",
+            impact="informational",
+            severity="info",
+            summary=(
+                "Authentication surface candidate requiring rate-limit assessment — "
+                "redirect-only bursts do not prove missing rate limiting."
+            ),
+            validation="unverified",
+            proof=evidence or None,
+        )
+    if cat == "business_logic" and ("race" in d or "identical" in d):
+        if "html" in d or "static" in d:
+            return ImpactResult(
+                role="business_logic",
+                impact="no_impact",
+                severity="info",
+                summary="Identical HTML responses under parallel POST do not demonstrate a race condition.",
+                validation="invalid",
+                suppress=True,
+            )
     confirmed = (
         "confirmed" in d
         or "introspection confirmed" in d
         or "publicly listable" in d
         or "reflected privilege" in d
         or "probe accepted" in d
+        or "persisted in json" in d
     )
-    verified = confirmed or "missing state" in d or "token leakage" in d or "alg=none" in d or "without 429" in d
+    verified = (
+        confirmed
+        or "missing state" in d
+        or "token leakage" in d
+        or "alg=none" in d
+    )
     if cat == "js_intel":
         # Inventory leftovers (should rarely emit after scanner tighten)
         if "network helpers" in d or re.search(r"\bfetch\(\)|\baxios\(\)", d):
@@ -1063,9 +1161,12 @@ def apply_impact_to_finding(
         note = " Cookie/endpoint context: " + "; ".join(impact.issues[:3]) + "."
         if note.strip() not in out_detail:
             out_detail = f"{out_detail}{note}"
+    from report_status import assessment_state_for_finding
+
+    sev_out = impact.severity or severity
     return {
         "category": category,
-        "severity": impact.severity or severity,
+        "severity": sev_out,
         "detail": out_detail,
         "evidence": evidence,
         "impact": impact.impact,
@@ -1074,6 +1175,13 @@ def apply_impact_to_finding(
         "impact_summary": impact.summary,
         "suppress": impact.suppress,
         "proof": impact.proof,
+        "assessment_state": assessment_state_for_finding(
+            category=category,
+            severity=sev_out or "",
+            validation=impact.validation,
+            impact=impact.impact,
+            detail=out_detail,
+        ),
     }
 
 

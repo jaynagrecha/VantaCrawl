@@ -103,12 +103,16 @@ def render_assessment_html(doc: Dict[str, Any], *, technical_report_name: str = 
         else:
             ev_html = "<p class='muted'>No matched pattern / evidence snippet stored for this finding.</p>"
         impact_meta = ""
-        if f.get("impact") or f.get("role") or f.get("verification"):
+        if f.get("impact") or f.get("role") or f.get("verification") or f.get("assessment_state"):
             impact_meta = (
                 f" · <strong>Kind:</strong> {escape(kind or 'n/a')}"
                 f" · <strong>Impact:</strong> {escape(str(f.get('impact') or 'n/a'))}"
                 f" · <strong>Role:</strong> {escape(str(f.get('role') or 'n/a'))}"
             )
+            if f.get("assessment_state"):
+                impact_meta += (
+                    f" · <strong>Assessment:</strong> {escape(str(f.get('assessment_state')))}"
+                )
             if f.get("verification"):
                 impact_meta += (
                     f" · <strong>Verification:</strong> {escape(str(f.get('verification')).upper())}"
@@ -317,6 +321,7 @@ pre.proof {{
 .risk.medium {{ color: var(--medium); border-color: rgba(240,193,74,.5); }}
 .risk.low {{ color: var(--low); border-color: rgba(125,183,255,.5); }}
 .risk.clear {{ color: var(--ok); border-color: rgba(125,255,168,.45); }}
+.risk.partial {{ color: var(--info); border-color: rgba(154,168,199,.5); }}
 .section {{
   border: 1px solid var(--line); border-radius: 16px; padding: 1.25rem 1.35rem;
   background: var(--panel); margin: 1rem 0;
@@ -390,6 +395,7 @@ footer {{ margin-top: 2rem; color: var(--muted); font-size: .8rem; }}
       <span class="pill">Dual audience: executives + security engineers</span>
       <span class="pill">Authorized testing assumed</span>
       <span class="pill">Duration {escape(duration)}</span>
+      <span class="pill">Scan status: {escape(str(doc.get('scan_status') or (doc.get('scan_status_meta') or {}).get('scan_status') or 'n/a'))}</span>
     </div>
   </header>
 
@@ -452,6 +458,7 @@ footer {{ margin-top: 2rem; color: var(--muted); font-size: .8rem; }}
 
   <section class="section" id="surface">
     <h2>5. Attack surface notes</h2>
+    {f"<p class='muted'>{escape(str(doc.get('directory_enum_message') or ''))}</p>" if doc.get('directory_enum_message') else ''}
     <h4>Protections observed</h4>
     <ul>{prot_html}</ul>
     <p class="muted">Catch rate: {escape(str(defense.get('catch_rate_percent', 'n/a')))}% ·

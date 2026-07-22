@@ -100,16 +100,56 @@ def build_assessment_document(
     vulnerabilities = [f for f in findings_dual if f.get("finding_kind") != "hardening"]
     hardening_issues = [f for f in findings_dual if f.get("finding_kind") == "hardening"]
 
+    from report_status import (
+        assessment_state_for_finding,
+        partial_executive_summary,
+        scan_status_from_stats,
+    )
+
+    status_meta = scan_status_from_stats(stats)
+    for f in findings_dual:
+        f["assessment_state"] = assessment_state_for_finding(
+            category=str(f.get("category") or ""),
+            severity=str(f.get("severity") or ""),
+            validation=str(f.get("validation") or ""),
+            impact=str(f.get("impact") or ""),
+            finding_kind=str(f.get("finding_kind") or ""),
+            verification=str(f.get("verification") or ""),
+            detail=str(f.get("detail") or ""),
+        )
+
     # Overall risk ignores hardening noise — only demonstrated vulnerabilities drive Medium+
     vuln_sev = Counter(str(f.get("severity") or "info") for f in vulnerabilities)
     hard_sev = Counter(str(f.get("severity") or "info") for f in hardening_issues)
-    critical = int(vuln_sev.get("critical", 0))
-    high = int(vuln_sev.get("high", 0))
-    medium = int(vuln_sev.get("medium", 0))
+    # Do not let unverified / attack-surface high findings drive overall High Risk
+    critical = sum(
+        1
+        for f in vulnerabilities
+        if str(f.get("severity") or "").lower() == "critical"
+        and str(f.get("assessment_state") or "") == "Confirmed vulnerability"
+    )
+    high = sum(
+        1
+        for f in vulnerabilities
+        if str(f.get("severity") or "").lower() == "high"
+        and str(f.get("assessment_state") or "") == "Confirmed vulnerability"
+    )
+    medium = sum(
+        1
+        for f in vulnerabilities
+        if str(f.get("severity") or "").lower() == "medium"
+        and str(f.get("assessment_state") or "")
+        in ("Confirmed vulnerability", "Likely vulnerability")
+    )
     low = int(vuln_sev.get("low", 0)) + int(hard_sev.get("low", 0))
     info = int(vuln_sev.get("info", 0)) + int(hard_sev.get("info", 0)) + int(hard_sev.get("medium", 0))
 
-    if critical:
+    if status_meta.get("scan_status") == "partial":
+        risk_level = "Partial"
+        exec_headline = partial_executive_summary(
+            host=host, phase=str(status_meta.get("phase") or "crawl")
+        )
+    elif critical:
         risk_level = "Critical"
         exec_headline = (
             f"This assessment identified critical vulnerabilities on {host} that should be addressed immediately."
@@ -129,7 +169,8 @@ def build_assessment_document(
         risk_level = "Low"
         exec_headline = (
             f"No demonstrated medium+ vulnerabilities on {host}. "
-            f"Remaining items are hardening / informational ({len(hardening_issues)} hardening observation(s))."
+            f"Remaining items are hardening / informational / candidates "
+            f"({len(hardening_issues)} hardening observation(s))."
         )
     else:
         risk_level = "Clear"
@@ -189,6 +230,12 @@ def build_assessment_document(
         snap.get("enum_words_total") or 0
     ) * 0.2:
         limitations.append("Directory enumeration did not substantially complete the configured wordlist.")
+    if status_meta.get("directory_enum_message") and not status_meta.get("directory_enum_started"):
+        limitations.append(str(status_meta["directory_enum_message"]))
+    if status_meta.get("scan_status") == "partial":
+        limitations.append(
+            "This report was exported while the scan was still running — treat metrics and findings as partial."
+        )
 
     methodology = [
         "Reconnaissance and optional historical URL seeding (where enabled).",
@@ -229,7 +276,13 @@ def build_assessment_document(
             "elapsed_seconds": float(snap.get("elapsed_seconds") or 0),
             "enum_words_tested": int(snap.get("enum_words_tested") or 0),
             "enum_words_total": int(snap.get("enum_words_total") or 0),
+            "discovered_url_count": int(snap.get("discovered_url_count") or len(getattr(stats, "discovered_urls", []) or [])),
+            "queue_size": int(snap.get("queue_size") or getattr(stats, "queue_size", 0) or 0),
+            "completion_percent": float(status_meta.get("completion_percent") or 0),
         },
+        "scan_status": status_meta.get("scan_status"),
+        "scan_status_meta": status_meta,
+        "directory_enum_message": status_meta.get("directory_enum_message"),
         "methodology": methodology,
         "findings": findings_dual,
         "vulnerabilities": vulnerabilities,

@@ -1809,19 +1809,41 @@ def enqueue_discovered_url(
             stats.discovered_urls.add(crawl_url)
         return False
 
+    # Exact-seen before route-template analysis (avoids repeated suppress work/logs)
+    if crawl_url in discovered:
+        if stats is not None and hasattr(stats, "duplicates_skipped"):
+            stats.duplicates_skipped += 1
+        return False
+
     if route_tracker is not None and not route_tracker.allow(crawl_url):
         if stats is not None and hasattr(stats, "route_variants_skipped"):
             stats.route_variants_skipped += 1
         if stats is not None and hasattr(stats, "discovered_urls"):
             stats.discovered_urls.add(crawl_url)
-        kind = discovery_kind(crawl_url)
-        output_callback(f"[FILTER][ROUTE_SAMPLE] {kind} {crawl_url}")
+        # Aggregate per-template: log first sample + periodic summaries (not every URL)
+        try:
+            from crawl_url_policy import route_template_key
+
+            tmpl = route_template_key(crawl_url) or crawl_url
+        except Exception:
+            tmpl = crawl_url
+        counts = getattr(stats, "_route_sample_log_counts", None) if stats is not None else None
+        if stats is not None and counts is None:
+            stats._route_sample_log_counts = {}
+            counts = stats._route_sample_log_counts
+        if isinstance(counts, dict):
+            n = int(counts.get(tmpl, 0) or 0) + 1
+            counts[tmpl] = n
+            if n == 1:
+                output_callback(
+                    f"[FILTER][ROUTE_TEMPLATE] template={tmpl} sampled=cap suppressed={n} example={crawl_url}"
+                )
+            elif n in (10, 50, 100) or n % 250 == 0:
+                output_callback(
+                    f"[FILTER][ROUTE_TEMPLATE] template={tmpl} suppressed={n}"
+                )
         return False
 
-    if crawl_url in discovered:
-        if stats is not None and hasattr(stats, "duplicates_skipped"):
-            stats.duplicates_skipped += 1
-        return False
     discovered.add(crawl_url)
     if link_depths is not None:
         link_depths[crawl_url] = link_depth

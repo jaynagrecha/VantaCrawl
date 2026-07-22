@@ -67,7 +67,11 @@ def test_classify_google_key_restricted_is_hardening():
 
 
 def test_assessment_risk_ignores_hardening_medium_noise():
+    import time
+
     stats = CrawlStats()
+    stats.pages_crawled = 5
+    stats.finished_at = time.time()
     stats.record_finding(
         "header_audit",
         "info",

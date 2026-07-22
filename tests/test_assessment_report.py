@@ -2,6 +2,7 @@ from crawl_stats import CrawlStats
 from assessment_report import build_assessment_document
 from assessment_html import render_assessment_html
 from reporting import ReportWriter, build_report_base_name
+import time
 
 
 def test_assessment_document_dual_audience(tmp_path):
@@ -9,6 +10,7 @@ def test_assessment_document_dual_audience(tmp_path):
     stats.pages_crawled = 12
     stats.enum_hits = 2
     stats.enum_hit_urls = ["https://lab.example/admin", "https://lab.example/.env"]
+    stats.finished_at = time.time()
     stats.findings = [
         {
             "severity": "high",

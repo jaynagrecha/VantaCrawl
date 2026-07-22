@@ -1,0 +1,190 @@
+"""Scan report status helpers — partial vs final, enum messaging, assessment states."""
+
+from __future__ import annotations
+
+from typing import Any, Dict, Optional
+
+
+ASSESSMENT_STATES = (
+    "Confirmed vulnerability",
+    "Likely vulnerability",
+    "Needs manual validation",
+    "Attack-surface observation",
+    "Informational technology finding",
+    "False positive / invalidated",
+)
+
+
+def scan_status_from_stats(stats: Any) -> Dict[str, Any]:
+    """Derive report completeness metadata from CrawlStats (or attr-enriched rebuild)."""
+    queue_size = int(getattr(stats, "queue_size", 0) or 0)
+    remaining = int(getattr(stats, "_remaining_jobs", queue_size) or queue_size)
+    pages = int(getattr(stats, "pages_crawled", 0) or 0)
+    enum_total = int(getattr(stats, "enum_words_total", 0) or 0)
+    enum_done = int(getattr(stats, "enum_words_tested", 0) or 0)
+    enum_started = bool(
+        getattr(stats, "_directory_enum_started", None)
+        if hasattr(stats, "_directory_enum_started")
+        else getattr(stats, "enum_started_at", None)
+    )
+    enum_enabled = bool(
+        getattr(stats, "_directory_enum_enabled", None)
+        if hasattr(stats, "_directory_enum_enabled")
+        else (enum_total > 0 or enum_started)
+    )
+    finished = bool(getattr(stats, "finished_at", None))
+    crawl_complete = remaining <= 0 and pages > 0
+    enum_complete = (not enum_enabled) or (enum_total > 0 and enum_done >= enum_total)
+
+    explicit = str(getattr(stats, "_scan_status", "") or "").strip().lower()
+    if explicit in ("partial", "final", "stopped"):
+        status = explicit
+    elif finished and crawl_complete and enum_complete:
+        status = "final"
+    elif finished:
+        status = "stopped"
+    else:
+        status = "partial"
+
+    # Rough completion: blend crawl queue drain + enum progress when applicable
+    crawl_pct = 100.0 if crawl_complete else max(0.0, min(95.0, 100.0 * pages / max(pages + remaining, 1)))
+    if enum_enabled and enum_total > 0:
+        enum_pct = min(100.0, 100.0 * enum_done / enum_total)
+        completion = round(0.7 * crawl_pct + 0.3 * enum_pct, 1)
+    else:
+        completion = round(crawl_pct, 1)
+
+    if status == "final":
+        phase = "complete"
+    elif enum_started and not crawl_complete:
+        phase = "crawl"
+    elif enum_started:
+        phase = "enum"
+    elif pages > 0:
+        phase = "crawl"
+    else:
+        phase = "starting"
+
+    if not enum_started:
+        if status in ("partial", "stopped") or not finished:
+            enum_message = (
+                "Directory enumeration not started because the crawl phase was still in progress."
+            )
+        else:
+            enum_message = "Directory enumeration disabled for this scan."
+    elif enum_total > 0 and enum_done < enum_total and status != "final":
+        enum_message = (
+            f"Directory enumeration in progress ({enum_done:,}/{enum_total:,} words)."
+        )
+    elif enum_complete and enum_total > 0:
+        enum_message = f"Directory enumeration completed ({enum_done:,} words tested)."
+    elif not enum_enabled:
+        enum_message = "Directory enumeration disabled for this scan."
+    else:
+        enum_message = "Directory enumeration status unavailable."
+
+    return {
+        "scan_status": status,
+        "phase": phase,
+        "completion_percent": completion if status != "final" else 100.0,
+        "remaining_jobs": remaining,
+        "report_generated_during_scan": status == "partial",
+        "directory_enum_enabled": enum_enabled,
+        "directory_enum_started": enum_started,
+        "directory_enum_message": enum_message,
+        "is_final": status == "final",
+    }
+
+
+def assessment_state_for_finding(
+    *,
+    category: str = "",
+    severity: str = "",
+    validation: str = "",
+    impact: str = "",
+    finding_kind: str = "",
+    verification: str = "",
+    detail: str = "",
+) -> str:
+    """Map a finding to a report confidence state (assessment language)."""
+    cat = (category or "").lower()
+    sev = (severity or "info").lower()
+    val = (validation or "").lower()
+    imp = (impact or "").lower()
+    kind = (finding_kind or "").lower()
+    ver = (verification or "").lower()
+    detail_l = (detail or "").lower()
+
+    if val in ("invalid", "skipped") or imp in ("no_impact", "invalid") or "false positive" in detail_l:
+        return "False positive / invalidated"
+    if cat in ("file_upload", "rate_limit", "well_known", "cloud_url", "js_intel", "websocket"):
+        return "Attack-surface observation"
+    if kind == "hardening" or cat in ("header_audit", "bot_management", "http_methods"):
+        return "Informational technology finding"
+    if ver in ("exploitable", "confirmed") or val == "confirmed":
+        if sev in ("critical", "high", "medium") and kind != "hardening":
+            return "Confirmed vulnerability"
+        return "Informational technology finding"
+    if ver == "verified" or val == "active" or imp in ("possible", "stealable_credential", "confirmed"):
+        if sev in ("critical", "high", "medium"):
+            return "Likely vulnerability"
+        return "Needs manual validation"
+    if sev in ("info", "low") or kind == "hardening":
+        return "Informational technology finding"
+    return "Needs manual validation"
+
+
+def demonstrated_severity_counts(findings: list) -> Dict[str, int]:
+    """Count only findings that are demonstrated enough to drive overall risk."""
+    from collections import Counter
+
+    counts: Counter = Counter()
+    for f in findings or []:
+        if not isinstance(f, dict):
+            continue
+        kind = str(f.get("finding_kind") or "").lower()
+        if kind == "hardening":
+            continue
+        val = str(f.get("validation") or "").lower()
+        ver = str(f.get("verification") or "").lower()
+        imp = str(f.get("impact") or "").lower()
+        sev = str(f.get("severity") or "info").lower()
+        cat = str(f.get("category") or "").lower()
+        # Unverified inventory / attack-surface must not drive High Risk
+        if cat in ("file_upload", "rate_limit", "mass_assignment") and ver not in (
+            "exploitable",
+            "confirmed",
+        ):
+            if "persisted" not in str(f.get("detail") or "").lower():
+                continue
+        if val in ("unverified", "skipped", "n/a", "") and ver in ("", "detected") and sev in (
+            "high",
+            "critical",
+        ):
+            # Downgrade contribution: treat as medium/info for risk rollup
+            continue
+        if ver in ("exploitable", "confirmed") or val == "confirmed" or imp in (
+            "confirmed",
+            "stealable_credential",
+        ):
+            counts[sev] += 1
+        elif ver == "verified" or val == "active":
+            counts[sev] += 1
+    return dict(counts)
+
+
+def partial_executive_summary(*, host: str = "", phase: str = "crawl") -> str:
+    return (
+        "The scan discovered several security-relevant surfaces and generated candidate findings "
+        "requiring validation. No critical or high-severity vulnerability has yet been conclusively "
+        f"demonstrated. The scan was exported during the {phase or 'crawl'} phase"
+        + (", before directory enumeration began" if phase == "crawl" else "")
+        + (f" on {host}" if host else "")
+        + "."
+    )
+
+
+def merge_status_into_snapshot(snap: Dict[str, Any], status: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(snap or {})
+    out.update({k: status[k] for k in status})
+    return out

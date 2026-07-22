@@ -461,7 +461,7 @@ class CrawlStats:
             except Exception:
                 backoff_rem = 0.0
                 heartbeat = ""
-        return {
+        snap = {
             "elapsed_seconds": round(elapsed, 1),
             "pages_crawled": self.pages_crawled,
             "links_found": self.links_found,
@@ -536,6 +536,13 @@ class CrawlStats:
             "well_known_count": len(self.well_known_hits),
             "file_metadata_count": len(self.file_metadata),
         }
+        try:
+            from report_status import scan_status_from_stats
+
+            snap.update(scan_status_from_stats(self))
+        except Exception:
+            pass
+        return snap
 
     def record_file_metadata(self, record: Dict[str, Any], *, limit: int = 500) -> bool:
         """Store unique file metadata by URL; returns True if newly recorded."""
