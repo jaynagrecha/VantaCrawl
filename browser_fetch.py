@@ -252,8 +252,10 @@ def make_browser_fetcher(
         store.load_cookie_string(config.cookie_string, host=getattr(config, "start_url", "") or "")
 
     auto_cookies = bool(getattr(config, "auto_sync_cookies", True))
-    browser_primary = bool(getattr(config, "browser_primary", False) or getattr(config, "deep_mirror", False))
-    on_challenge = bool(getattr(config, "browser_on_challenge", True) or getattr(config, "selenium_fallback", False))
+    # Re-read primary/challenge flags per request so mid-scan BM → Chrome-first takes effect.
+    on_challenge_default = bool(
+        getattr(config, "browser_on_challenge", True) or getattr(config, "selenium_fallback", False)
+    )
 
     def _ua_for(url: str) -> str:
         try:
@@ -281,7 +283,7 @@ def make_browser_fetcher(
             raise TimeoutError(f"Browser fetch timed out for {url}") from exc
 
     def _sync_cookies(client, url: str, cookies: list, output_note: Optional[Callable[[str], None]] = None):
-        if not auto_cookies:
+        if not bool(getattr(config, "auto_sync_cookies", True)):
             return
         updated = store.ingest_selenium_cookies(cookies, url)
         header = store.apply_to_client(client, url)
@@ -292,13 +294,21 @@ def make_browser_fetcher(
 
     async def browser_page_fetcher(client, url, deep_render=False):
         global _chrome_skip_logged
+        browser_primary = bool(
+            getattr(config, "browser_primary", False) or getattr(config, "deep_mirror", False)
+        )
+        on_challenge = bool(
+            getattr(config, "browser_on_challenge", True)
+            or getattr(config, "selenium_fallback", False)
+            or on_challenge_default
+        )
         force_browser = bool(deep_render or browser_primary)
         screenshot_path = None
         if getattr(config, "screenshot_capture", False) and reporter and is_html_url(url):
             screenshot_path = reporter.screenshot_path(url)
 
         # Keep HTTP client cookie header fresh for this host before any probe
-        if auto_cookies:
+        if bool(getattr(config, "auto_sync_cookies", True)):
             store.apply_to_client(client, url)
 
         if not force_browser:
@@ -316,7 +326,7 @@ def make_browser_fetcher(
                 )
                 if not challenged and 200 <= response.status_code < 400:
                     # Opportunistic Set-Cookie capture from HTTP path
-                    if auto_cookies:
+                    if bool(getattr(config, "auto_sync_cookies", True)):
                         _ingest_set_cookie_headers(store, url, response.headers)
                         store.apply_to_client(client, url)
                         config.cookie_string = store.as_cookie_string()
@@ -348,7 +358,7 @@ def make_browser_fetcher(
                 raise
             # Challenge escalation failed (no Chrome / timeout) — caller continues via HTTP
             return "", []
-        _sync_cookies(client, url, cookies)
+        _sync_cookies(client, url, cookies, output_note=output)
         return page_html, dom_urls or []
 
     # Expose store for orchestrator / tests
