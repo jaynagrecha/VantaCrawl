@@ -403,7 +403,11 @@ class EvasionSession:
                 # Milder pauses so big WAF sites don't look "stuck" for 30–60s.
                 # 429 / rate-limit still backs off harder than a plain WAF 403.
                 hits = min(self._challenge_hits, 3)
-                rate_limited = challenge == "rate_limit" or status_code == 429
+                rate_limited = (
+                    challenge == "rate_limit"
+                    or challenge == "akamai_rate_burst"
+                    or status_code == 429
+                )
                 if rate_limited:
                     seconds = min(18.0, 1.0 * (2**hits))
                 else:
@@ -516,6 +520,22 @@ def detect_challenge(
 
     if status_code == 429:
         return "rate_limit"
+
+    # Akamai Rate-Burst / DoS rate policy — volume trip, not a soft JS challenge.
+    # Prefer this over a generic "akamai" marker so backoff uses the harder path.
+    if status_code in CHALLENGE_STATUS:
+        rate_burst = (
+            "rate-burst" in body_l
+            or "rate_burst" in body_l
+            or "rate burst" in body_l
+            or (
+                ("dos" in body_l or "denial of service" in body_l)
+                and ("rate" in body_l or "burst" in body_l)
+                and ("akamai" in body_l or "edgesuite" in body_l or "akamaighost" in body_l)
+            )
+        )
+        if rate_burst:
+            return "akamai_rate_burst"
 
     # Permission / object-storage denies — never a challenge
     if is_permission_or_storage_deny(status_code, body, headers):

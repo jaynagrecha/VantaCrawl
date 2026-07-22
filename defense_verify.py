@@ -111,6 +111,11 @@ REASON_HINTS = {
     "cf-challenge": "Cloudflare JS/browser challenge interstitial.",
     "cloudflare_turnstile": "Cloudflare Turnstile CAPTCHA challenge.",
     "akamai": "Akamai bot/WAF fingerprint in headers or denial page.",
+    "akamai_rate_burst": (
+        "Akamai Rate-Burst / DoS rate policy — request volume exceeded the burst threshold "
+        "(not a bot-fingerprint fail). Slow concurrency or wait out the penalty box."
+    ),
+    "akamai_soft_deny": "Akamai soft deny page on an otherwise successful status.",
     "aws_waf": "AWS WAF / ALB protection fingerprint on the response.",
     "access denied": "Generic access-denied page body.",
     "request blocked": "Response body indicates the request was blocked.",
@@ -200,13 +205,45 @@ def _body_snippet(body_preview: str, limit: int = 480) -> str:
     return text
 
 
-def _explain(status: int, signal: str, protections: List[str], headers: Dict[str, str]) -> str:
+_RATE_POLICY_NAME_RE = re.compile(
+    r"(?i)(?:rate\s*policy|policy|rule)\s*[:=#]?\s*([A-Za-z][\w_-]{1,48})"
+)
+_RATE_BURST_RE = re.compile(r"(?i)\brate[\s_-]*burst\b")
+
+
+def akamai_rate_policy_label(body_preview: str = "") -> str:
+    """Pull a human rate-policy name from an Akamai deny body when present."""
+    text = body_preview or ""
+    if not text:
+        return ""
+    if _RATE_BURST_RE.search(text):
+        named = _RATE_POLICY_NAME_RE.search(text)
+        if named and "burst" in named.group(1).lower():
+            return named.group(1).strip(" ._-/")
+        return "Rate-Burst"
+    named = _RATE_POLICY_NAME_RE.search(text)
+    if named and any(tok in named.group(1).lower() for tok in ("burst", "dos", "rate")):
+        return named.group(1).strip(" ._-/")
+    return ""
+
+
+def _explain(
+    status: int,
+    signal: str,
+    protections: List[str],
+    headers: Dict[str, str],
+    *,
+    body_preview: str = "",
+) -> str:
     parts: List[str] = []
     if status:
         parts.append(f"HTTP {status}")
     if signal and signal != "none":
         hint = REASON_HINTS.get(signal) or f"Challenge/block marker: {signal}"
         parts.append(hint)
+    policy = akamai_rate_policy_label(body_preview)
+    if policy and signal in ("akamai_rate_burst", "akamai", "rate_limit", "akamai_soft_deny"):
+        parts.append(f"Akamai rate policy: {policy}")
     if protections:
         parts.append("Protections on this response: " + ", ".join(protections))
     retry = headers.get("Retry-After") or headers.get("retry-after")
@@ -367,13 +404,13 @@ class DefenseTracker:
             self.block_status_counts[str(status_code)] += 1
             for name in on_response or ([signal] if signal else []):
                 self.protection_block_counts[name] += 1
-            if signal == "rate_limit" or status_code == 429:
+            if signal == "rate_limit" or status_code == 429 or signal == "akamai_rate_burst":
                 self.rate_limit_count += 1
             if any(x in signal for x in ("captcha", "recaptcha", "hcaptcha", "turnstile")):
                 self.captcha_signal_count += 1
             if any(x in signal for x in ("cloudflare", "challenge", "datadome", "akamai", "aws_waf", "bot", "blocked")):
                 self.bot_wall_count += 1
-            reason = _explain(status_code, signal, on_response, headers)
+            reason = _explain(status_code, signal, on_response, headers, body_preview=body_preview)
             event = DefenseEvent(
                 url=url,
                 status=status_code,

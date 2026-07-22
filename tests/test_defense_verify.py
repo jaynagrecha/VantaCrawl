@@ -92,3 +92,27 @@ def test_cdn_headers_on_200_are_not_caught():
     )
     assert tracker.caught_count == 0
     assert tracker.unchallenged_count == 1
+
+
+def test_akamai_rate_burst_surfaces_in_journal_reason():
+    from defense_verify import akamai_rate_policy_label
+
+    body = (
+        "Access Denied — traffic classified as DoS under rule: Rate-Burst. "
+        "Reference #18.abc AkamaiGHost"
+    )
+    assert akamai_rate_policy_label(body) == "Rate-Burst"
+    tracker = DefenseTracker(start_url="https://wu.example/")
+    tracker.record_response(
+        "https://wu.example/us/en/send-money",
+        403,
+        {"Server": "AkamaiGHost"},
+        body,
+    )
+    assert tracker.caught_count == 1
+    assert tracker.rate_limit_count == 1
+    assert tracker.signal_counts.get("akamai_rate_burst") == 1
+    event = tracker.block_events[-1]
+    assert event.signal == "akamai_rate_burst"
+    assert "Rate-Burst" in event.reason
+    assert "burst" in event.reason.lower() or "DoS" in event.reason or "rate policy" in event.reason.lower()
