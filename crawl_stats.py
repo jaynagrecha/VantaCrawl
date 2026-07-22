@@ -174,6 +174,9 @@ class CrawlStats:
         # Host-level dedupe ONLY for header_audit (same missing header site-wide)
         if category == "header_audit":
             dedupe_key = f"{category}|{detail_key}|{host}"
+        elif category == "secrets_exposure" and evidence_key:
+            # Same secret value = one finding even when product labels differ (Ript vs Text)
+            dedupe_key = f"{category}|{host}|{evidence_key}"
         elif evidence_key:
             dedupe_key = f"{category}|{detail_key}|{url}|{evidence_key}"
         else:
