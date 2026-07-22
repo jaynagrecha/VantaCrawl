@@ -756,6 +756,55 @@ def assess_cloud_url(detail: str, severity: str) -> ImpactResult:
     )
 
 
+def assess_tier_category(category: str, detail: str, severity: str, evidence: str = "") -> ImpactResult:
+    """Impact for Tier 2–6 categories (OAuth/JWT/GraphQL/mass-assignment/etc.)."""
+    d = _detail_l(detail)
+    cat = (category or "").lower()
+    confirmed = (
+        "confirmed" in d
+        or "introspection confirmed" in d
+        or "publicly listable" in d
+        or "reflected privilege" in d
+        or "probe accepted" in d
+    )
+    verified = confirmed or "missing state" in d or "token leakage" in d or "alg=none" in d or "without 429" in d
+    if cat == "js_intel":
+        return ImpactResult(
+            role="js_intel",
+            impact="informational",
+            severity="info" if (severity or "info") in ("info", "low") else severity,
+            summary="Frontend intelligence from JS mining — useful for recon, not a standalone vuln.",
+            validation="unverified",
+            proof=evidence or None,
+        )
+    if confirmed:
+        return ImpactResult(
+            role=cat,
+            impact="confirmed",
+            severity=severity or "medium",
+            summary=f"{cat.replace('_', ' ').title()} issue actively confirmed with response evidence.",
+            validation="confirmed",
+            proof=evidence or None,
+        )
+    if verified and (severity or "info") in ("medium", "high", "critical"):
+        return ImpactResult(
+            role=cat,
+            impact="possible",
+            severity=severity,
+            summary=f"{cat.replace('_', ' ').title()} signal verified enough for triage — confirm exploitability.",
+            validation="active",
+            proof=evidence or None,
+        )
+    return ImpactResult(
+        role=cat or "finding",
+        impact="informational" if (severity or "info") in ("info", "low") else "possible",
+        severity=severity or "info",
+        summary=f"{cat.replace('_', ' ').title()} observation — severity rises only after verification.",
+        validation="unverified",
+        proof=evidence or None,
+    )
+
+
 def assess_file_metadata(detail: str, severity: str, evidence: str = "") -> ImpactResult:
     d = _detail_l(detail)
     if "gps" in d or "author" in d or "email" in d:
@@ -846,8 +895,21 @@ async def assess_finding(
         return assess_well_known(detail, severity, ev)
     if cat == "cloud_url":
         return assess_cloud_url(detail, severity)
+    if cat == "cloud":
+        return assess_tier_category(cat, detail, severity, ev)
     if cat == "file_metadata":
         return assess_file_metadata(detail, severity, ev)
+    if cat in (
+        "oauth",
+        "jwt",
+        "graphql",
+        "mass_assignment",
+        "rate_limit",
+        "business_logic",
+        "js_intel",
+        "websocket",
+    ):
+        return assess_tier_category(cat, detail, severity, ev)
 
     return assess_generic(cat, detail, severity, ev)
 

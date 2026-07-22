@@ -103,17 +103,48 @@ def render_assessment_html(doc: Dict[str, Any], *, technical_report_name: str = 
         else:
             ev_html = "<p class='muted'>No matched pattern / evidence snippet stored for this finding.</p>"
         impact_meta = ""
-        if f.get("impact") or f.get("role"):
+        if f.get("impact") or f.get("role") or f.get("verification"):
             impact_meta = (
                 f" · <strong>Kind:</strong> {escape(kind or 'n/a')}"
                 f" · <strong>Impact:</strong> {escape(str(f.get('impact') or 'n/a'))}"
                 f" · <strong>Role:</strong> {escape(str(f.get('role') or 'n/a'))}"
             )
+            if f.get("verification"):
+                impact_meta += (
+                    f" · <strong>Verification:</strong> {escape(str(f.get('verification')).upper())}"
+                )
+            if f.get("confidence"):
+                conf = escape(str(f.get("confidence")))
+                reason = escape(str(f.get("confidence_reason") or ""))
+                impact_meta += f" · <strong>Confidence:</strong> {conf}"
+                if reason:
+                    impact_meta += f" ({reason})"
+        proof = f.get("proof") if isinstance(f.get("proof"), dict) else {}
+        proof_bits = []
+        for label, key in (
+            ("Request", "request"),
+            ("Response", "response"),
+            ("Evidence", "evidence"),
+            ("Impact", "impact"),
+        ):
+            val = (proof.get(key) or "").strip()
+            if val:
+                proof_bits.append(
+                    f"<div><h6>{label}</h6><pre class='proof'>{escape(val)}</pre></div>"
+                )
+        proof_html = (
+            "<h5>Proof</h5><div class='proof-grid'>" + "".join(proof_bits) + "</div>"
+            if proof_bits
+            else ""
+        )
+        ver = str(f.get("verification") or "").upper()
+        ver_badge = f"<span class='pill'>{escape(ver)}</span>" if ver else ""
         return f"""
 <article class="finding sev-{sev_l}" id="{escape(str(f.get('id')))}">
   <header>
     <span class="badge sev-{sev_l}">{escape(str(f.get('severity', '')).upper())}</span>
     {kind_badge}
+    {ver_badge}
     <span class="fid">{escape(str(f.get('id')))}</span>
     <h3>{escape(str(f.get('title')))}</h3>
   </header>
@@ -134,6 +165,7 @@ def render_assessment_html(doc: Dict[str, Any], *, technical_report_name: str = 
     </div>
     <h5>Matched pattern / evidence</h5>
     {ev_html}
+    {proof_html}
     <h5>Affected URL(s)</h5>
     {_url_list(list(f.get('urls') or []))}
   </section>
@@ -265,6 +297,16 @@ h5 {{ margin: .55rem 0 .25rem; font-size: .9rem; }}
 .pill {{
   border: 1px solid var(--line); border-radius: 999px; padding: .25rem .7rem;
   font-size: .78rem; color: var(--muted); background: rgba(0,0,0,.18);
+}}
+.proof-grid {{
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: .65rem; margin: .4rem 0 .9rem;
+}}
+.proof-grid h6 {{ margin: 0 0 .25rem; font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }}
+pre.proof {{
+  margin: 0; padding: .55rem .7rem; border-radius: 10px; border: 1px solid var(--line);
+  background: rgba(0,0,0,.28); font-family: var(--mono); font-size: .78rem;
+  white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto;
 }}
 .risk {{
   display: inline-block; margin-top: .85rem; padding: .45rem .9rem; border-radius: 999px;
