@@ -57,10 +57,6 @@ _HIDDEN_PARAM_NAMES = (
     "is_staff",
     "admin",
 )
-# Real feature-flag SDKs only — generic `flags:` / `featureFlags` objects are inventory noise.
-_FEATURE_FLAG_RE = re.compile(
-    r"(?i)\b(?:launchDarkly|LDClient|SplitFactory|split\.io|unleash(?:-client)?)\b"
-)
 # Require a host-like shape with an env token as a DNS label (not substring of "device").
 _ENV_HINT_RE = re.compile(
     r"""['"`](
