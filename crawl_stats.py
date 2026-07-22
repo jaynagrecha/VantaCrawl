@@ -184,6 +184,8 @@ class CrawlStats:
             host = urlparse(url).netloc.lower()
         except Exception:
             host = url
+        if host.startswith("www."):
+            host = host[4:]
         detail_key = (detail or "").strip().lower()
         evidence_key = (evidence or "").strip().lower()
         sev_l = (severity or "").strip().lower()
