@@ -23,12 +23,13 @@ def test_sql_name_only_not_medium_fp():
     assert not any(f[0] == "sql_injection" and f[1] in ("medium", "high") for f in findings)
 
 
-def test_sql_error_still_detected():
+def test_sql_error_passive_suppressed():
+    # Generic DB error pages are not findings — active probes confirm SQLi
     findings = scan_sql_injection(
         "https://x.com/page?id=1",
         "Warning: mysql_fetch_array(): SQL syntax error near",
     )
-    assert any(f[0] == "sql_injection" and f[1] == "high" for f in findings)
+    assert findings == []
 
 
 def test_ssrf_relative_next_not_fp():
@@ -36,9 +37,9 @@ def test_ssrf_relative_next_not_fp():
     assert findings == []
 
 
-def test_ssrf_internal_url_detected():
+def test_ssrf_passive_internal_url_suppressed():
     findings = scan_ssrf("https://app.example/fetch?url=http://127.0.0.1:8080/admin")
-    assert any(f[0] == "ssrf" and f[1] == "high" for f in findings)
+    assert findings == []
 
 
 def test_xss_plain_reflection_not_fp():
@@ -49,13 +50,12 @@ def test_xss_plain_reflection_not_fp():
     assert findings == []
 
 
-def test_xss_metachar_reflection_detected():
-    # value after parse_qs may be decoded depending on caller; simulate decoded
+def test_xss_metachar_reflection_passive_suppressed():
     findings = scan_xss(
         "https://x.com/search?q=<script>",
         '<html><body>query: "<script>"</body></html>',
     )
-    assert any(f[0] == "xss" and f[1] == "low" for f in findings)
+    assert findings == []
 
 
 def test_secret_placeholder_filtered():
@@ -95,9 +95,9 @@ def test_api_oauth_token_not_critical_fp():
     assert not any(f[1] == "critical" for f in findings)
 
 
-def test_traversal_still_detected():
+def test_traversal_passive_suppressed():
     findings = scan_directory_traversal("https://x.com/file?path=../../../etc/passwd")
-    assert any(f[0] == "directory_traversal" for f in findings)
+    assert findings == []
 
 
 def test_record_finding_does_not_host_dedupe_non_headers():

@@ -41,10 +41,9 @@ def test_open_redirect_oauth_redirect_uri_suppressed():
     assert findings == []
 
 
-def test_open_redirect_passive_is_low():
+def test_open_redirect_passive_suppressed():
     findings = scan_open_redirect("https://app.example/login?next=https://evil.example/phish")
-    assert findings
-    assert all(f[1] == "low" for f in findings if f[0] == "open_redirect")
+    assert findings == []
 
 
 def test_mailgun_webpack_chunk_not_fp():
@@ -107,7 +106,7 @@ def test_file_upload_name_only_not_fp():
     assert scan_file_upload(forms, "https://x.com/") == []
 
 
-def test_file_upload_type_file_detected():
+def test_file_upload_type_file_inventory_not_finding():
     html = (
         '<form action="/upload" method="post">'
         '<input type="file" name="attachment">'
@@ -116,8 +115,8 @@ def test_file_upload_type_file_detected():
     )
     forms = extract_forms(html, "https://x.com/page", "text/html")
     assert forms and forms[0]["has_file_input"]
-    findings = scan_file_upload(forms, "https://x.com/page")
-    assert any(f[0] == "file_upload" for f in findings)
+    # Presence of type=file is inventory, not a vulnerability finding
+    assert scan_file_upload(forms, "https://x.com/page") == []
 
 
 def test_mixed_content_anchor_href_not_fp():
@@ -185,9 +184,8 @@ def test_path_only_dotdot_not_traversal_fp():
     assert scan_directory_traversal("https://x.com/page?next=../home") == []
 
 
-def test_traversal_etc_passwd_param_still_flagged():
-    findings = scan_directory_traversal("https://x.com/file?path=../../../etc/passwd")
-    assert any(f[0] == "directory_traversal" for f in findings)
+def test_traversal_etc_passwd_param_passive_suppressed():
+    assert scan_directory_traversal("https://x.com/file?path=../../../etc/passwd") == []
 
 
 def test_api_leak_phpinfo_404_not_fp():
@@ -221,7 +219,7 @@ def test_bare_api_key_param_not_critical_fp():
 
 def test_credential_like_url_value_still_flagged():
     findings = scan_authentication_flaws(
-        "https://x.com/callback?api_key=AbCdEfGhIjKlMnOpQrStUvWx",
+        "https://x.com/callback?api_key=a1b2c3d4e5f60718293a4b5c6d7e8f90",
         {},
         "",
     )
@@ -308,3 +306,42 @@ def test_jwt_alg_none_helper():
     token = f"{header}.{payload}."
     assert jwt_header_looks_valid(token)
     assert jwt_alg_is_none(token)
+
+
+# --- Round 3 ---------------------------------------------------------------
+
+
+def test_http_auth_path_alone_not_finding():
+    findings = scan_authentication_flaws(
+        "http://x.com/author/posts",
+        {},
+        "<html><body>Blog author page</body></html>",
+    )
+    assert findings == []
+
+
+def test_http_password_form_still_finding():
+    findings = scan_authentication_flaws(
+        "http://x.com/login",
+        {},
+        '<form><input type="password" name="password"></form>',
+    )
+    assert any(f[0] == "authentication" for f in findings)
+
+
+def test_possible_credential_cookie_no_finding():
+    inv, findings = analyze_set_cookie_headers(
+        {"Set-Cookie": "device_id=abcdef0123456789abcdef0123456789; Path=/"},
+        page_url="https://example.com/",
+    )
+    assert inv
+    assert findings == []
+
+
+def test_passive_ssrf_sqli_rce_redirect_empty():
+    from security_scan import scan_rce
+
+    assert scan_ssrf("https://x.com/fetch?url=http://169.254.169.254/") == []
+    assert scan_sql_injection("https://x.com/?id=1", "mysql_fetch SQL syntax error") == []
+    assert scan_rce("https://x.com/?cmd=id", "sh: command not found") == []
+    assert scan_open_redirect("https://x.com/out?next=https://evil.test/") == []
