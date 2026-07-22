@@ -348,6 +348,14 @@ def build_live_progress(
     errors = int(snap.get("errors") or prev.get("errors") or 0)
     defense = snap.get("defense") if isinstance(snap.get("defense"), dict) else {}
     protections = list(defense.get("protections_detected") or prev.get("protections") or [])
+    protections_detail = list(
+        defense.get("protections_detail") or prev.get("protections_detail") or []
+    )
+    protections_label = str(
+        defense.get("protections_label")
+        or prev.get("protections_label")
+        or (", ".join(protections) if protections else "none")
+    )
     blocks = int(
         defense.get("caught_by_protection")
         or prev.get("blocks")
@@ -450,6 +458,23 @@ def build_live_progress(
     if heartbeat:
         health_detail = f"{heartbeat} · {health_detail}"
 
+    status_codes = dict(snap.get("status_codes") or prev.get("status_codes") or {})
+    outcome_breakdown = {
+        "waf_challenge_responses": int(challenge_events),
+        "http_403_responses": int(status_codes.get("403") or 0),
+        "http_429_responses": int(
+            status_codes.get("429")
+            or defense.get("rate_limit_events")
+            or prev.get("rate_limit_events")
+            or 0
+        ),
+        "access_denies": int(access_deny_count),
+        "scope_denied_urls": int(
+            snap.get("out_of_scope_skipped") or prev.get("out_of_scope_skipped") or 0
+        ),
+        "connection_failures": int(errors),
+    }
+
     return {
         "phase": resolved_phase,
         "progress_pct": progress_pct,
@@ -490,10 +515,11 @@ def build_live_progress(
         "challenge_events": challenge_events,
         "block_rate_pct": block_rate_pct,
         "protections": list(protections),
-        "protections_label": ", ".join(protections) if protections else "none",
+        "protections_detail": protections_detail,
+        "protections_label": protections_label,
         "protections_count": len(protections),
-        "block_journal": block_journal,
-        "block_status_counts": display_status_counts,
+        "outcome_breakdown": outcome_breakdown,
+        "block_journal": block_journal,        "block_status_counts": display_status_counts,
         "waf_block_status_counts": block_status_counts,
         "access_deny_count": access_deny_count,
         "access_deny_status_counts": access_deny_status_counts,
