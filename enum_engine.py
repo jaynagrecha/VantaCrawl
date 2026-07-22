@@ -52,6 +52,9 @@ class ProbeResult:
     path_segments: List[str]
     final_url: str = ""
     redirect_hops: int = 0
+    # Optional body retained for hit follow-up (avoids a second GET that can stall enum)
+    body: bytes = b""
+    content_type: str = ""
 
 
 @dataclass
@@ -601,7 +604,7 @@ async def run_pro_directory_enum(
             test_url = build_enum_url(config.start_url, path_segments, variant)
             if not test_url:
                 continue
-            status, length, body_hash, _body, final_url, hops = await probe_candidate(
+            status, length, body_hash, body, final_url, hops = await probe_candidate(
                 client,
                 test_url,
                 use_head=config.enum_method.upper() != "GET",
@@ -611,6 +614,10 @@ async def run_pro_directory_enum(
             )
             if config.status_code_report and status:
                 stats.record_status(status, enum=True)
+            # Cap retained body so hit follow-up can reuse it without huge memory use
+            retained = body or b""
+            if len(retained) > 262_144:
+                retained = retained[:262_144]
             probe = ProbeResult(
                 test_url,
                 variant,
@@ -620,6 +627,7 @@ async def run_pro_directory_enum(
                 list(path_segments),
                 final_url=final_url or test_url,
                 redirect_hops=hops,
+                body=retained,
             )
             if is_probe_hit(
                 probe,
