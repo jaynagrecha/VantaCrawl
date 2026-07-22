@@ -55,6 +55,51 @@ def test_static_assets_not_html_candidates():
     assert is_static_asset_url("https://ex.com/staticassets/css/ar/es/app.css")
     assert not is_html_crawl_candidate("https://ex.com/staticassets/css/ar/es/app.css")
     assert is_html_crawl_candidate("https://ex.com/send-money.html")
+    # JS/JSON stay enqueueable for extractors — capability preserved
+    from crawl_url_policy import is_analysis_asset_url
+
+    assert is_analysis_asset_url("https://ex.com/static/app.js")
+    assert is_html_crawl_candidate("https://ex.com/static/app.js")
+    assert is_html_crawl_candidate("https://ex.com/page-data/x/page-data.json")
+
+
+def test_query_cap_preserves_inventory():
+    tracker = QueryVariantTracker(max_values_per_parameter=2, max_query_variants_per_endpoint=3)
+    base = "https://www.example.com/currency-converter/ars-to-pen-rate.html"
+    assert tracker.allow(f"{base}?sendAmount=5000")
+    assert tracker.allow(f"{base}?sendAmount=150000")
+    assert not tracker.allow(f"{base}?sendAmount=75000")
+    rows = tracker.inventory_rows()
+    send = [r for r in rows if r["name"] == "sendamount"]
+    assert send and send[0]["values_count"] == 3
+    assert set(send[0]["values_sample"]) == {"5000", "150000", "75000"}
+
+
+def test_enqueue_still_fetches_js_when_skipping_css():
+    discovered = set()
+    queue = []
+    stats = CrawlStats()
+    assert not enqueue_discovered_url(
+        "https://ex.com/staticassets/css/x.css",
+        discovered,
+        queue,
+        "out.txt",
+        lambda *_: None,
+        stats=stats,
+        skip_static_pages=True,
+        start_url="https://ex.com/",
+    )
+    assert enqueue_discovered_url(
+        "https://ex.com/static/app.bundle.js",
+        discovered,
+        queue,
+        "out.txt",
+        lambda *_: None,
+        stats=stats,
+        skip_static_pages=True,
+        start_url="https://ex.com/",
+    )
+    assert any(u.endswith(".js") for u in queue)
 
 
 def test_enqueue_skips_static_and_caps_query():

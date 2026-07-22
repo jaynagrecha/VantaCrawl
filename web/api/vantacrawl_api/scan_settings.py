@@ -49,15 +49,18 @@ _HUMAN = {
     "link_depth_limit": ("Link depth limit", "Hard cap on link-following depth."),
     "max_values_per_parameter": (
         "Max values per query param",
-        "Cap representative values for functional params (amount, id, page) to stop query-value explosion.",
+        "Cap how many functional query values enter the fetch queue. All observed values "
+        "are still inventoried as attack surface — power is not cut.",
     ),
     "max_query_variants_per_endpoint": (
         "Max query variants per endpoint",
-        "Max distinct query strings kept per path+param-name template.",
+        "Cap distinct query strings fetched per path+param-name template. Extra variants "
+        "remain in the parameter inventory.",
     ),
     "skip_static_page_enqueue": (
         "Skip static assets as pages",
-        "Record CSS/JS/images/fonts but do not BFS-crawl them as HTML pages.",
+        "Skip CSS/images/fonts/media as HTML BFS pages (still inventoried; mirror can download). "
+        "JS/JSON/XML/sourcemaps are still fetched for route and secret extractors.",
     ),
     "per_directory_wildcard": (
         "Per-directory soft-404 calibration",

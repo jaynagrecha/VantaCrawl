@@ -1792,8 +1792,12 @@ def enqueue_discovered_url(
         return False
 
     if query_tracker is not None and not query_tracker.allow(crawl_url):
+        # Cap only the fetch queue — observed values stay in attack-surface inventory
         if stats is not None and hasattr(stats, "query_variants_skipped"):
             stats.query_variants_skipped += 1
+        if stats is not None and hasattr(stats, "discovered_urls"):
+            # Keep the URL visible in discovery inventory even when not queued
+            stats.discovered_urls.add(crawl_url)
         return False
 
     if crawl_url in discovered:
