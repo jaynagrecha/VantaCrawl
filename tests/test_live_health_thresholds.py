@@ -215,3 +215,38 @@ def test_api_recon_surfaces_hit_urls_in_enum_hit_urls():
         "https://lab.example/api/health",
         "https://lab.example/api/users",
     ]
+
+
+def test_access_deny_surfaces_status_without_waf_blocks():
+    """Netlify-style 403s: Blocks stays 0, Denies + status codes still show."""
+    defense = {
+        "caught_by_protection": 0,
+        "completed_without_challenge": 20,
+        "protections_detected": [],
+        "block_journal": [],
+        "block_status_counts": {},
+        "access_deny_count": 12,
+        "access_deny_status_counts": {"403": 11, "401": 1},
+        "access_deny_journal": [
+            {
+                "url": "https://app.netlify.app/x.bak",
+                "status": 403,
+                "signal": "access_deny",
+                "protections": [],
+                "reason": "HTTP 403 without WAF",
+                "time": "12:00:00 IST",
+            }
+        ],
+        "protection_block_counts": {},
+    }
+    out = build_live_progress(
+        _stats(pages_crawled=25, defense=defense),
+        progress_text="Progress: 5m elapsed",
+        phase="enum",
+    )
+    assert out["blocks"] == 0
+    assert out["challenge_events"] == 0
+    assert out["access_deny_count"] == 12
+    assert out["block_status_counts"].get("403") == 11
+    assert out["block_journal"]
+    assert out["block_journal"][0]["signal"] == "access_deny"

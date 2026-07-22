@@ -12,7 +12,8 @@ def test_simplify_hit_line():
     line = simplify_log_line("HIT [403] https://example.com/.env (size=1234)")
     assert "Found hidden path" in line
     assert "https://example.com/.env" in line
-    assert "403" in line or "blocked" in line
+    assert "HTTP 403" in line
+    assert "blocked" in line
 
 
 def test_simplify_finding_line():

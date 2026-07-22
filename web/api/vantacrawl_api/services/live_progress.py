@@ -358,6 +358,25 @@ def build_live_progress(
     protection_block_counts = dict(
         defense.get("protection_block_counts") or prev.get("protection_block_counts") or {}
     )
+    access_deny_count = int(
+        defense.get("access_deny_count") or prev.get("access_deny_count") or 0
+    )
+    access_deny_status_counts = dict(
+        defense.get("access_deny_status_counts") or prev.get("access_deny_status_counts") or {}
+    )
+    access_deny_journal = list(
+        defense.get("access_deny_journal") or prev.get("access_deny_journal") or []
+    )[-30:]
+    # Merge deny status into the status strip so operators still see HTTP 403×N
+    # even when WAF Blocks stays at 0 (Netlify/Vercel permission denials).
+    display_status_counts = dict(block_status_counts)
+    for code, count in access_deny_status_counts.items():
+        display_status_counts[str(code)] = int(display_status_counts.get(str(code), 0) or 0) + int(
+            count or 0
+        )
+    # Prefer WAF journal; fall back to access-deny journal so the panel isn't empty
+    if not block_journal and access_deny_journal:
+        block_journal = access_deny_journal
 
     # Rate-based health: raw error counts panic users on secured sites mid-crawl.
     attempts = max(pages + errors, 1)
@@ -471,7 +490,10 @@ def build_live_progress(
         "protections": protections[:8],
         "protections_label": ", ".join(protections[:4]) if protections else "none",
         "block_journal": block_journal,
-        "block_status_counts": block_status_counts,
+        "block_status_counts": display_status_counts,
+        "waf_block_status_counts": block_status_counts,
+        "access_deny_count": access_deny_count,
+        "access_deny_status_counts": access_deny_status_counts,
         "protection_block_counts": protection_block_counts,
         "backoff_remaining_seconds": round(backoff_rem, 1),
         "heartbeat": heartbeat,

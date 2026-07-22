@@ -29,13 +29,42 @@ def test_plain_report_mentions_gaps_not_bypass():
     assert "bypass" in text.lower() or "GAP" in text or "gap" in text.lower()
 
 
-def test_captcha_signal_in_body():
+def test_netlify_403_is_access_deny_not_waf_block():
+    """Bare Netlify 403s must not inflate WAF Blocks, but still record HTTP deny status."""
+    tracker = DefenseTracker(start_url="https://app.netlify.app")
+    tracker.record_response(
+        "https://app.netlify.app/missing.aspx",
+        403,
+        {"Server": "Netlify"},
+        "Access denied",
+    )
+    tracker.record_response(
+        "https://app.netlify.app/secret.bak",
+        403,
+        {"server": "Netlify"},
+        "Not Found",
+    )
+    assert tracker.caught_count == 0
+    assert tracker.access_deny_count == 2
+    assert tracker.access_deny_status_counts.get("403") == 2
+    data = tracker.to_dict()
+    assert data["caught_by_protection"] == 0
+    assert data["access_deny_count"] == 2
+    assert data["access_deny_status_counts"]["403"] == 2
+    assert data["access_deny_journal"]
+    assert data["access_deny_journal"][0]["status"] == 403
+    assert data["access_deny_journal"][0]["signal"] == "access_deny"
+
+
+def test_cloudflare_403_still_counts_as_waf_block():
     tracker = DefenseTracker(start_url="https://lab.local")
     tracker.record_response(
-        "https://lab.local/login",
-        200,
-        {},
-        '<div class="g-recaptcha" data-sitekey="x"></div>',
+        "https://lab.local/",
+        403,
+        {"server": "cloudflare", "cf-ray": "abc"},
+        "attention required",
     )
     assert tracker.caught_count == 1
-    assert tracker.captcha_signal_count >= 1
+    assert tracker.access_deny_count == 0
+    assert tracker.block_status_counts.get("403") == 1
+
