@@ -66,13 +66,24 @@ def test_hidden_params_from_js():
     assert "isAdmin" in findings[0][2] or "debug" in findings[0][2]
 
 
-def test_js_intel_mines_fetch_and_env():
+def test_js_intel_no_longer_emits_fetch_inventory():
     body = 'fetch("/api/v1"); const h = "https://staging.internal.example/admin";'
     findings = scan_js_frontend_intel("https://app.example/bundle.js", body)
-    cats = {f[0] for f in findings}
-    assert "js_intel" in cats
-    assert any("fetch()" in f[2] for f in findings)
-    assert any("staging" in f[2].lower() for f in findings)
+    assert findings == []
+
+
+def test_js_env_hosts_probed_actively():
+    from tier_security import probe_js_env_hosts
+
+    class Resp:
+        status_code = 403
+
+    client = AsyncMock()
+    client.get = AsyncMock(return_value=Resp())
+    body = 'const h = "https://staging.internal.example/admin";'
+    findings = asyncio.run(probe_js_env_hosts(client, "https://app.example/", body))
+    assert findings and findings[0][0] == "js_intel"
+    assert "staging.internal.example" in findings[0][2]
 
 
 def test_passive_tier_wired():

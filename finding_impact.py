@@ -203,10 +203,15 @@ def assess_authentication(detail: str, severity: str, evidence: str = "") -> Imp
 
 def assess_secrets_static(detail: str, severity: str, evidence: str = "") -> ImpactResult:
     try:
-        from secret_classify import is_browser_rum_telemetry_key, is_client_public_key
+        from secret_classify import (
+            is_browser_rum_telemetry_key,
+            is_client_public_key,
+            is_google_browser_api_key,
+        )
     except Exception:
         is_client_public_key = lambda *_a, **_k: False  # type: ignore
         is_browser_rum_telemetry_key = lambda *_a, **_k: False  # type: ignore
+        is_google_browser_api_key = lambda *_a, **_k: False  # type: ignore
     # Pure RUM/analytics keys (Boomr, mPulse, …) — intentional in browser, no report value
     if is_browser_rum_telemetry_key(detail):
         return ImpactResult(
@@ -218,11 +223,20 @@ def assess_secrets_static(detail: str, severity: str, evidence: str = "") -> Imp
             proof=evidence or None,
             suppress=True,
         )
+    # Maps/Firebase AIza keys are designed to ship in browsers — suppress unless live
+    # validation later proves unrestricted abuse (assess_secrets_live).
+    if is_google_browser_api_key(detail, evidence):
+        return ImpactResult(
+            role="client_public_key",
+            impact="no_impact",
+            severity="info",
+            summary="Google/Firebase browser API key — expected in client bundles; report only if live check proves unrestricted use.",
+            validation="skipped",
+            proof=evidence or None,
+            suppress=True,
+        )
     if is_client_public_key(detail, evidence):
         sev = severity if severity in ("info", "low", "medium") else "low"
-        # Google/Firebase browser keys stay low until a live probe proves broad usability
-        if (evidence or "").startswith("AIza") and sev == "medium":
-            sev = "low"
         return ImpactResult(
             role="client_public_key",
             impact="limited_impact",
@@ -261,10 +275,15 @@ async def assess_secrets_live(
         typed = detail.split(":", 1)[0].strip()
 
     try:
-        from secret_classify import is_browser_rum_telemetry_key, is_client_public_key
+        from secret_classify import (
+            is_browser_rum_telemetry_key,
+            is_client_public_key,
+            is_google_browser_api_key,
+        )
     except Exception:
         is_client_public_key = lambda *_a, **_k: False  # type: ignore
         is_browser_rum_telemetry_key = lambda *_a, **_k: False  # type: ignore
+        is_google_browser_api_key = lambda *_a, **_k: False  # type: ignore
 
     # Drop pure RUM/telemetry noise before spending a live probe
     if is_browser_rum_telemetry_key(typed) or is_browser_rum_telemetry_key(detail):
@@ -277,6 +296,10 @@ async def assess_secrets_live(
             proof=evidence or None,
             suppress=True,
         )
+
+    google_browser = is_google_browser_api_key(typed, evidence) or is_google_browser_api_key(
+        detail, evidence
+    )
 
     result = await validate_secret(typed, evidence or "", client=client)
     suffix = format_validation_suffix(result)
@@ -306,6 +329,23 @@ async def assess_secrets_live(
         )
     client_key = is_client_public_key(typed, evidence) or is_client_public_key(detail, evidence)
 
+    # Google Maps/Firebase: suppress unless proven unrestricted (active above).
+    if google_browser:
+        return ImpactResult(
+            role="client_public_key",
+            impact="no_impact",
+            severity="info",
+            summary=(
+                result.summary
+                + " — Google/Firebase browser key not proven unrestricted; suppressed from report."
+            ),
+            validation="skipped" if result.status in ("skipped", "invalid") else "unverified",
+            proof=evidence or None,
+            detail_suffix=suffix,
+            suppress=True,
+            issues=["Live check: browser Google key not unrestricted"],
+        )
+
     if result.status == "invalid":
         return ImpactResult(
             role="client_public_key" if client_key else "credential",
@@ -334,7 +374,7 @@ async def assess_secrets_live(
                 + (
                     " — typically acceptable when HTTP referrer / API restrictions are in place"
                     if restricted
-                    else " — verify Google Cloud key restrictions (HTTP referrers + API allow-list)"
+                    else " — verify key restrictions (HTTP referrers + API allow-list)"
                 ),
                 validation="unverified" if result.status == "unknown" else "skipped",
                 proof=evidence or None,
@@ -533,7 +573,9 @@ def assess_cors(
         impact="possible",
         severity="medium",
         summary=summary,
-        validation="unverified",
+        # Misconfig itself is confirmed by the Origin probe (ACAO reflect + ACAC);
+        # "unverified" here previously confused report readers about probe status.
+        validation="confirmed",
         issues=issues,
         proof="; ".join(issues[:4]) if issues else None,
     )
@@ -803,6 +845,36 @@ def assess_tier_category(category: str, detail: str, severity: str, evidence: st
     )
     verified = confirmed or "missing state" in d or "token leakage" in d or "alg=none" in d or "without 429" in d
     if cat == "js_intel":
+        # Inventory leftovers (should rarely emit after scanner tighten)
+        if "network helpers" in d or re.search(r"\bfetch\(\)|\baxios\(\)", d):
+            return ImpactResult(
+                role="js_intel",
+                impact="no_impact",
+                severity="info",
+                summary="Client network helper usage is normal for SPAs — not a finding.",
+                validation="skipped",
+                suppress=True,
+            )
+        if "access denied" in d or "http 403" in d or "http 401" in d or "http 400" in d:
+            return ImpactResult(
+                role="js_intel",
+                impact="informational",
+                severity="info",
+                summary="Internal/non-prod host referenced in JS but anonymous access was denied — not exposed.",
+                validation="confirmed",
+                proof=evidence or None,
+            )
+        if "feature-flag" in d or "feature flag" in d:
+            # SDK mention alone is recon inventory; keep only when we still emit
+            return ImpactResult(
+                role="js_intel",
+                impact="informational",
+                severity="info",
+                summary="Feature-flag SDK string in bundle — recon only, not a vulnerability.",
+                validation="unverified",
+                proof=evidence or None,
+                suppress=True,
+            )
         return ImpactResult(
             role="js_intel",
             impact="informational",
