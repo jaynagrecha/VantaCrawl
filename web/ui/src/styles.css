@@ -110,6 +110,21 @@ a.job-card:hover { border-color: rgba(61,214,198,.45); text-decoration: none; ba
 .checkbox-copy strong { font-size: .95rem; line-height: 1.3; }
 .checkbox-copy .muted { font-size: .84rem; line-height: 1.4; }
 .field-hint { display: block; margin: .2rem 0 0; }
+.profile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .45rem;
+  margin-top: .65rem;
+}
+.settings-profile-panel {
+  padding: .85rem .9rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255,255,255,.02);
+}
+.settings-profile-panel > label:first-child {
+  font-weight: 700;
+}
 .scan-submit { min-height: 48px; }
 .desktop-only { display: block; }
 .mobile-only { display: none !important; }

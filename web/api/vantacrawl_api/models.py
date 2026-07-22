@@ -54,3 +54,23 @@ class ScanJob(SQLModel, table=True):
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SettingsProfile(SQLModel, table=True):
+    """User-saved New Scan settings (mode/speed/expert overlay) for reuse across hosts."""
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(index=True)
+    name: str = Field(index=True)
+    mode: str = "full_audit"
+    speed: str = "balanced"
+    # Expert CrawlConfig overlay — same shape as JobCreateRequest.settings
+    settings_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # Optional host hint: "example.com", "*.example.com", or empty (manual-only)
+    host_pattern: str = ""
+    # Preferred catalog wordlist id (not an uploaded path)
+    wordlist_id: str = ""
+    notes: str = ""
+    is_default: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)

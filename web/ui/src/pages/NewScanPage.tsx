@@ -1,6 +1,6 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "../api";
+import { api, SettingsProfile } from "../api";
 import FilePicker from "../components/FilePicker";
 
 const MODE_SHORT: Record<string, string> = {
@@ -188,6 +188,14 @@ export default function NewScanPage() {
   const [postmanFile, setPostmanFile] = useState<File | null>(null);
   const [harFile, setHarFile] = useState<File | null>(null);
   const [wordlistId, setWordlistId] = useState("");
+  const [profiles, setProfiles] = useState<SettingsProfile[]>([]);
+  const [selectedProfileId, setSelectedProfileId] = useState("");
+  const [profileHostPattern, setProfileHostPattern] = useState("");
+  const [profileIsDefault, setProfileIsDefault] = useState(false);
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [profileHint, setProfileHint] = useState("");
+  const skipModeResetRef = useRef(false);
+  const lastMatchedUrlRef = useRef("");
 
   const baseline = useMemo(() => {
     if (!meta) return {} as Record<string, unknown>;
@@ -209,14 +217,155 @@ export default function NewScanPage() {
         if (preferred) setWordlistId(preferred.id);
       })
       .catch((err) => setError(String(err.message || err)));
+    api
+      .listSettingsProfiles()
+      .then((res) => setProfiles(res.profiles || []))
+      .catch(() => setProfiles([]));
   }, []);
 
   useEffect(() => {
     if (!meta) return;
+    if (skipModeResetRef.current) {
+      skipModeResetRef.current = false;
+      return;
+    }
     const preset = meta.modes[mode]?.preset || {};
     setSettings({ ...meta.default_settings, ...preset });
     if (preset.speed) setSpeed(String(preset.speed));
   }, [mode, meta]);
+
+  function hostFromUrl(raw: string) {
+    try {
+      const u = new URL(raw.includes("://") ? raw : `https://${raw}`);
+      return (u.hostname || "").toLowerCase();
+    } catch {
+      return "";
+    }
+  }
+
+  function applyProfile(profile: SettingsProfile, source: string) {
+    if (!meta) return;
+    skipModeResetRef.current = true;
+    setSelectedProfileId(profile.id);
+    setMode(profile.mode || "full_audit");
+    setSpeed(profile.speed || "balanced");
+    const preset = meta.modes[profile.mode]?.preset || {};
+    setSettings({
+      ...meta.default_settings,
+      ...preset,
+      ...(profile.settings || {}),
+    });
+    setProfileHostPattern(profile.host_pattern || "");
+    setProfileIsDefault(Boolean(profile.is_default));
+    if (profile.wordlist_id) setWordlistId(profile.wordlist_id);
+    setProfileHint(`Loaded “${profile.name}” (${source}).`);
+  }
+
+  async function refreshProfiles() {
+    const res = await api.listSettingsProfiles();
+    setProfiles(res.profiles || []);
+    return res.profiles || [];
+  }
+
+  async function onSelectProfile(id: string) {
+    setSelectedProfileId(id);
+    setProfileHint("");
+    if (!id) {
+      setProfileHostPattern("");
+      setProfileIsDefault(false);
+      return;
+    }
+    const profile = profiles.find((p) => p.id === id);
+    if (profile) applyProfile(profile, "manual");
+  }
+
+  async function saveCurrentAsProfile() {
+    const name = window.prompt("Profile name", title.trim() || hostFromUrl(startUrl) || "My profile");
+    if (!name) return;
+    setProfileBusy(true);
+    setError("");
+    try {
+      const host =
+        profileHostPattern.trim() || hostFromUrl(startUrl) || "";
+      const created = await api.createSettingsProfile({
+        name: name.trim(),
+        mode,
+        speed,
+        settings,
+        host_pattern: host,
+        wordlist_id: wordlistFile ? "" : wordlistId,
+        is_default: profileIsDefault,
+      });
+      const list = await refreshProfiles();
+      setProfiles(list);
+      setSelectedProfileId(created.id);
+      setProfileHostPattern(created.host_pattern || host);
+      setProfileHint(`Saved profile “${created.name}”.`);
+    } catch (err: any) {
+      setError(String(err.message || err));
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  async function updateSelectedProfile() {
+    if (!selectedProfileId) {
+      setError("Select a profile to update, or Save as new.");
+      return;
+    }
+    setProfileBusy(true);
+    setError("");
+    try {
+      const updated = await api.updateSettingsProfile(selectedProfileId, {
+        mode,
+        speed,
+        settings,
+        host_pattern: profileHostPattern.trim() || hostFromUrl(startUrl),
+        wordlist_id: wordlistFile ? "" : wordlistId,
+        is_default: profileIsDefault,
+      });
+      await refreshProfiles();
+      setProfileHint(`Updated “${updated.name}”.`);
+    } catch (err: any) {
+      setError(String(err.message || err));
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  async function deleteSelectedProfile() {
+    if (!selectedProfileId) return;
+    const profile = profiles.find((p) => p.id === selectedProfileId);
+    if (!window.confirm(`Delete profile “${profile?.name || selectedProfileId}”?`)) return;
+    setProfileBusy(true);
+    setError("");
+    try {
+      await api.deleteSettingsProfile(selectedProfileId);
+      setSelectedProfileId("");
+      setProfileHostPattern("");
+      setProfileIsDefault(false);
+      await refreshProfiles();
+      setProfileHint("Profile deleted.");
+    } catch (err: any) {
+      setError(String(err.message || err));
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  async function tryMatchProfileForUrl(url: string) {
+    const trimmed = url.trim();
+    if (!trimmed || trimmed === "https://" || trimmed === lastMatchedUrlRef.current) return;
+    lastMatchedUrlRef.current = trimmed;
+    try {
+      const res = await api.matchSettingsProfile(trimmed);
+      if (res.profile) {
+        applyProfile(res.profile, res.reason === "default" ? "default" : "host match");
+      }
+    } catch {
+      /* ignore match failures */
+    }
+  }
 
   const groups = meta?.setting_groups || [];
   const fields = meta?.setting_fields || {};
@@ -294,7 +443,17 @@ export default function NewScanPage() {
       form.append("mode", mode);
       form.append("speed", speed);
       form.append("authorized_confirmed", String(authorized));
-      form.append("settings_json", JSON.stringify(settings));
+      const payload = {
+        ...settings,
+        ...(selectedProfileId
+          ? {
+              settings_profile_id: selectedProfileId,
+              settings_profile_name:
+                profiles.find((p) => p.id === selectedProfileId)?.name || "",
+            }
+          : {}),
+      };
+      form.append("settings_json", JSON.stringify(payload));
       form.append("targets_text", targetsText);
       form.append("wordlist_id", wordlistFile ? "__upload__" : wordlistId);
       if (targetsFile) form.append("targets_file", targetsFile);
@@ -338,8 +497,76 @@ export default function NewScanPage() {
                 spellCheck={false}
                 value={startUrl}
                 onChange={(e) => setStartUrl(e.target.value)}
+                onBlur={(e) => tryMatchProfileForUrl(e.target.value)}
                 placeholder="https://example.com"
               />
+            </div>
+            <div className="field settings-profile-panel">
+              <label>Settings profile</label>
+              <select
+                value={selectedProfileId}
+                onChange={(e) => onSelectProfile(e.target.value)}
+                disabled={profileBusy}
+              >
+                <option value="">None — use mode defaults</option>
+                {profiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                    {p.host_pattern ? ` · ${p.host_pattern}` : ""}
+                    {p.is_default ? " · default" : ""}
+                  </option>
+                ))}
+              </select>
+              <p className="setting-help-inline field-hint">
+                Save your current Mode + Parallelism + Expert settings and reload them later. Host
+                patterns auto-load when you enter a matching Target URL.
+              </p>
+              <div className="field" style={{ marginTop: "0.65rem" }}>
+                <label>Host pattern (optional)</label>
+                <input
+                  value={profileHostPattern}
+                  onChange={(e) => setProfileHostPattern(e.target.value)}
+                  placeholder={hostFromUrl(startUrl) || "example.com or *.example.com"}
+                />
+              </div>
+              <label className="checkbox" style={{ marginTop: "0.5rem" }}>
+                <input
+                  type="checkbox"
+                  checked={profileIsDefault}
+                  onChange={(e) => setProfileIsDefault(e.target.checked)}
+                />
+                <span className="checkbox-copy">
+                  <strong>Account default</strong>
+                  <span className="muted">Use when no host pattern matches</span>
+                </span>
+              </label>
+              <div className="profile-actions">
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={profileBusy}
+                  onClick={() => void saveCurrentAsProfile()}
+                >
+                  Save as new…
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={profileBusy || !selectedProfileId}
+                  onClick={() => void updateSelectedProfile()}
+                >
+                  Update selected
+                </button>
+                <button
+                  type="button"
+                  className="btn danger"
+                  disabled={profileBusy || !selectedProfileId}
+                  onClick={() => void deleteSelectedProfile()}
+                >
+                  Delete
+                </button>
+              </div>
+              {profileHint ? <p className="setting-help-inline field-hint">{profileHint}</p> : null}
             </div>
             <div className="field">
               <label>Title (optional)</label>

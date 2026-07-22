@@ -101,3 +101,52 @@ class MetaOut(BaseModel):
     setting_groups: List[Dict[str, Any]]
     setting_fields: Dict[str, Any] = Field(default_factory=dict)
     wordlists: List[Dict[str, str]] = Field(default_factory=list)
+
+
+class SettingsProfileCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    mode: str = "full_audit"
+    speed: str = "balanced"
+    settings: Dict[str, Any] = Field(default_factory=dict)
+    host_pattern: str = Field(default="", max_length=255)
+    wordlist_id: str = Field(default="", max_length=120)
+    notes: str = Field(default="", max_length=500)
+    is_default: bool = False
+
+
+class SettingsProfileUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    mode: Optional[str] = None
+    speed: Optional[str] = None
+    settings: Optional[Dict[str, Any]] = None
+    host_pattern: Optional[str] = Field(default=None, max_length=255)
+    wordlist_id: Optional[str] = Field(default=None, max_length=120)
+    notes: Optional[str] = Field(default=None, max_length=500)
+    is_default: Optional[bool] = None
+
+
+class SettingsProfileOut(BaseModel):
+    id: str
+    name: str
+    mode: str
+    speed: str
+    settings: Dict[str, Any]
+    host_pattern: str
+    wordlist_id: str
+    notes: str
+    is_default: bool
+    created_at: datetime
+    updated_at: datetime
+
+    @field_serializer("created_at", "updated_at")
+    def serialize_datetimes(self, value: Optional[datetime]) -> Optional[str]:
+        return _utc_iso(value)
+
+
+class SettingsProfileListOut(BaseModel):
+    profiles: List[SettingsProfileOut]
+
+
+class SettingsProfileMatchOut(BaseModel):
+    profile: Optional[SettingsProfileOut] = None
+    reason: str = ""

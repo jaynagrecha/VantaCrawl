@@ -28,6 +28,20 @@ export type Job = {
   updated_at: string;
 };
 
+export type SettingsProfile = {
+  id: string;
+  name: string;
+  mode: string;
+  speed: string;
+  settings: Record<string, unknown>;
+  host_pattern: string;
+  wordlist_id: string;
+  notes: string;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -114,4 +128,43 @@ export const api = {
     }),
   listArtifacts: (id: string) =>
     request<{ name: string; path: string; size: number; kind: string }[]>(`/api/reports/${id}/artifacts`),
+  listSettingsProfiles: () =>
+    request<{ profiles: SettingsProfile[] }>("/api/settings-profiles"),
+  matchSettingsProfile: (url: string) =>
+    request<{ profile: SettingsProfile | null; reason: string }>(
+      `/api/settings-profiles/match?url=${encodeURIComponent(url)}`
+    ),
+  createSettingsProfile: (body: {
+    name: string;
+    mode: string;
+    speed: string;
+    settings: Record<string, unknown>;
+    host_pattern?: string;
+    wordlist_id?: string;
+    notes?: string;
+    is_default?: boolean;
+  }) =>
+    request<SettingsProfile>("/api/settings-profiles", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updateSettingsProfile: (
+    id: string,
+    body: Partial<{
+      name: string;
+      mode: string;
+      speed: string;
+      settings: Record<string, unknown>;
+      host_pattern: string;
+      wordlist_id: string;
+      notes: string;
+      is_default: boolean;
+    }>
+  ) =>
+    request<SettingsProfile>(`/api/settings-profiles/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  deleteSettingsProfile: (id: string) =>
+    request<{ message: string }>(`/api/settings-profiles/${id}`, { method: "DELETE" }),
 };
