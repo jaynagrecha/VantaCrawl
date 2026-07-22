@@ -217,9 +217,15 @@ _HUMAN = {
         "Chrome on challenge",
         "If HTTP/curl_cffi hits a WAF/challenge page, retry that URL in real Chrome and sync cookies.",
     ),
+    "bm_cookie_wait_seconds": (
+        "BM cookie wait (Chrome)",
+        "Seconds to wait after Chrome page load for Akamai BM cookies (_abck/bm_sz). "
+        "Too low → Akamai may log NoScript / javascript fingerprint not received.",
+    ),
     "auto_sync_cookies": (
         "Auto-sync cookies",
-        "Automatically copy per-host cookies from Chrome into the HTTP jar (like sticky-host UAs).",
+        "Automatically copy per-host cookies from Chrome into the HTTP jar "
+        "(required so HTTP follow-ups carry BM session cookies).",
     ),
     "screenshot_capture": ("Screenshot capture", "Capture page screenshots (needs Chrome)."),
     "proxy_url": ("Proxy URL", "Optional HTTP(S) proxy, e.g. http://user:pass@host:8080"),
@@ -532,6 +538,7 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "deep_mirror",
             "browser_primary",
             "browser_on_challenge",
+            "bm_cookie_wait_seconds",
             "auto_sync_cookies",
             "screenshot_capture",
         ],
