@@ -31,14 +31,42 @@ a:hover { text-decoration: underline; }
 button, input, select, textarea { font: inherit; }
 .mono { font-family: "IBM Plex Mono", Consolas, monospace; }
 
-.shell { max-width: 1180px; margin: 0 auto; padding: 1.25rem; }
+.shell { max-width: 1180px; margin: 0 auto; padding: 1.25rem; position: relative; }
 .topnav {
   display: flex; align-items: center; justify-content: space-between; gap: 1rem;
   padding: .85rem 0 1.25rem; border-bottom: 1px solid var(--line); margin-bottom: 1.5rem;
+  position: relative; z-index: 40;
 }
 .brand { font-weight: 800; font-size: 1.2rem; letter-spacing: .02em; }
 .brand span { color: var(--accent); }
-.nav-actions { display: flex; gap: .6rem; align-items: center; }
+.nav-actions { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.nav-user { font-size: .82rem; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-toggle, .nav-backdrop { display: none; }
+.page-head {
+  display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; align-items: flex-start;
+}
+.page-head-url { margin: 0; word-break: break-all; }
+.page-actions { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+.section-head {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap;
+}
+.report-actions { margin-bottom: .75rem; }
+.table-url {
+  max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.job-cards { display: none; list-style: none; margin: 0; padding: 0; gap: .75rem; }
+.job-card {
+  border: 1px solid var(--line); border-radius: 14px; background: var(--bg-soft);
+  padding: .9rem 1rem; display: flex; flex-direction: column; gap: .55rem;
+}
+.job-card-top { display: flex; justify-content: space-between; gap: .75rem; align-items: flex-start; }
+.job-card-title { font-weight: 800; line-height: 1.3; }
+.job-card-url {
+  font-size: .78rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.job-card-foot { display: flex; justify-content: space-between; align-items: center; gap: .75rem; }
+.desktop-only { display: block; }
+.mobile-only { display: none; }
 
 .card {
   background: linear-gradient(180deg, rgba(255,255,255,.02), transparent), var(--bg-elev);
@@ -55,9 +83,12 @@ h2 { margin: 0 0 .75rem; font-size: 1.15rem; }
 .lead { color: var(--muted); margin: 0 0 1.25rem; }
 
 .btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: .35rem;
   border: 1px solid var(--line); background: var(--bg-soft); color: var(--text);
   border-radius: 12px; padding: .55rem .95rem; font-weight: 700; cursor: pointer;
+  text-decoration: none;
 }
+a.btn:hover { text-decoration: none; }
 .btn:hover { border-color: var(--accent); }
 .btn.primary { background: var(--accent-dim); border-color: rgba(61,214,198,.45); color: var(--accent); }
 .btn.danger { border-color: rgba(255,107,122,.45); color: var(--danger); background: rgba(255,107,122,.08); }
@@ -317,6 +348,8 @@ h2 { margin: 0 0 .75rem; font-size: 1.15rem; }
   .expert-nav-mobile { display: flex; }
   .expert-head-actions { width: 100%; }
   .expert-head-actions .btn { flex: 1 1 auto; }
+  .expert-toggles { grid-template-columns: 1fr; }
+  .settings-grid { grid-template-columns: 1fr; }
 }
 
 .report-frame {
@@ -477,4 +510,96 @@ h2 { margin: 0 0 .75rem; font-size: 1.15rem; }
   border-radius: 999px;
   padding: .1rem .5rem;
   vertical-align: middle;
+}
+
+/* —— Mobile / narrow viewports —— */
+@media (max-width: 760px) {
+  html, body { overflow-x: hidden; }
+  body.nav-open { overflow: hidden; }
+
+  .shell { padding: .85rem .8rem 1.5rem; }
+  .topnav {
+    flex-wrap: wrap; padding: .65rem 0 1rem; margin-bottom: 1.1rem; gap: .65rem;
+  }
+  .brand { font-size: 1.1rem; }
+
+  .nav-toggle {
+    display: inline-flex; flex-direction: column; justify-content: center; gap: 5px;
+    width: 44px; height: 44px; margin-left: auto;
+    border: 1px solid var(--line); border-radius: 12px; background: var(--bg-soft);
+    padding: .7rem .75rem; cursor: pointer;
+  }
+  .nav-toggle span {
+    display: block; height: 2px; width: 100%; border-radius: 2px; background: var(--text);
+    transition: transform .2s ease, opacity .2s ease;
+  }
+  .nav-toggle.open span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+  .nav-toggle.open span:nth-child(2) { opacity: 0; }
+  .nav-toggle.open span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+  .nav-backdrop {
+    display: block; position: fixed; inset: 0; z-index: 30;
+    border: 0; padding: 0; margin: 0; background: rgba(5, 10, 20, .55); cursor: pointer;
+  }
+
+  .nav-actions {
+    display: none; position: absolute; top: calc(100% - .35rem); left: 0; right: 0; z-index: 45;
+    flex-direction: column; align-items: stretch; gap: .55rem;
+    padding: .9rem; border: 1px solid var(--line); border-radius: 14px;
+    background: var(--bg-elev); box-shadow: var(--shadow);
+  }
+  .nav-actions.open { display: flex; }
+  .nav-user {
+    max-width: none; white-space: normal; word-break: break-all;
+    padding: .15rem .1rem .35rem; border-bottom: 1px solid var(--line); margin-bottom: .15rem;
+  }
+  .nav-actions .btn { width: 100%; text-align: center; min-height: 44px; }
+
+  .card { padding: 1rem .95rem; border-radius: 14px; }
+  h1 { font-size: 1.35rem; }
+  h2 { font-size: 1.05rem; }
+  .lead { margin-bottom: 1rem; font-size: .95rem; }
+
+  .btn { min-height: 42px; padding: .6rem .85rem; }
+  .field input, .field select, .field textarea { min-height: 44px; font-size: 1rem; }
+  .field textarea { min-height: 5.5rem; }
+
+  .desktop-only { display: none !important; }
+  .mobile-only { display: block; }
+  .job-cards { display: grid; }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  .page-head { flex-direction: column; }
+  .page-actions { width: 100%; }
+  .page-actions .btn { flex: 1 1 calc(50% - .5rem); text-align: center; justify-content: center; }
+  .report-actions .btn { flex: 1 1 100%; }
+  .section-head .btn { width: 100%; text-align: center; }
+
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
+  .stats.cockpit { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat { padding: .65rem .35rem; }
+  .stat-num { font-size: 1.15rem; }
+  .stat-phase .stat-num, .stat-text .stat-num { font-size: .78rem; }
+
+  .progress-head { flex-direction: column; align-items: flex-start; }
+  .log { max-height: 260px; font-size: .72rem; padding: .7rem; }
+  .report-frame { min-height: 55vh; border-radius: 12px; }
+
+  .tabs { gap: .35rem; }
+  .tab { min-height: 38px; padding: .45rem .75rem; }
+
+  .scan-activity { gap: .65rem; padding: .75rem .8rem; }
+  .block-journal-list { max-height: 220px; }
+  .block-journal-item { padding: .55rem .65rem; }
+
+  .auth-wrap { padding: 1rem; align-items: start; padding-top: 12vh; }
+  .auth-card { width: 100%; }
+  .otp-input { font-size: 1.25rem; letter-spacing: .28em; }
+}
+
+@media (max-width: 420px) {
+  .shell { padding: .7rem .65rem 1.25rem; }
+  .page-actions .btn { flex: 1 1 100%; }
+  .stats, .stats.cockpit { grid-template-columns: 1fr 1fr; }
+  .job-card-top { flex-direction: column; align-items: flex-start; }
 }

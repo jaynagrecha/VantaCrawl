@@ -285,14 +285,14 @@ export default function JobPage() {
   return (
     <div>
       <section className="card">
-        <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap" }}>
-          <div>
+        <div className="page-head">
+          <div className="page-head-copy">
             <h1>{job.title}</h1>
-            <p className="mono muted" style={{ margin: 0 }}>
+            <p className="mono muted page-head-url">
               {job.start_url}
             </p>
           </div>
-          <div style={{ display: "flex", gap: ".5rem", alignItems: "center", flexWrap: "wrap" }}>
+          <div className="page-actions">
             <button className="btn" type="button" disabled={!canPause} onClick={() => runAction("pause")}>
               Pause
             </button>
@@ -552,7 +552,7 @@ export default function JobPage() {
       </section>
 
       <section className="card">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "1rem" }}>
+        <div className="section-head">
           <h2 style={{ margin: 0 }}>Live Logs</h2>
           <a className="btn" href={logUrl} download={`${job.id}_logs.txt`}>
             Export log
@@ -708,7 +708,7 @@ export default function JobPage() {
           </div>
         ) : (
           <>
-            <div style={{ display: "flex", gap: ".6rem", marginBottom: ".75rem", flexWrap: "wrap" }}>
+            <div className="page-actions report-actions">
               <a className="btn primary" href={htmlUrl} target="_blank" rel="noreferrer">
                 Open assessment report
               </a>
