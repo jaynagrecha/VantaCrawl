@@ -35,18 +35,24 @@ def _findings_preview(stats) -> List[Dict[str, str]]:
             title = detail[:160]
             if secret_type and secret_type.lower() not in title.lower():
                 title = f"{secret_type}: {title}"[:160]
+            category = str(item.get("category") or "")
+            # Pattern-match evidence must stay fully readable; only mask secret values.
+            if category == "secrets_exposure" and evidence:
+                evidence_masked = mask_secret_value(evidence)
+            else:
+                evidence_masked = evidence
             out.append(
                 {
                     "severity": str(item.get("severity") or item.get("severity_label") or ""),
                     "title": title,
                     "url": str(item.get("url") or ""),
-                    "category": str(item.get("category") or ""),
+                    "category": category,
                     "secret_type": secret_type,
                     "impact": str(item.get("impact") or ""),
                     "validation": str(item.get("validation") or ""),
                     "impact_summary": str(item.get("impact_summary") or ""),
                     "role": str(item.get("role") or ""),
-                    "evidence_masked": mask_secret_value(evidence) if evidence else "",
+                    "evidence_masked": evidence_masked,
                     "evidence_full": evidence,
                 }
             )

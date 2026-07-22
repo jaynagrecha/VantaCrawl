@@ -1328,22 +1328,34 @@ async def _run_security_checks(
     if host and host not in stats._http_methods_hosts and config.security_scan and config.vuln_scan:
         stats._http_methods_hosts.add(host)
         origin = f"{urlparse(url).scheme}://{urlparse(url).netloc}/"
-        for category, severity, detail in await probe_http_methods(client, origin):
-            await emit(category, severity, origin, detail)
+        for item in await probe_http_methods(client, origin):
+            if len(item) >= 4:
+                category, severity, detail, evidence = item[0], item[1], item[2], item[3]
+            else:
+                category, severity, detail, evidence = item[0], item[1], item[2], None
+            await emit(category, severity, origin, detail, evidence=evidence)
     if config.security_scan and config.vuln_scan:
-        for category, severity, detail in run_passive_vuln_scan(
+        for item in run_passive_vuln_scan(
             url, body_text, forms, headers or {}, content_type
         ):
-            await emit(category, severity, url, detail)
+            if len(item) >= 4:
+                category, severity, detail, evidence = item[0], item[1], item[2], item[3]
+            else:
+                category, severity, detail, evidence = item[0], item[1], item[2], None
+            await emit(category, severity, url, detail, evidence=evidence)
         if config.vuln_active_probe:
-            for category, severity, detail in await run_active_vuln_probes(
+            for item in await run_active_vuln_probes(
                 client,
                 url,
                 forms=forms,
                 max_params=config.active_probe_max_params,
                 max_forms=config.active_probe_max_forms,
             ):
-                await emit(category, severity, url, detail)
+                if len(item) >= 4:
+                    category, severity, detail, evidence = item[0], item[1], item[2], item[3]
+                else:
+                    category, severity, detail, evidence = item[0], item[1], item[2], None
+                await emit(category, severity, url, detail, evidence=evidence)
 
 
 async def _probe_form_actions(client, forms, output_callback, stats):

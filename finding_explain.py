@@ -616,7 +616,7 @@ def format_finding_group_lines(group: Dict[str, Any], *, max_urls: int = 40) -> 
             lines.append("  Secret: pattern matched but exact value was not captured")
     elif evidence:
         for item in evidence[:5]:
-            lines.append(f"  Evidence: {item}")
+            lines.append(f"  Matched pattern: {item}")
     detail = (group.get("detail") or "").strip()
     if detail and detail.lower() not in (group.get("title") or "").lower():
         lines.append(f"  Detail: {detail}")

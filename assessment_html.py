@@ -78,18 +78,20 @@ def render_assessment_html(doc: Dict[str, Any], *, technical_report_name: str = 
                     )
                 else:
                     ev_html = (
+                        "<p class='muted'>Exact matched pattern(s) that triggered this finding:</p>"
                         "<ul class='chips'>"
                         + "".join(f"<li><code>{escape(str(e))}</code></li>" for e in evidence[:10])
                         + "</ul>"
                     )
             except Exception:
                 ev_html = (
+                    "<p class='muted'>Exact matched pattern(s) that triggered this finding:</p>"
                     "<ul class='chips'>"
                     + "".join(f"<li><code>{escape(str(e))}</code></li>" for e in evidence[:10])
                     + "</ul>"
                 )
         else:
-            ev_html = "<p class='muted'>No raw evidence snippet stored.</p>"
+            ev_html = "<p class='muted'>No matched pattern / evidence snippet stored for this finding.</p>"
         finding_blocks.append(
             f"""
 <article class="finding sev-{sev_l}" id="{escape(str(f.get('id')))}">
@@ -113,7 +115,7 @@ def render_assessment_html(doc: Dict[str, Any], *, technical_report_name: str = 
       <div><h5>Attacker use</h5><p>{escape(str(f.get('attacker')))}</p></div>
       <div><h5>How to fix</h5><p>{escape(str(f.get('fix')))}</p></div>
     </div>
-    <h5>Evidence</h5>
+    <h5>Matched pattern / evidence</h5>
     {ev_html}
     <h5>Affected URL(s)</h5>
     {_url_list(list(f.get('urls') or []))}
