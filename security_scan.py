@@ -670,36 +670,52 @@ def extract_forms(html: str, page_url: str, content_type: str = "") -> List[Dict
         return forms
 
     from crawler_common import is_html_content
+    from crawl_url_policy import form_fingerprint, resolve_http_target
 
     path = urlparse(page_url).path
     if not is_html_content(content_type, path, html):
         return forms
 
-    from urllib.parse import urljoin
     from bs4 import BeautifulSoup
 
     soup = BeautifulSoup(html, "html.parser")
     for form in soup.find_all("form"):
-        raw_action = (form.get("action") or "").strip() or page_url
-        action = urljoin(page_url, raw_action)
+        raw_action = (form.get("action") or "").strip()
+        if not raw_action or raw_action.startswith("#"):
+            action = page_url
+        else:
+            action = resolve_http_target(raw_action, page_url)
+            if not action:
+                # javascript: / mailto: / empty — not a curl target
+                continue
         method = (form.get("method") or "GET").upper()
+        enctype = (form.get("enctype") or "").strip()
         fields = []
+        field_pairs = []
         file_fields = []
         file_accepts: List[str] = []
         for inp in form.find_all(["input", "textarea", "select"]):
             name = inp.get("name")
             if name:
                 fields.append(name)
+                typ = (inp.get("type") or inp.name or "text").lower()
+                field_pairs.append((name, typ))
             if (inp.name or "").lower() == "input" and (inp.get("type") or "").lower() == "file":
                 file_fields.append(name or "(unnamed-file)")
                 accept = (inp.get("accept") or "").strip()
                 if accept:
                     file_accepts.append(accept)
+        form_key = form_fingerprint(
+            method=method, action=action, fields=field_pairs, enctype=enctype
+        )
         forms.append(
             {
                 "action": action,
                 "method": method,
                 "fields": fields,
+                "field_types": field_pairs,
+                "enctype": enctype,
+                "form_key": form_key,
                 "file_fields": file_fields,
                 "file_accepts": file_accepts,
                 "has_file_input": bool(file_fields),

@@ -306,6 +306,52 @@ def build_smart_wordlist(
     return ordered
 
 
+def directory_base_url(start_url: str, path_segments: Optional[List[str]] = None) -> str:
+    """URL under which per-directory soft-404 probes are issued."""
+    parsed = urlparse(start_url)
+    path = parsed.path or "/"
+    leaf = path.rsplit("/", 1)[-1]
+    if leaf and "." in leaf:
+        path = path[: path.rfind("/") + 1] or "/"
+    if not path.endswith("/"):
+        path += "/"
+    segs = [s.strip("/") for s in (path_segments or []) if s and str(s).strip("/")]
+    if segs:
+        path = path.rstrip("/") + "/" + "/".join(segs) + "/"
+    return f"{parsed.scheme}://{parsed.netloc}{path}"
+
+
+class DirectoryWildcardCache:
+    """Calibrate soft-404 / wildcard fingerprints per directory prefix."""
+
+    def __init__(self):
+        self._cache: Dict[str, WildcardProfile] = {}
+
+    def _key(self, path_segments: Optional[List[str]]) -> str:
+        segs = [s.strip("/") for s in (path_segments or []) if s and str(s).strip("/")]
+        return "/" + "/".join(segs) if segs else "/"
+
+    async def for_path(
+        self,
+        client: httpx.AsyncClient,
+        start_url: str,
+        path_segments: Optional[List[str]],
+        *,
+        enabled: bool,
+        root_fallback: Optional[WildcardProfile] = None,
+    ) -> WildcardProfile:
+        if not enabled:
+            return root_fallback or WildcardProfile()
+        key = self._key(path_segments)
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        base = directory_base_url(start_url, path_segments)
+        profile = await detect_wildcard(client, base)
+        self._cache[key] = profile
+        return profile
+
+
 async def detect_wildcard(
     client: httpx.AsyncClient,
     base_url: str,
@@ -410,6 +456,7 @@ def is_probe_hit(
     fp_store: Optional[FalsePositiveStore],
     exclude_lengths: Set[int],
     exclude_hashes: Set[str],
+    stats: Optional[CrawlStats] = None,
 ) -> bool:
     if not probe.status:
         return False
@@ -423,6 +470,8 @@ def is_probe_hit(
         return False
     sig = (probe.status, probe.content_length, probe.body_hash)
     if wildcard.active and sig in wildcard.signatures:
+        if stats is not None:
+            stats.soft_404s_filtered += 1
         return False
     baseline_len, baseline_status = baseline
     # Soft-404 filter: length alone is too aggressive when hash differs (real content)
@@ -446,6 +495,8 @@ def is_probe_hit(
             if config.false_positive_learning and fp_store:
                 # Learn per-URL only — do not poison global signature store with soft-404 sizes
                 fp_store.record_url_only(probe.url)
+            if stats is not None:
+                stats.soft_404s_filtered += 1
             return False
     if config.response_fingerprint and wildcard.active:
         near_wildcard = any(
@@ -455,6 +506,8 @@ def is_probe_hit(
             for s, length, h in wildcard.signatures
         )
         if near_wildcard:
+            if stats is not None:
+                stats.soft_404s_filtered += 1
             return False
     return True
 
@@ -496,8 +549,12 @@ async def run_pro_directory_enum(
 
     baseline = await get_async_baseline(client, config.start_url)
     wildcard = await detect_wildcard(client, config.start_url) if config.wildcard_detection else WildcardProfile()
+    wildcard_cache = DirectoryWildcardCache()
     if wildcard.active:
         output_callback(f"Wildcard detected — filtering {len(wildcard.signatures)} response fingerprint(s)")
+        # Seed cache root so first level reuses root calibration
+        wildcard_cache._cache["/"] = wildcard
+    per_dir = bool(getattr(config, "per_directory_wildcard", True)) and bool(config.wildcard_detection)
 
     limit = int(getattr(config, "enum_word_limit", 0) or 0)
     output_callback(
@@ -574,6 +631,10 @@ async def run_pro_directory_enum(
                 link_depth=link_depths.get(config.start_url, 0) + depth + 1,
                 max_link_depth=config.link_depth_limit,
                 link_depths=link_depths,
+                skip_static_pages=bool(getattr(config, "skip_static_page_enqueue", True)),
+                start_url=config.start_url,
+                scope_mode=str(getattr(config, "scope_mode", "allowed-subdomains") or "allowed-subdomains"),
+                base_url_for_canonical=config.start_url,
             )
         if config.download_files and config.download_dir and not config.skip_enum_download:
             await save_enum_hit_async(
@@ -601,6 +662,13 @@ async def run_pro_directory_enum(
         # Re-read filters each probe so Pause → change settings → Resume applies live
         status_filter = build_status_filter(config)
         exclude_lengths = parse_int_list(config.exclude_lengths)
+        local_wildcard = await wildcard_cache.for_path(
+            client,
+            config.start_url,
+            path_segments,
+            enabled=per_dir,
+            root_fallback=wildcard,
+        )
         for variant in iter_gobuster_word_variants(word, config):
             test_url = build_enum_url(config.start_url, path_segments, variant)
             if not test_url:
@@ -641,12 +709,13 @@ async def run_pro_directory_enum(
             if is_probe_hit(
                 probe,
                 status_filter=status_filter,
-                wildcard=wildcard,
+                wildcard=local_wildcard,
                 baseline=baseline,
                 config=config,
                 fp_store=fp_store,
                 exclude_lengths=exclude_lengths,
                 exclude_hashes=exclude_hashes,
+                stats=stats,
             ):
                 return probe
         return None

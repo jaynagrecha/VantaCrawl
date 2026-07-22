@@ -41,8 +41,28 @@ EDITABLE_DEFAULTS_SKIP = {
 
 _HUMAN = {
     "restrict_domain": ("Stay on start domain", "Do not follow links to other hostnames."),
+    "scope_mode": (
+        "Crawl scope mode",
+        "exact-origin = scheme+host+port only; allowed-subdomains = start host and its subdomains; off = no host gate at enqueue.",
+    ),
     "max_depth": ("Max crawl depth", "How many link hops from the start URL."),
     "link_depth_limit": ("Link depth limit", "Hard cap on link-following depth."),
+    "max_values_per_parameter": (
+        "Max values per query param",
+        "Cap representative values for functional params (amount, id, page) to stop query-value explosion.",
+    ),
+    "max_query_variants_per_endpoint": (
+        "Max query variants per endpoint",
+        "Max distinct query strings kept per path+param-name template.",
+    ),
+    "skip_static_page_enqueue": (
+        "Skip static assets as pages",
+        "Record CSS/JS/images/fonts but do not BFS-crawl them as HTML pages.",
+    ),
+    "per_directory_wildcard": (
+        "Per-directory soft-404 calibration",
+        "Re-probe random nonexistent paths under each enum directory prefix.",
+    ),
     "crawl_concurrency": ("Crawl concurrency", "Parallel page fetches."),
     "enum_concurrency": ("Enum concurrency", "Parallel directory brute-force probes."),
     "download_concurrency": ("Download concurrency", "Parallel file downloads."),
@@ -383,8 +403,13 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
         "keys": [
             "profile",
             "restrict_domain",
+            "scope_mode",
             "max_depth",
             "link_depth_limit",
+            "max_values_per_parameter",
+            "max_query_variants_per_endpoint",
+            "skip_static_page_enqueue",
+            "per_directory_wildcard",
             "branch_depth_limit",
             "crawl_concurrency",
             "enum_concurrency",

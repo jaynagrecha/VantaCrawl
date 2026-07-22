@@ -288,13 +288,13 @@ ASSET_PATH_RE = re.compile(
 def is_page_asset_url(url: str) -> bool:
     if not url or not is_valid_url(url):
         return False
-    path = urlparse(url).path.lower()
-    if ASSET_PATH_RE.search(path):
+    from crawl_url_policy import is_static_asset_url
+
+    if is_static_asset_url(url):
         return True
+    path = urlparse(url).path.lower()
     # cPanel / WHM and similar revisioned static trees
     if "/unprotected/" in path or "/cpanel_magic_revision_" in path.lower():
-        return True
-    if any(token in path for token in ("/css/", "/js/", "/images/", "/img/", "/fonts/", "/static/", "/assets/", "/media/", "/dist/", "/build/")):
         return True
     if path.endswith(("/favicon.ico", "/robots.txt")):
         return True
@@ -580,16 +580,16 @@ def is_text_content(content_type, url):
 
 
 def normalize_raw_url(raw, base_url):
-    raw = raw.strip().strip("'\"")
-    if not raw or raw.startswith(("javascript:", "mailto:", "tel:", "data:", "blob:", "#")):
+    """Resolve relative refs to absolute http(s); reject non-HTTP / bad % encoding."""
+    from crawl_url_policy import resolve_http_target
+
+    raw = (raw or "").strip().strip("'\"")
+    if not raw:
         return None
     if not is_plausible_href(raw):
         return None
-    if raw.startswith("//"):
-        parsed = urlparse(base_url)
-        raw = f"{parsed.scheme}:{raw}"
-    full_url = raw if raw.startswith(("http://", "https://")) else urljoin(base_url, raw)
-    if "${" in full_url or not is_valid_url(full_url):
+    full_url = resolve_http_target(raw, base_url or "")
+    if not full_url or "${" in full_url or not is_valid_url(full_url):
         return None
     return canonicalize_crawl_url(full_url, base_url=base_url)
 
@@ -1735,31 +1735,89 @@ def enqueue_discovered_url(
     link_depth=0,
     max_link_depth=0,
     link_depths=None,
+    *,
+    query_tracker=None,
+    skip_static_pages=False,
+    start_url="",
+    scope_mode="allowed-subdomains",
+    base_url_for_canonical="",
 ):
+    """Enqueue a crawl candidate with scheme/scope/query/static gates.
+
+    Updates ``discovered`` *before* queue insert (atomic when caller holds a lock).
+    """
+    from crawl_url_policy import (
+        host_in_exact_origin_scope,
+        is_html_crawl_candidate,
+        is_static_asset_url,
+        resolve_http_target,
+        strip_tracking_params,
+    )
+
     if max_link_depth and link_depth > max_link_depth:
         return False
-    try:
-        url = canonicalize_crawl_url(url, base_url=url)
-    except Exception:
-        pass
-    if url in discovered:
+
+    resolved = resolve_http_target(url or "", base_url_for_canonical or start_url or "")
+    if not resolved:
+        if stats is not None and hasattr(stats, "non_http_skipped"):
+            stats.non_http_skipped += 1
         return False
-    discovered.add(url)
+    try:
+        url = canonicalize_crawl_url(
+            resolved, base_url=base_url_for_canonical or start_url or resolved
+        )
+    except Exception:
+        url = resolved
+
+    mode = (scope_mode or "allowed-subdomains").strip().lower()
+    if start_url and mode in ("exact-origin", "exact_origin"):
+        if not host_in_exact_origin_scope(url, start_url):
+            if stats is not None and hasattr(stats, "out_of_scope_skipped"):
+                stats.out_of_scope_skipped += 1
+            return False
+
+    # Prefer tracking-stripped identity for variant caps; keep functional query
+    crawl_url = strip_tracking_params(url) if query_tracker is not None else url
+
+    if skip_static_pages and not is_html_crawl_candidate(crawl_url):
+        if stats is not None:
+            if hasattr(stats, "static_assets_recorded"):
+                stats.static_assets_recorded += 1
+            if hasattr(stats, "static_asset_urls") and is_static_asset_url(crawl_url):
+                if crawl_url not in stats.static_asset_urls and len(stats.static_asset_urls) < 5000:
+                    stats.static_asset_urls.append(crawl_url)
+        # Still mark seen so we do not re-process; do not BFS as a page
+        if crawl_url not in discovered:
+            discovered.add(crawl_url)
+        return False
+
+    if query_tracker is not None and not query_tracker.allow(crawl_url):
+        if stats is not None and hasattr(stats, "query_variants_skipped"):
+            stats.query_variants_skipped += 1
+        return False
+
+    if crawl_url in discovered:
+        if stats is not None and hasattr(stats, "duplicates_skipped"):
+            stats.duplicates_skipped += 1
+        return False
+    discovered.add(crawl_url)
     if link_depths is not None:
-        link_depths[url] = link_depth
-    output_callback(f"Found: {url}")
-    log_to_file(output_file_path, url)
+        link_depths[crawl_url] = link_depth
+    output_callback(f"[DISCOVERY][HTML_LINK] {crawl_url}")
+    log_to_file(output_file_path, crawl_url)
     if stats is not None:
         stats.links_found += 1
+        if hasattr(stats, "requests_queued"):
+            stats.requests_queued += 1
         if hasattr(stats, "discovered_urls"):
-            stats.discovered_urls.add(url)
+            stats.discovered_urls.add(crawl_url)
     if use_priority:
         import heapq
 
-        priority = 0 if is_html_url(url) else 1
-        heapq.heappush(queue, (priority, len(discovered), url))
+        priority = 0 if is_html_url(crawl_url) else 1
+        heapq.heappush(queue, (priority, len(discovered), crawl_url))
     else:
-        queue.append(url)
+        queue.append(crawl_url)
     return True
 
 

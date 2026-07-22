@@ -22,6 +22,9 @@ class CrawlConfig:
     download_dir: str = DEFAULT_DOWNLOAD
 
     restrict_domain: bool = True
+    # Crawl frontier scope: exact-origin | allowed-subdomains | off
+    # exact-origin = scheme+host+port must match start URL (no www2. twin)
+    scope_mode: str = "allowed-subdomains"
     download_files: bool = False
     extensions: Optional[List[str]] = None
     max_depth: int = 3
@@ -36,6 +39,14 @@ class CrawlConfig:
     # Hard cap so one hung page cannot freeze concurrent BFS workers
     crawl_page_timeout: float = 90.0
     link_depth_limit: int = 0
+    # Query-value explosion caps (endpoint identity = path + param *names*)
+    max_values_per_parameter: int = 2
+    max_query_variants_per_endpoint: int = 3
+    max_parameter_combinations: int = 5
+    # Do not BFS-expand CSS/JS/images/fonts as HTML pages
+    skip_static_page_enqueue: bool = True
+    # Soft-404 / wildcard calibration per directory prefix during enum
+    per_directory_wildcard: bool = True
 
     proxy_url: str = ""
     auth_username: str = ""
