@@ -750,9 +750,20 @@ async def run_job(job_id: str) -> None:
         except Exception:
             findings_preview = []
 
+        scan_status = "partial"
+        try:
+            from report_status import scan_status_from_stats
+
+            scan_status = str(scan_status_from_stats(stats).get("scan_status") or "partial")
+        except Exception:
+            if status == "completed":
+                scan_status = "final"
+            elif status == "cancelled":
+                scan_status = "stopped"
         progress = {
             **dict(live_progress_state),
             "phase": status,
+            "scan_status": scan_status,
             "progress_pct": 100 if status == "completed" else int(live_progress_state.get("progress_pct") or 0),
             "progress_text": "Scan finished" if status == "completed" else "Scan ended",
             "pages_crawled": stats.pages_crawled,

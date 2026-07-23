@@ -484,7 +484,8 @@ def build_live_progress(
         "protections_label": protections_label,
         "protections_count": len(protections),
         "outcome_breakdown": outcome_breakdown,
-        "block_journal": block_journal,        "block_status_counts": display_status_counts,
+        "block_journal": block_journal,
+        "block_status_counts": display_status_counts,
         "waf_block_status_counts": block_status_counts,
         "access_deny_count": access_deny_count,
         "access_deny_status_counts": access_deny_status_counts,
@@ -493,4 +494,9 @@ def build_live_progress(
         "heartbeat": heartbeat,
         "health": health,
         "health_detail": health_detail,
+        # Report completeness (final/partial/stopped) — separate from job lifecycle status
+        "scan_status": str(
+            snap.get("scan_status") or prev.get("scan_status") or ""
+        ).strip().lower()
+        or None,
     }

@@ -2,7 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, getToken, Job } from "../api";
 import ScanActivity from "../components/ScanActivity";
-import { canDeleteJob } from "../jobStatus";
+import {
+  canDeleteJob,
+  formatJobStatus,
+  formatScanCompleteness,
+  scanCompletenessClass,
+} from "../jobStatus";
 
 function formatDuration(totalSeconds: number): string {
   if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return "—";
@@ -32,9 +37,12 @@ function phaseLabel(phase: unknown): string {
   if (p === "security") return "Security";
   if (p === "recon") return "Recon";
   if (p === "starting") return "Starting";
-  if (p === "completed") return "Completed";
-  if (p === "cancelled" || p === "failed") return p;
-  return p || "Running";
+  if (p === "complete" || p === "completed" || p === "final") return "Complete";
+  if (p === "cancelled" || p === "canceled") return "Cancelled";
+  if (p === "failed") return "Failed";
+  if (p === "stopped") return "Stopped";
+  if (p === "partial") return "Partial";
+  return p ? p.charAt(0).toUpperCase() + p.slice(1) : "Running";
 }
 
 function tileValue(value: unknown, fallback = "0"): string {
@@ -349,8 +357,14 @@ export default function JobPage() {
         {["queued", "running", "paused", "stopping"].includes(job.status) ? (
           <ScanActivity status={job.status} />
         ) : (
-          <div style={{ marginTop: "1rem" }}>
-            <span className={`badge ${job.status}`}>{job.status}</span>
+          <div className="status-cell" style={{ marginTop: "1rem" }}>
+            <span className={`badge ${job.status}`}>{formatJobStatus(job.status)}</span>
+            {(() => {
+              const reportLabel = formatScanCompleteness(progress);
+              return reportLabel ? (
+                <span className={`badge ${scanCompletenessClass(reportLabel)}`}>{reportLabel}</span>
+              ) : null;
+            })()}
           </div>
         )}
         {(() => {
