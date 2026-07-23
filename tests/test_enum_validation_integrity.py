@@ -238,6 +238,29 @@ def test_enum_validation_conclusion_unverified():
     assert "585" in text
 
 
+def test_enum_validation_conclusion_catch_all_without_rejects():
+    text = enum_validation_conclusion(
+        http_attempts=1000,
+        accepted_hits=50,
+        rejected_wildcard=0,
+        rate_limited=10,
+        calibration_ok=True,
+        wildcard_active=True,
+        catch_all_200=True,
+    )
+    assert "unverified candidates" in text
+
+
+def test_text_similarity_detects_near_duplicate_html():
+    from enum_validation import text_similarity
+
+    a = b"<html><body>Welcome to the shop cart-form nonce=abc123</body></html>"
+    b = b"<html><body>Welcome to the shop cart-form nonce=zzz999</body></html>"
+    assert text_similarity(a, b) >= 0.82
+    c = b"<html><body>Completely different admin dashboard content here</body></html>"
+    assert text_similarity(a, c) < 0.82
+
+
 def test_pubkey_stable_label():
     assert is_public_client_key_value("pubkey-abc123def456ghi789")
     body = 'const api_key = "pubkey-abc123def456ghi789xyz"; var etime = 1; var ip66 = 2;'

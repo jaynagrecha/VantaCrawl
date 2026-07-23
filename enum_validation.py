@@ -137,6 +137,9 @@ class WildcardProfile:
     shapes: Dict[str, ShapeBaseline] = field(default_factory=dict)
     calibration_ok: bool = False
     calibration_notes: List[str] = field(default_factory=list)
+    catch_all_200: bool = False
+    # Optional raw bodies for DOM/text similarity (shape -> body bytes, capped)
+    shape_bodies: Dict[str, bytes] = field(default_factory=dict)
 
     def baseline_for(self, shape: str) -> Optional[ShapeBaseline]:
         return self.shapes.get(shape)
@@ -537,6 +540,27 @@ def matches_any_shape_baseline(
     return matched, best_sim, best_shape
 
 
+def text_similarity(a: bytes, b: bytes, *, max_bytes: int = 8192) -> float:
+    """DOM/text similarity 0..1 using normalized body text (SequenceMatcher)."""
+    from difflib import SequenceMatcher
+
+    def _norm(raw: bytes) -> str:
+        text = (raw or b"")[:max_bytes].decode("utf-8", errors="replace").lower()
+        text = re.sub(r"(?is)<script\b[^>]*>.*?</script>", " ", text)
+        text = re.sub(r"(?is)<style\b[^>]*>.*?</style>", " ", text)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        text = re.sub(r"\b[a-f0-9]{8,}\b", "#", text)
+        return text[:4000]
+
+    sa, sb = _norm(a), _norm(b)
+    if not sa and not sb:
+        return 1.0
+    if not sa or not sb:
+        return 0.0
+    return float(SequenceMatcher(None, sa, sb).ratio())
+
+
 def enum_validation_conclusion(
     *,
     http_attempts: int,
@@ -545,9 +569,15 @@ def enum_validation_conclusion(
     rate_limited: int,
     calibration_ok: bool,
     wildcard_active: bool,
+    catch_all_200: bool = False,
 ) -> str:
     """Defensible overall conclusion for reports when enum ran."""
-    if not calibration_ok and wildcard_active:
+    # Validation unsuccessful: catch-all 200 detected but filter never rejected anything
+    # while hits were still accepted — or calibration failed to capture fingerprints.
+    validation_failed = (not calibration_ok and wildcard_active) or (
+        catch_all_200 and rejected_wildcard == 0 and accepted_hits > 0
+    )
+    if validation_failed:
         return (
             f"Directory enumeration executed {http_attempts:,} HTTP candidate requests and completed "
             f"its scheduling phase. However, wildcard-response validation was unsuccessful. The target "

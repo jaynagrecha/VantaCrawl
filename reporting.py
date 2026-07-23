@@ -204,6 +204,10 @@ class ReportWriter:
         payload["enum_hit_urls"] = list(getattr(stats, "enum_hit_urls", []))
         payload["enum_hit_records"] = list(getattr(stats, "enum_hit_records", []) or [])[:2000]
         payload["enum_skipped_records"] = list(getattr(stats, "enum_skipped_records", []) or [])[:500]
+        payload["enum_attempt_fingerprints"] = list(getattr(stats, "enum_attempt_fingerprints", []) or [])[:2000]
+        payload["enum_attempt_fingerprints_note"] = (
+            "enum_attempt_fingerprints is capped; covers hits, misses, and rate-limited attempts."
+        )
         payload["enum_validation_conclusion"] = str(getattr(stats, "enum_validation_conclusion", "") or "")
         # Never export full public client-key values in JSON
         try:

@@ -52,6 +52,7 @@ class CrawlStats:
     enum_validation_conclusion: str = ""
     enum_hit_records: List[Dict[str, Any]] = field(default_factory=list)
     enum_skipped_records: List[Dict[str, Any]] = field(default_factory=list)
+    enum_attempt_fingerprints: List[Dict[str, Any]] = field(default_factory=list)
     enum_started_at: Optional[float] = None
     enum_current_word: str = ""
     enum_current_path: str = "/"
@@ -196,27 +197,56 @@ class CrawlStats:
         content_hash: str = "",
         duration_ms: float = 0.0,
         outcome: str = "",
+        redirect_chain: Optional[List[str]] = None,
+        title: str = "",
+        raw_hash: str = "",
+        normalized_hash: str = "",
+        similarity: float = 0.0,
+        path_shape: str = "",
+        classification: str = "",
     ) -> None:
         """Append-only request ledger row (fetch-queue inventory stays separate)."""
         if len(self.request_ledger) >= int(getattr(self, "_request_ledger_cap", 8000) or 8000):
             return
-        self.request_ledger.append(
-            {
-                "phase": phase,
-                "source": source,
-                "url": url,
-                "canonical_url": url,
-                "depth": int(depth or 0),
-                "status": status,
-                "final_url": final_url or url,
-                "response_type": response_type,
-                "bytes": int(bytes_ or 0),
-                "hash": content_hash,
-                "duration_ms": float(duration_ms or 0.0),
-                "outcome": outcome,
-                "ts": time.time(),
-            }
-        )
+        row = {
+            "phase": phase,
+            "source": source,
+            "url": url,
+            "canonical_url": url,
+            "depth": int(depth or 0),
+            "status": status,
+            "final_url": final_url or url,
+            "response_type": response_type,
+            "bytes": int(bytes_ or 0),
+            "hash": content_hash,
+            "duration_ms": float(duration_ms or 0.0),
+            "outcome": outcome,
+            "ts": time.time(),
+        }
+        if redirect_chain is not None:
+            row["redirect_chain"] = list(redirect_chain)[:12]
+        if title:
+            row["title"] = str(title)[:200]
+        if raw_hash:
+            row["raw_hash"] = raw_hash
+        if normalized_hash:
+            row["normalized_hash"] = normalized_hash
+        if similarity:
+            row["similarity"] = float(similarity)
+        if path_shape:
+            row["path_shape"] = path_shape
+        if classification:
+            row["classification"] = classification
+        self.request_ledger.append(row)
+
+    def record_enum_attempt(self, fingerprint: Dict[str, Any], *, limit: int = 5000) -> None:
+        """Persist a capped fingerprint for every enum HTTP attempt (hits and misses)."""
+        if not hasattr(self, "enum_attempt_fingerprints") or self.enum_attempt_fingerprints is None:
+            self.enum_attempt_fingerprints = []
+        bucket: List[Dict[str, Any]] = self.enum_attempt_fingerprints
+        if len(bucket) >= limit:
+            return
+        bucket.append(dict(fingerprint or {}))
 
     @staticmethod
     def summarize_broken_links(rows: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
@@ -624,6 +654,7 @@ class CrawlStats:
             "enum_wildcard_calibration_ok": bool(getattr(self, "enum_wildcard_calibration_ok", True)),
             "enum_wildcard_active": bool(getattr(self, "enum_wildcard_active", False)),
             "enum_validation_conclusion": str(getattr(self, "enum_validation_conclusion", "") or ""),
+            "enum_attempt_fingerprint_count": len(getattr(self, "enum_attempt_fingerprints", []) or []),
             "enum_started_at": self.enum_started_at,
             "enum_elapsed_seconds": round(self.enum_elapsed_seconds(), 1),
             "enum_eta_seconds": self.enum_eta_seconds(),

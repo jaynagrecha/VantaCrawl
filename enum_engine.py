@@ -42,6 +42,7 @@ from enum_validation import (
     classify_path_shape,
     control_paths_for_base,
     enum_validation_conclusion,
+    text_similarity,
     fingerprint_from_response,
     matches_any_shape_baseline,
     normalize_body_for_hash,
@@ -398,6 +399,7 @@ async def detect_wildcard(
     shapes: Dict[str, ShapeBaseline] = {}
     signatures: Set[Tuple[int, int, str]] = set()
     notes: List[str] = []
+    shape_bodies: Dict[str, bytes] = {}
     any_active = False
     for _round in range(max(1, int(probes) or 1)):
         controls = control_paths_for_base(base_url)
@@ -448,6 +450,9 @@ async def detect_wildcard(
                     any_active = True
                     signatures.add((status, length, short))
                     notes.append(f"{shape}: HTTP {status} len={length} control={url}")
+                # Keep a small body sample for DOM/text similarity against candidates
+                if looks_wildcard and body:
+                    shape_bodies[shape] = body[:8192]
             except httpx.HTTPError as exc:
                 notes.append(f"{shape}: probe_error ({exc.__class__.__name__})")
                 shapes.setdefault(
@@ -456,10 +461,15 @@ async def detect_wildcard(
                 )
 
     calibration_ok = True
+    catch_all_200 = False
     for shape in ALL_SHAPES:
         base = shapes.get(shape)
-        if base and base.active and base.status in (200, 201, 204) and not base.raw_hash:
-            calibration_ok = False
+        if not base:
+            continue
+        if base.active and base.status in (200, 201, 204):
+            catch_all_200 = True
+            if not base.raw_hash or base.raw_hash in ("", "empty"):
+                calibration_ok = False
 
     return WildcardProfile(
         active=any_active,
@@ -467,6 +477,8 @@ async def detect_wildcard(
         shapes=shapes,
         calibration_ok=calibration_ok and bool(shapes),
         calibration_notes=notes[:40],
+        catch_all_200=catch_all_200,
+        shape_bodies=shape_bodies,
     )
 
 
@@ -635,6 +647,24 @@ def is_probe_hit(
         normalized_hash=norm_hash,
         similarity_threshold=int(getattr(config, "enum_similarity_threshold", 64) or 64),
     )
+    # DOM/text similarity against the relevant shape baseline body
+    if not matched and wildcard and getattr(wildcard, "shape_bodies", None) and probe.body:
+        from enum_validation import relevant_shapes_for_candidate
+
+        for shape in relevant_shapes_for_candidate(probe.word or probe.url):
+            base_body = (wildcard.shape_bodies or {}).get(shape) or b""
+            base = (wildcard.shapes or {}).get(shape)
+            if not base or not base.active or not base_body:
+                continue
+            if probe.status != base.status:
+                continue
+            sim_txt = text_similarity(probe.body, base_body)
+            if sim_txt >= 0.82:
+                matched = True
+                sim = max(sim, sim_txt)
+                shape_used = shape
+                probe.wildcard_similarity = sim_txt
+                break
     if matched:
         probe.wildcard_similarity = sim
         probe.baseline_used = shape_used
@@ -996,7 +1026,34 @@ async def run_pro_directory_enum(
                 stats.enum_http_attempts = int(getattr(stats, "enum_http_attempts", 0) or 0) + 1  # type: ignore[attr-defined]
                 if config.status_code_report and status:
                     stats.record_status(status, enum=True)
-                # Unified request ledger — enum phase
+                # Fingerprint every attempt (including 429 / misses) for auditability
+                attempt_body = body or b""
+                if len(attempt_body) > 8192:
+                    attempt_body_fp = attempt_body[:8192]
+                else:
+                    attempt_body_fp = attempt_body
+                attempt_fp = fingerprint_from_response(
+                    url=test_url,
+                    status=status,
+                    body=attempt_body_fp,
+                    final_url=final_url or test_url,
+                    redirect_chain=chain,
+                    content_type=ctype,
+                    duration_ms=duration_ms,
+                    length=length,
+                )
+                path_shape = classify_path_shape(variant)
+                if hasattr(stats, "record_enum_attempt"):
+                    stats.record_enum_attempt(
+                        {
+                            **attempt_fp.to_dict(),
+                            "path_shape": path_shape,
+                            "base_word": word,
+                            "variant": variant,
+                            "attempt": attempt + 1,
+                            "outcome": "rate_limited" if status == 429 else ("ok" if status else "error"),
+                        }
+                    )
                 if hasattr(stats, "record_request"):
                     stats.record_request(
                         phase="enumeration",
@@ -1007,9 +1064,15 @@ async def run_pro_directory_enum(
                         final_url=final_url or test_url,
                         response_type=ctype,
                         bytes_=length,
-                        content_hash=body_hash,
+                        content_hash=attempt_fp.raw_hash or body_hash,
                         duration_ms=duration_ms,
                         outcome="rate_limited" if status == 429 else ("ok" if status else "error"),
+                        redirect_chain=list(chain or []),
+                        title=attempt_fp.title,
+                        raw_hash=attempt_fp.raw_hash,
+                        normalized_hash=attempt_fp.normalized_hash,
+                        path_shape=path_shape,
+                        classification=CLASS_INCONCLUSIVE_429 if status == 429 else "",
                     )
                 if status != 429:
                     concurrency_state["clean_streak"] += 1
@@ -1030,6 +1093,17 @@ async def run_pro_directory_enum(
                 await _honor_retry_after(retry_after or "2")
                 if attempt + 1 >= max_attempts:
                     stats.enum_inconclusive = int(getattr(stats, "enum_inconclusive", 0) or 0) + 1  # type: ignore[attr-defined]
+                    if not hasattr(stats, "enum_skipped_records") or stats.enum_skipped_records is None:
+                        stats.enum_skipped_records = []  # type: ignore[attr-defined]
+                    stats.enum_skipped_records.append(  # type: ignore[attr-defined]
+                        {
+                            "url": test_url,
+                            "classification": CLASS_INCONCLUSIVE_429,
+                            "validated": False,
+                            "acceptance_reason": "retries_exhausted_rate_limited",
+                            "fingerprint": attempt_fp.to_dict(),
+                        }
+                    )
                     return None  # inconclusive — not a hit, not a negative for coverage stats
 
             retained = body or b""
@@ -1226,8 +1300,10 @@ async def run_pro_directory_enum(
         rate_limited=int(getattr(stats, "enum_rate_limited", 0) or 0),
         calibration_ok=bool(getattr(wildcard, "calibration_ok", True)),
         wildcard_active=bool(wildcard.active),
+        catch_all_200=bool(getattr(wildcard, "catch_all_200", False)),
     )
     stats.enum_validation_conclusion = conclusion  # type: ignore[attr-defined]
+    stats.enum_wildcard_catch_all_200 = bool(getattr(wildcard, "catch_all_200", False))  # type: ignore[attr-defined]
     output_callback(f"Directory enumeration finished — {stats.enum_hits} validated hit(s).")
     output_callback(conclusion)
     return found_set
