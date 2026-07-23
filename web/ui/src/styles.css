@@ -31,7 +31,7 @@ a:hover { text-decoration: underline; }
 button, input, select, textarea { font: inherit; }
 .mono { font-family: "IBM Plex Mono", Consolas, monospace; }
 
-.shell { max-width: 1180px; margin: 0 auto; padding: 1.25rem; position: relative; }
+.shell { max-width: 1280px; margin: 0 auto; padding: 1.25rem; position: relative; }
 .topnav {
   display: flex; align-items: center; justify-content: space-between; gap: 1rem;
   padding: .85rem 0 1.25rem; border-bottom: 1px solid var(--line); margin-bottom: 1.5rem;
@@ -52,7 +52,7 @@ button, input, select, textarea { font: inherit; }
 }
 .report-actions { margin-bottom: .75rem; }
 .table-url {
-  max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .job-cards { display: none; list-style: none; margin: 0; padding: 0; gap: .75rem; }
 .job-cards > li { margin: 0; }
@@ -60,7 +60,65 @@ button, input, select, textarea { font: inherit; }
   display: grid; gap: .5rem;
 }
 .job-card-delete { width: 100%; }
-.job-row-actions { display: flex; gap: .45rem; flex-wrap: wrap; justify-content: flex-end; }
+.job-row-actions {
+  display: flex; gap: .4rem; flex-wrap: nowrap; justify-content: flex-end;
+  white-space: nowrap;
+}
+.job-row-actions .btn {
+  flex: 0 0 auto;
+  padding: .4rem .7rem;
+  min-height: 34px;
+  font-size: .82rem;
+}
+.table-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+  margin-top: .35rem;
+}
+.dash-jobs-card {
+  /* Never clip Open/Delete — scroll the table instead */
+  overflow-x: auto;
+  overflow-y: visible;
+}
+.dash-jobs-card .table {
+  width: 100%;
+  min-width: 640px;
+  table-layout: fixed;
+}
+.dash-jobs-card .table th:nth-child(1),
+.dash-jobs-card .table td:nth-child(1) { width: 20%; }
+.dash-jobs-card .table th:nth-child(2),
+.dash-jobs-card .table td:nth-child(2) { width: 20%; }
+.dash-jobs-card .table th:nth-child(3),
+.dash-jobs-card .table td:nth-child(3) { width: 22%; }
+.dash-jobs-card .table th:nth-child(4),
+.dash-jobs-card .table td:nth-child(4) { width: 12%; }
+.dash-jobs-card .table th:nth-child(5),
+.dash-jobs-card .table td:nth-child(5) {
+  width: 26%;
+  min-width: 9.5rem;
+  text-align: right;
+  /* Keep action buttons from collapsing out of view */
+  white-space: nowrap;
+}
+.dash-jobs-card .table td:nth-child(1),
+.dash-jobs-card .table td:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-jobs-card .table-url {
+  max-width: none;
+  display: block;
+}
+.dash-jobs-card .status-cell {
+  flex-wrap: wrap;
+  white-space: normal;
+  max-width: 100%;
+}
 a.job-card, .job-card {
   border: 1px solid var(--line); border-radius: 16px; background: var(--bg-soft);
   padding: 1.05rem 1.1rem; display: flex; flex-direction: column; gap: .65rem;
@@ -133,11 +191,16 @@ a.job-card:hover { border-color: rgba(61,214,198,.45); text-decoration: none; ba
   background: linear-gradient(180deg, rgba(255,255,255,.02), transparent), var(--bg-elev);
   border: 1px solid var(--line); border-radius: var(--radius);
   padding: 1.25rem 1.35rem; box-shadow: var(--shadow);
-  overflow-x: clip; min-width: 0;
+  /* Prefer visible content over hard clip (jobs table actions were cut off) */
+  overflow-x: auto; min-width: 0;
 }
 .card + .card { margin-top: 1rem; }
-.grid-2 { display: grid; grid-template-columns: 1.2fr .8fr; gap: 1rem; }
+.grid-2 { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(220px, .7fr); gap: 1rem; }
 .grid-2 > * { min-width: 0; }
+@media (max-width: 1100px) {
+  .grid-2 { grid-template-columns: 1fr; }
+  .grid-2 > .desktop-only.card { display: none !important; }
+}
 @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
 
 .hits-list {
