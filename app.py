@@ -397,6 +397,7 @@ class CrawlerApp(QMainWindow):
         self.enum_only_cb = QCheckBox("Enum-only mode (skip crawl — Gobuster-beater)")
         self.enum_flat_cb = QCheckBox("Flat scan (no recursion into found dirs)")
         self.enum_flat_cb.setChecked(True)
+        self.enum_flat_cb.toggled.connect(self._on_enum_flat_toggled)
         self.wildcard_cb = QCheckBox("Wildcard detection (multi-probe filter)")
         self.wildcard_cb.setChecked(True)
         self.enum_follow_redirects_cb = QCheckBox(
@@ -870,6 +871,7 @@ class CrawlerApp(QMainWindow):
         self.mutation_enum_cb.toggled.connect(self._sync_wordlist_controls)
         self._set_expert_visible(False)
         self._sync_wordlist_controls()
+        self._on_enum_flat_toggled(self.enum_flat_cb.isChecked())
         apply_mode_preset(self, "full_audit")
 
     def on_mode_changed(self, _button=None):
@@ -913,6 +915,17 @@ class CrawlerApp(QMainWindow):
         if enabled and not self.use_wordlist_cb.isChecked() and not self.mutation_enum_cb.isChecked():
             self.use_wordlist_cb.setChecked(True)
         self._sync_wordlist_controls()
+
+    def _on_enum_flat_toggled(self, enabled: bool):
+        # Flat enum overrides recursive depth — grey out depth controls to avoid confusion
+        self.depth_spin.setEnabled(not enabled)
+        if hasattr(self, "link_depth_spin"):
+            # link depth is crawl-side; keep enabled
+            pass
+        if enabled:
+            self.depth_spin.setToolTip("Disabled while Flat enum is on (effective enum depth = 0).")
+        else:
+            self.depth_spin.setToolTip("")
 
     def _sync_wordlist_controls(self):
         enum_on = self.directory_enum_cb.isChecked() or self.mode_fast_rb.isChecked()

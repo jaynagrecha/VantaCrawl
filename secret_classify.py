@@ -817,8 +817,19 @@ def is_client_public_key(label: str, evidence: str = "") -> bool:
         return True
     if "client id" in low or "client_id" in low:
         return True
+    if "public client-key" in low or "client-key-like" in low:
+        return True
     if ev.startswith("pk_live_") or ev.startswith("pk_test_"):
         return True
+    if ev.lower().startswith("pubkey-"):
+        return True
+    try:
+        from enum_validation import is_public_client_key_value
+
+        if is_public_client_key_value(ev):
+            return True
+    except Exception:
+        pass
     if is_google_browser_api_key(label, evidence):
         return True
     if is_browser_rum_telemetry_key(label):
@@ -840,6 +851,8 @@ def severity_for_kind(label: str, default: str = "high", evidence: str = "") -> 
         if "publishable" in low or ev.startswith("pk_live_") or ev.startswith("pk_test_"):
             return "medium"
         if is_google_browser_api_key(label, evidence):
+            return "info"
+        if "public client-key" in low or ev.lower().startswith("pubkey-"):
             return "info"
         return "low"
     if any(x in low for x in ("password", "private key", "secret access", "client secret", "auth token")):

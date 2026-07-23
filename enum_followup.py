@@ -81,6 +81,19 @@ class EnumFollowupScheduler:
             return
         if not (getattr(self.config, "enum_auto_crawl_hits", False) or getattr(self.config, "enum_auto_vuln_scan", False)):
             return
+        # Do not security-scan enum responses until validated
+        if hasattr(probe, "validated") and not bool(getattr(probe, "validated", False)):
+            return
+        classification = str(getattr(probe, "classification", "") or "")
+        if classification in (
+            "wildcard_response",
+            "soft_404",
+            "case_variant",
+            "content_equivalent_fallback",
+            "inconclusive_rate_limited",
+            "unverified_candidate",
+        ):
+            return
         url = getattr(probe, "url", "") or ""
         status = int(getattr(probe, "status", 0) or 0)
         word = getattr(probe, "word", "") or ""

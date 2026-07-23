@@ -55,12 +55,14 @@ function SettingControl({
   meta,
   onChange,
   dense,
+  disabled,
 }: {
   fieldKey: string;
   value: unknown;
   meta?: FieldMeta;
   onChange: (key: string, value: unknown) => void;
   dense?: boolean;
+  disabled?: boolean;
 }) {
   const label = meta?.label || humanize(fieldKey);
   const help = meta?.help || "";
@@ -76,10 +78,11 @@ function SettingControl({
 
   if (isBool) {
     return (
-      <label className={`expert-toggle ${dense ? "dense" : ""}`}>
+      <label className={`expert-toggle ${dense ? "dense" : ""} ${disabled ? "disabled" : ""}`}>
         <input
           type="checkbox"
           checked={Boolean(value)}
+          disabled={disabled}
           onChange={(e) => onChange(fieldKey, e.target.checked)}
         />
         <span className="expert-toggle-copy">
@@ -94,10 +97,14 @@ function SettingControl({
     const current = value == null ? "" : String(value);
     const known = options.some((o) => o.value === current);
     return (
-      <div className="field setting-field">
+      <div className={`field setting-field ${disabled ? "disabled" : ""}`}>
         <label>{label}</label>
         {help ? <p className="setting-help-inline">{help}</p> : null}
-        <select value={known ? current : current} onChange={(e) => onChange(fieldKey, e.target.value)}>
+        <select
+          value={known ? current : current}
+          disabled={disabled}
+          onChange={(e) => onChange(fieldKey, e.target.value)}
+        >
           {!known && current ? <option value={current}>{current} (custom)</option> : null}
           {options.map((opt) => (
             <option key={opt.value} value={opt.value}>
@@ -141,24 +148,29 @@ function SettingControl({
 
   if (isNumber) {
     return (
-      <div className="field setting-field">
+      <div className={`field setting-field ${disabled ? "disabled" : ""}`}>
         <label>{label}</label>
         {help ? <p className="setting-help-inline">{help}</p> : null}
         <input
           type="number"
+          disabled={disabled}
           value={Number(value ?? 0)}
           onChange={(e) => onChange(fieldKey, Number(e.target.value))}
         />
+        {disabled && fieldKey === "branch_depth_limit" ? (
+          <p className="setting-help-inline">Disabled while Flat enum is on (effective depth = 0).</p>
+        ) : null}
       </div>
     );
   }
 
   return (
-    <div className="field setting-field">
+    <div className={`field setting-field ${disabled ? "disabled" : ""}`}>
       <label>{label}</label>
       {help ? <p className="setting-help-inline">{help}</p> : null}
       <input
         type={isPassword ? "password" : "text"}
+        disabled={disabled}
         autoComplete={isPassword ? "new-password" : undefined}
         value={value == null ? "" : String(value)}
         onChange={(e) => onChange(fieldKey, e.target.value)}
@@ -413,8 +425,17 @@ export default function NewScanPage() {
   const valueKeys = visibleKeys.filter((k) => !isToggleField(settings[k], fields[k]));
 
   function setSetting(key: string, value: unknown) {
-    setSettings((prev) => ({ ...prev, [key]: value }));
+    setSettings((prev) => {
+      const next = { ...prev, [key]: value };
+      // Flat enum forces effective depth 0 — keep UI honest
+      if (key === "enum_flat_scan" && value === true) {
+        // leave requested branch_depth_limit stored but disabled in UI
+      }
+      return next;
+    });
   }
+
+  const flatEnumOn = Boolean(settings.enum_flat_scan);
 
   function resetExpertToModeDefaults() {
     setSettings({ ...baseline });
@@ -885,6 +906,7 @@ export default function NewScanPage() {
                               value={settings[key]}
                               meta={fields[key]}
                               onChange={setSetting}
+                              disabled={flatEnumOn && (key === "branch_depth_limit" || key === "max_depth")}
                             />
                           ))}
                         </div>

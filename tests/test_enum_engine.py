@@ -186,7 +186,7 @@ def test_follow_redirect_to_404_final_status():
 
     async def _run():
         async with httpx.AsyncClient(transport=transport) as client:
-            status, _length, _hash, body, final, hops = await follow_same_host_redirects(
+            status, _length, _hash, body, final, hops, _chain, _ctype = await follow_same_host_redirects(
                 client,
                 "http://www.example.com/.well-known/change-password",
                 max_hops=5,
@@ -216,7 +216,7 @@ def test_follow_redirect_to_200_is_hit():
         async with httpx.AsyncClient(transport=transport) as client:
             return await follow_same_host_redirects(client, "http://example.com/admin", max_hops=3)
 
-    status, _length, _hash, body, final, hops = asyncio.run(_run())
+    status, _length, _hash, body, final, hops, _chain, _ctype = asyncio.run(_run())
     assert status == 200
     assert hops == 1
     assert b"login" in body

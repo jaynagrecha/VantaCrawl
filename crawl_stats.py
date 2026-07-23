@@ -34,6 +34,24 @@ class CrawlStats:
     enum_hits: int = 0
     enum_words_tested: int = 0
     enum_words_total: int = 0
+    # Separated enum accounting (base words ≠ generated candidates ≠ HTTP attempts)
+    enum_base_words_loaded: int = 0
+    enum_base_words_processed: int = 0
+    enum_mutation_candidates: int = 0
+    enum_extension_candidates: int = 0
+    enum_unique_candidate_urls: int = 0
+    enum_http_attempts: int = 0
+    enum_rate_limited: int = 0
+    enum_rejected_wildcard: int = 0
+    enum_inconclusive: int = 0
+    enum_requested_depth: int = 0
+    enum_effective_depth: int = 0
+    enum_depth_reason: str = ""
+    enum_wildcard_calibration_ok: bool = True
+    enum_wildcard_active: bool = False
+    enum_validation_conclusion: str = ""
+    enum_hit_records: List[Dict[str, Any]] = field(default_factory=list)
+    enum_skipped_records: List[Dict[str, Any]] = field(default_factory=list)
     enum_started_at: Optional[float] = None
     enum_current_word: str = ""
     enum_current_path: str = "/"
@@ -591,6 +609,21 @@ class CrawlStats:
             "enum_hits": self.enum_hits,
             "enum_words_tested": self.enum_words_tested,
             "enum_words_total": self.enum_words_total,
+            "enum_base_words_loaded": int(getattr(self, "enum_base_words_loaded", 0) or 0),
+            "enum_base_words_processed": int(getattr(self, "enum_base_words_processed", 0) or 0),
+            "enum_mutation_candidates": int(getattr(self, "enum_mutation_candidates", 0) or 0),
+            "enum_extension_candidates": int(getattr(self, "enum_extension_candidates", 0) or 0),
+            "enum_unique_candidate_urls": int(getattr(self, "enum_unique_candidate_urls", 0) or 0),
+            "enum_http_attempts": int(getattr(self, "enum_http_attempts", 0) or 0),
+            "enum_rate_limited": int(getattr(self, "enum_rate_limited", 0) or 0),
+            "enum_rejected_wildcard": int(getattr(self, "enum_rejected_wildcard", 0) or 0),
+            "enum_inconclusive": int(getattr(self, "enum_inconclusive", 0) or 0),
+            "enum_requested_depth": int(getattr(self, "enum_requested_depth", 0) or 0),
+            "enum_effective_depth": int(getattr(self, "enum_effective_depth", 0) or 0),
+            "enum_depth_reason": str(getattr(self, "enum_depth_reason", "") or ""),
+            "enum_wildcard_calibration_ok": bool(getattr(self, "enum_wildcard_calibration_ok", True)),
+            "enum_wildcard_active": bool(getattr(self, "enum_wildcard_active", False)),
+            "enum_validation_conclusion": str(getattr(self, "enum_validation_conclusion", "") or ""),
             "enum_started_at": self.enum_started_at,
             "enum_elapsed_seconds": round(self.enum_elapsed_seconds(), 1),
             "enum_eta_seconds": self.enum_eta_seconds(),

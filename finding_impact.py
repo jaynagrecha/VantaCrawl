@@ -851,11 +851,23 @@ def assess_api_leak(detail: str, severity: str) -> ImpactResult:
             validation="unverified",
         )
     if "graphql" in d and ("schema json" in d or "__schema" in d or "querytype" in d):
+        informational = (
+            "informational" in d
+            or "api-surface" in d
+            or "no private" in d
+            or "no privileged" in d
+            or (severity or "") == "info"
+        )
         return ImpactResult(
             role="api_leak",
-            impact="confirmed",
-            severity=severity or "high",
-            summary="GraphQL schema JSON disclosed on a GraphQL path.",
+            impact="informational" if informational else "confirmed",
+            severity="info" if informational else (severity or "medium"),
+            summary=(
+                "GraphQL introspection is an API-surface observation — "
+                "no private data or auth bypass proven."
+                if informational
+                else "GraphQL schema JSON disclosed on a GraphQL path."
+            ),
             validation="confirmed",
         )
     if "graphql" in d and ("playground" in d or "unverified" in d or "graphiql" in d):
@@ -867,12 +879,17 @@ def assess_api_leak(detail: str, severity: str) -> ImpactResult:
             validation="unverified",
         )
     if "graphql" in d and ("introspection" in d or "playground" in d):
+        informational = "informational" in d or "api-surface" in d or (severity or "") == "info"
         return ImpactResult(
             role="api_leak",
-            impact="possible",
-            severity=severity or "medium",
-            summary="GraphQL introspection/playground indicators on a GraphQL path.",
-            validation="unverified",
+            impact="informational" if informational else "possible",
+            severity="info" if informational else (severity or "medium"),
+            summary=(
+                "GraphQL introspection — informational API-surface observation."
+                if informational
+                else "GraphQL introspection/playground indicators on a GraphQL path."
+            ),
+            validation="confirmed" if informational else "unverified",
         )
     if "json field" in d and "secret" in d:
         return ImpactResult(

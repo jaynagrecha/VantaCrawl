@@ -751,6 +751,15 @@ def scan_secrets(
                 match.end(),
                 org_context=org_context,
             )
+            # Unstable nearby-identifier product names must not rename public client keys
+            try:
+                from enum_validation import is_public_client_key_value
+
+                if is_public_client_key_value(value or ""):
+                    typed = "Public client-key-like value"
+            except Exception:
+                if (value or "").lower().startswith("pubkey-"):
+                    typed = "Public client-key-like value"
             # Same secret value under different product labels ("Ript" vs "Text") = one finding
             value_key = (value or "").strip()
             dedupe = value_key[:120] if len(value_key) >= 8 else (typed, value_key or raw[:80])
@@ -769,8 +778,18 @@ def scan_secrets(
             seen.add(dedupe)
             note = assignment_note(body_text, match.start(), match.end(), value)
             detail = f"Exposed {typed} in response body{note}"
+            sev = severity_for_kind(typed, severity, value or "")
+            # Public client keys: never export the full value in JSON/CSV/Burp/ZAP
+            evidence_out = value or None
+            if typed == "Public client-key-like value" or (value or "").lower().startswith("pubkey-"):
+                evidence_out = mask_secret_value(value or "")
+                detail = (
+                    f"Exposed Public client-key-like value in response body{note} "
+                    "(provider unknown — unstable product inference suppressed)"
+                )
+                sev = "info"
             findings.append(
-                (typed, severity_for_kind(typed, severity, value or ""), detail, value or None)
+                (typed, sev, detail, evidence_out)
             )
     return findings
 
@@ -2097,11 +2116,14 @@ async def confirm_graphql_introspection(client, url: str) -> List[Finding]:
             r'(?i)"__schema"\s*:|"queryType"\s*:\s*\{\s*"name"', body
         )
         if response.status_code < 500 and m:
+            # Storefront/schema surface without proof of private data, admin API,
+            # auth bypass, cross-user data, or privileged mutation → informational.
             return [
                 (
                     "api_leak",
-                    "high",
-                    f"GraphQL introspection confirmed via POST at {url}",
+                    "info",
+                    f"GraphQL introspection confirmed via POST at {url} "
+                    "(informational API-surface observation — no privileged access proven)",
                     _match_evidence(m, body, label="graphql_introspection"),
                 )
             ]

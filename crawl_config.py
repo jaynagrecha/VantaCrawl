@@ -297,15 +297,16 @@ class CrawlConfig:
             self.security_scan = False
             self.form_submit_probe = False
         elif self.profile == "stealth":
-            self.enum_concurrency = min(self.enum_concurrency, 12)
+            # Realistic stealth: 2–3 workers, not 10–12 (11–16 rps is not stealth).
+            self.enum_concurrency = min(self.enum_concurrency, 3)
             self.download_concurrency = min(self.download_concurrency, 2)
             self.crawl_concurrency = min(self.crawl_concurrency, 2)
             self.evasion_enabled = True
             self.evasion_level = "stealth"
             self.evasion_browser = "chrome"
             self.evasion_ua_strategy = "sticky_host"
-            self.evasion_jitter_min_ms = max(self.evasion_jitter_min_ms, 80)
-            self.evasion_jitter_max_ms = max(self.evasion_jitter_max_ms, 400)
+            self.evasion_jitter_min_ms = max(self.evasion_jitter_min_ms, 200)
+            self.evasion_jitter_max_ms = max(self.evasion_jitter_max_ms, 900)
             self.evasion_referer_chain = True
             self.evasion_adaptive_backoff = True
             self.evasion_challenge_detect = True

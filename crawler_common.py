@@ -891,7 +891,10 @@ def sync_path_exists(session, url, baseline_length, baseline_status, bypass_forb
 
 
 async def get_async_baseline(client, base_url):
-    probe_url = build_enum_url(base_url, [], f".crawler-baseline-{uuid.uuid4().hex}")
+    # Plain random path — do NOT use a dot-prefixed control here.
+    # Dot-prefixed routes often hit a different wildcard class than ordinary paths
+    # (see path-shape calibration in enum_validation / detect_wildcard).
+    probe_url = build_enum_url(base_url, [], f"crawler-baseline-{uuid.uuid4().hex}")
     try:
         response = await client.get(probe_url, timeout=5, follow_redirects=False)
         return response_length(response), response.status_code

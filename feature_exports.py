@@ -67,7 +67,8 @@ def write_burp_xml(findings: List[dict], output_path: str, host: str) -> str:
         ET.SubElement(issue, "host").text = host
         ET.SubElement(issue, "path").text = urlparse(finding.get("url", "")).path or "/"
         ET.SubElement(issue, "location").text = finding.get("url", "")
-        ET.SubElement(issue, "detail").text = finding.get("detail", "")
+        detail = _export_safe_detail(finding)
+        ET.SubElement(issue, "detail").text = detail
     tree = ET.ElementTree(root)
     tree.write(output_path, encoding="utf-8", xml_declaration=True)
     return output_path
@@ -77,17 +78,39 @@ def write_zap_json(findings: List[dict], output_path: str) -> str:
     alerts = []
     risk_map = {"critical": "3", "high": "3", "medium": "2", "low": "1", "info": "0"}
     for finding in findings:
+        detail = _export_safe_detail(finding)
         alerts.append({
             "sourceid": "crawler",
             "alert": finding.get("category", "finding"),
             "riskcode": risk_map.get(finding.get("severity", "info"), "0"),
-            "name": finding.get("detail", "")[:200],
+            "name": detail[:200],
             "uri": finding.get("url", ""),
-            "desc": finding.get("detail", ""),
+            "desc": detail,
         })
     with open(output_path, "w", encoding="utf-8") as handle:
         json.dump({"site": [{"alerts": alerts}]}, handle, indent=2)
     return output_path
+
+
+def _export_safe_detail(finding: dict) -> str:
+    """Strip full public client-key values from Burp/ZAP/CSV exports."""
+    detail = str(finding.get("detail") or "")
+    evidence = str(finding.get("evidence") or "")
+    cat = str(finding.get("category") or "")
+    try:
+        from enum_validation import is_public_client_key_value
+        from security_scan import mask_secret_value
+    except Exception:
+        return detail
+    if is_public_client_key_value(evidence) or "public client-key" in cat.lower() or "pubkey-" in evidence.lower():
+        masked = mask_secret_value(evidence) if evidence else ""
+        if evidence and evidence in detail:
+            detail = detail.replace(evidence, masked)
+        # Also scrub bare pubkey-… tokens that may appear in detail
+        import re
+
+        detail = re.sub(r"(?i)\bpubkey-[A-Za-z0-9_-]{8,}\b", lambda m: mask_secret_value(m.group(0)), detail)
+    return detail
 
 
 def compare_crawl_reports(path_a: str, path_b: str, output_path: str) -> dict:

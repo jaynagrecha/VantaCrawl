@@ -41,7 +41,10 @@ _ANALYTICS_NAME_RE = re.compile(
     r"intercom-.*|__cfruid|__cf_bm|_cfuvid|cf_clearance|"
     r"_clck|_clsk|CLID|MR|MUID|SRM_B|ANONCHK|"
     r"NID|1P_JAR|AEC|CONSENT|SOCS|"
-    r"datadome|reese84|_px(?:vid|hd|3|de)?|__cfwaitingroom"
+    r"datadome|reese84|_px(?:vid|hd|3|de)?|__cfwaitingroom|"
+    # Shopify storefront analytics / session-id cookies — not auth credentials
+    r"_shopify_y|_shopify_s|_shopify_sa_t|_shopify_sa_p|_shopify_fs|_shopify_m|"
+    r"_shopify_tm|_shopify_tw|cart_currency|localization|secure_customer_sig"
     r")$"
 )
 

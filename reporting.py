@@ -202,6 +202,32 @@ class ReportWriter:
             "discovered_urls list is capped at 5000 for export; discovered_url_count is the full total."
         )
         payload["enum_hit_urls"] = list(getattr(stats, "enum_hit_urls", []))
+        payload["enum_hit_records"] = list(getattr(stats, "enum_hit_records", []) or [])[:2000]
+        payload["enum_skipped_records"] = list(getattr(stats, "enum_skipped_records", []) or [])[:500]
+        payload["enum_validation_conclusion"] = str(getattr(stats, "enum_validation_conclusion", "") or "")
+        # Never export full public client-key values in JSON
+        try:
+            from enum_validation import is_public_client_key_value
+            from security_scan import mask_secret_value
+
+            safe_findings = []
+            for row in list(stats.findings or []):
+                item = dict(row) if isinstance(row, dict) else row
+                if not isinstance(item, dict):
+                    safe_findings.append(item)
+                    continue
+                ev = str(item.get("evidence") or "")
+                if is_public_client_key_value(ev) or "pubkey-" in ev.lower():
+                    item = dict(item)
+                    masked = mask_secret_value(ev)
+                    item["evidence"] = masked
+                    detail = str(item.get("detail") or "")
+                    if ev and ev in detail:
+                        item["detail"] = detail.replace(ev, masked)
+                safe_findings.append(item)
+            payload["findings"] = safe_findings
+        except Exception:
+            pass
         payload["historical_seed_urls"] = list(getattr(stats, "historical_seed_urls", []))
         payload["subdomain_urls"] = list(getattr(stats, "subdomain_urls", []))
         payload["js_route_urls"] = list(getattr(stats, "js_route_urls", []))
@@ -230,7 +256,20 @@ class ReportWriter:
             writer = csv.DictWriter(handle, fieldnames=["category", "severity", "url", "detail", "evidence"])
             writer.writeheader()
             for row in stats.findings:
-                writer.writerow({k: row.get(k, "") for k in writer.fieldnames})
+                out = {k: row.get(k, "") for k in writer.fieldnames}
+                try:
+                    from enum_validation import is_public_client_key_value
+                    from security_scan import mask_secret_value
+
+                    ev = str(out.get("evidence") or "")
+                    if is_public_client_key_value(ev) or "pubkey-" in ev.lower():
+                        out["evidence"] = mask_secret_value(ev)
+                        detail = str(out.get("detail") or "")
+                        if ev and ev in detail:
+                            out["detail"] = detail.replace(ev, out["evidence"])
+                except Exception:
+                    pass
+                writer.writerow(out)
         return path
 
     def write_sqlite(self, stats: CrawlStats) -> str:
@@ -261,8 +300,42 @@ class ReportWriter:
             "CREATE TABLE IF NOT EXISTS cookie (name TEXT, domain TEXT, path TEXT, flags TEXT)"
         )
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS enumeration_result (url TEXT, status TEXT, evidence TEXT)"
+            "CREATE TABLE IF NOT EXISTS enumeration_result ("
+            "url TEXT, status TEXT, evidence TEXT, "
+            "requested_status INTEGER, final_status INTEGER, final_url TEXT, "
+            "redirect_chain TEXT, response_length INTEGER, content_type TEXT, "
+            "page_title TEXT, raw_hash TEXT, normalized_hash TEXT, "
+            "wildcard_similarity REAL, acceptance_reason TEXT, baseline_used TEXT, "
+            "classification TEXT, already_known INTEGER, validated INTEGER, "
+            "path_shape TEXT, base_word TEXT, variant TEXT)"
         )
+        # Migrate older 3-column tables
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(enumeration_result)").fetchall()}
+            for col, decl in (
+                ("requested_status", "INTEGER"),
+                ("final_status", "INTEGER"),
+                ("final_url", "TEXT"),
+                ("redirect_chain", "TEXT"),
+                ("response_length", "INTEGER"),
+                ("content_type", "TEXT"),
+                ("page_title", "TEXT"),
+                ("raw_hash", "TEXT"),
+                ("normalized_hash", "TEXT"),
+                ("wildcard_similarity", "REAL"),
+                ("acceptance_reason", "TEXT"),
+                ("baseline_used", "TEXT"),
+                ("classification", "TEXT"),
+                ("already_known", "INTEGER"),
+                ("validated", "INTEGER"),
+                ("path_shape", "TEXT"),
+                ("base_word", "TEXT"),
+                ("variant", "TEXT"),
+            ):
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE enumeration_result ADD COLUMN {col} {decl}")
+        except Exception:
+            pass
         conn.execute(
             "CREATE TABLE IF NOT EXISTS defense_event ("
             "url TEXT, status INTEGER, outcome TEXT, signal TEXT, event_class TEXT, ts REAL)"
@@ -321,10 +394,40 @@ class ReportWriter:
                         str(cookie.get("flags") or cookie.get("role") or ""),
                     ),
                 )
-        for hit in list(getattr(stats, "enum_hit_urls", []) or [])[:2000]:
+        enum_rows = list(getattr(stats, "enum_hit_records", []) or [])
+        if not enum_rows:
+            for hit in list(getattr(stats, "enum_hit_urls", []) or [])[:2000]:
+                enum_rows.append({"url": hit if isinstance(hit, str) else str(hit), "classification": "hit"})
+        for row in enum_rows[:2000]:
+            if not isinstance(row, dict):
+                continue
+            fp = row.get("fingerprint") if isinstance(row.get("fingerprint"), dict) else {}
+            evidence = json.dumps(row, ensure_ascii=False) if row.get("classification") else ""
             conn.execute(
-                "INSERT INTO enumeration_result VALUES (?,?,?)",
-                (hit if isinstance(hit, str) else str(hit), "hit", ""),
+                "INSERT INTO enumeration_result VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    row.get("url") or "",
+                    "hit" if row.get("validated", True) else str(row.get("classification") or "hit"),
+                    evidence,
+                    int(row.get("requested_status") or fp.get("status") or 0),
+                    int(row.get("final_status") or fp.get("status") or 0),
+                    row.get("final_url") or fp.get("final_url") or row.get("url") or "",
+                    json.dumps(fp.get("redirect_chain") or [], ensure_ascii=False),
+                    int(fp.get("length") or 0),
+                    fp.get("content_type") or "",
+                    fp.get("title") or "",
+                    fp.get("raw_hash") or "",
+                    fp.get("normalized_hash") or "",
+                    float(row.get("wildcard_similarity") or fp.get("similarity") or 0),
+                    row.get("acceptance_reason") or fp.get("acceptance_reason") or "",
+                    row.get("baseline_used") or fp.get("baseline_shape") or "",
+                    row.get("classification") or "",
+                    1 if row.get("already_known") else 0,
+                    1 if row.get("validated", True) else 0,
+                    row.get("path_shape") or "",
+                    row.get("base_word") or "",
+                    row.get("variant") or "",
+                ),
             )
         tracker = getattr(stats, "defense_tracker", None)
         if tracker is not None:

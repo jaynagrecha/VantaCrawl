@@ -299,10 +299,23 @@ def build_assessment_document(
             "elapsed_seconds": float(snap.get("elapsed_seconds") or 0),
             "enum_words_tested": int(snap.get("enum_words_tested") or 0),
             "enum_words_total": int(snap.get("enum_words_total") or 0),
+            "enum_base_words_loaded": int(snap.get("enum_base_words_loaded") or getattr(stats, "enum_base_words_loaded", 0) or 0),
+            "enum_base_words_processed": int(snap.get("enum_base_words_processed") or getattr(stats, "enum_base_words_processed", 0) or 0),
+            "enum_http_attempts": int(snap.get("enum_http_attempts") or getattr(stats, "enum_http_attempts", 0) or 0),
+            "enum_rate_limited": int(snap.get("enum_rate_limited") or getattr(stats, "enum_rate_limited", 0) or 0),
+            "enum_rejected_wildcard": int(snap.get("enum_rejected_wildcard") or getattr(stats, "enum_rejected_wildcard", 0) or 0),
+            "enum_requested_depth": int(snap.get("enum_requested_depth") or getattr(stats, "enum_requested_depth", 0) or 0),
+            "enum_effective_depth": int(snap.get("enum_effective_depth") or getattr(stats, "enum_effective_depth", 0) or 0),
+            "enum_depth_reason": str(snap.get("enum_depth_reason") or getattr(stats, "enum_depth_reason", "") or ""),
             "discovered_url_count": int(snap.get("discovered_url_count") or len(getattr(stats, "discovered_urls", []) or [])),
             "queue_size": int(snap.get("queue_size") or getattr(stats, "queue_size", 0) or 0),
             "completion_percent": float(status_meta.get("completion_percent") or 0),
         },
+        "enum_validation_conclusion": str(
+            snap.get("enum_validation_conclusion")
+            or getattr(stats, "enum_validation_conclusion", "")
+            or ""
+        ),
         "scan_status": status_meta.get("scan_status"),
         "scan_status_meta": status_meta,
         "directory_enum_message": status_meta.get("directory_enum_message"),
