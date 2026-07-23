@@ -500,11 +500,12 @@ def assess_cors(
     """
     from urllib.parse import urlparse
 
-    from finding_proof import proof_has_http_exchange
+    from finding_proof import proof_has_cors_headers
 
     d = _detail_l(detail)
     creds = "credential" in d
-    has_proof = proof_has_http_exchange(proof)
+    # Criticism fix: confirmed CORS requires ACAO (and ACAC when credentials claimed)
+    has_proof = proof_has_cors_headers(proof, require_credentials=creds)
     if not has_proof:
         return ImpactResult(
             role="cors",
@@ -626,8 +627,10 @@ def assess_cors(
 
     def _cors_proof_out():
         """Keep raw HTTP exchange when provided; attach cookie/path context as evidence."""
+        from finding_proof import proof_has_cors_headers
+
         ctx = "; ".join(issues[:4]) if issues else ""
-        if isinstance(proof, dict) and proof_has_http_exchange(proof):
+        if isinstance(proof, dict) and proof_has_cors_headers(proof, require_credentials=True):
             out = dict(proof)
             if ctx:
                 prev = str(out.get("evidence") or "")

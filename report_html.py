@@ -7,6 +7,8 @@ from html import escape
 from typing import Any, Dict, List, Optional, Sequence
 from urllib.parse import urlparse
 
+from report_time import format_dual
+
 
 def short_url(url: str, max_len: int = 78) -> str:
     text = url or ""
@@ -573,7 +575,7 @@ footer.meta {{ color: var(--muted); font-size: .85rem; margin-top: 1.5rem; }}
     <section class="card">
       <div class="verdict {verdict_tone}">{escape(conclusion.get('verdict_title', ''))}</div>
       <p>{escape(conclusion.get('verdict_body', ''))}</p>
-      <p class="muted">Authorized testing · {escape(time.strftime('%Y-%m-%d %H:%M:%S'))} · Profile: {escape(profile)}</p>
+      <p class="muted">Authorized testing · {escape(format_dual())} · Profile: {escape(profile)}</p>
     </section>
     <section class="card">
       <h2>Risk snapshot</h2>
@@ -635,9 +637,12 @@ footer.meta {{ color: var(--muted); font-size: .85rem; margin-top: 1.5rem; }}
     <div class="section-head"><h2>B2. Hidden paths</h2><span class="chev">▾</span></div>
     <div class="section-body">
       <p>{escape(str((model.get('scan_status_meta') or {}).get('directory_enum_message') or (
-          f"{snap.get('enum_words_tested', 0)} / {snap.get('enum_words_total', 0)} names tried · "
+          f"{snap.get('enum_words_tested', 0)} / {snap.get('enum_words_total', 0)} base words · "
+          f"{snap.get('enum_http_attempts', 0)} HTTP tries · "
           f"{len(model.get('enum_hits') or [])} hit(s)."
       )))}</p>
+      {f"<p class='muted'>Coverage: base words {snap.get('enum_base_words_processed', snap.get('enum_words_tested', 0)):,} / {snap.get('enum_base_words_loaded', snap.get('enum_words_total', 0)):,} · HTTP attempts {snap.get('enum_http_attempts', 0):,} · rate-limited {snap.get('enum_rate_limited', 0):,} · wildcard rejected {snap.get('enum_rejected_wildcard', 0):,}</p>" if snap.get('enum_http_attempts') or snap.get('enum_words_total') else ''}
+      {f"<p class='muted'>{escape(str(snap.get('enum_validation_conclusion') or ''))}</p>" if snap.get('enum_validation_conclusion') else ''}
       {'' if (model.get('scan_status_meta') or {}).get('directory_enum_started') or (model.get('enum_hits')) else '<p class="muted">Directory enumeration has not produced hits yet — this is not the same as “0 hidden paths found” after a completed enum.</p>'}
       {url_table_html(model.get('enum_hits'), limit=40)}
     </div>

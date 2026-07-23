@@ -418,7 +418,11 @@ class ReportWriter:
         if not enum_rows:
             for hit in list(getattr(stats, "enum_hit_urls", []) or [])[:2000]:
                 enum_rows.append({"url": hit if isinstance(hit, str) else str(hit), "classification": "hit"})
-        for row in enum_rows[:2000]:
+        # Include skipped/rejected candidates for auditability (capped)
+        for skip in list(getattr(stats, "enum_skipped_records", []) or [])[:2000]:
+            if isinstance(skip, dict) and skip.get("url"):
+                enum_rows.append(skip)
+        for row in enum_rows[:4000]:
             if not isinstance(row, dict):
                 continue
             fp = row.get("fingerprint") if isinstance(row.get("fingerprint"), dict) else {}
@@ -427,7 +431,7 @@ class ReportWriter:
                 "INSERT INTO enumeration_result VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     row.get("url") or "",
-                    "hit" if row.get("validated", True) else str(row.get("classification") or "hit"),
+                    "hit" if row.get("validated") else str(row.get("classification") or "candidate"),
                     evidence,
                     int(row.get("requested_status") or fp.get("status") or 0),
                     int(row.get("final_status") or fp.get("status") or 0),
@@ -443,7 +447,7 @@ class ReportWriter:
                     row.get("baseline_used") or fp.get("baseline_shape") or "",
                     row.get("classification") or "",
                     1 if row.get("already_known") else 0,
-                    1 if row.get("validated", True) else 0,
+                    1 if row.get("validated") else 0,
                     row.get("path_shape") or "",
                     row.get("base_word") or "",
                     row.get("variant") or "",
