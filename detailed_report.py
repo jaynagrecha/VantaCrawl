@@ -290,21 +290,51 @@ def render_detailed_text(model: Dict[str, Any]) -> str:
     lines.extend(_list_urls(model["discovered_sample"], limit=25))
 
     lines += _hrule("B2. Hidden paths (directory brute force)")
-    tested = snap.get("enum_words_tested", 0)
-    total = snap.get("enum_words_total", 0)
+    tested = int(snap.get("enum_base_words_processed") or snap.get("enum_words_tested", 0) or 0)
+    total = int(snap.get("enum_base_words_loaded") or snap.get("enum_words_total", 0) or 0)
+    http_attempts = int(snap.get("enum_http_attempts") or 0)
+    rate_limited = int(snap.get("enum_rate_limited") or 0)
+    rejected_wc = int(snap.get("enum_rejected_wildcard") or snap.get("soft_404s_filtered") or 0)
+    req_depth = snap.get("enum_requested_depth")
+    eff_depth = snap.get("enum_effective_depth")
+    depth_reason = str(snap.get("enum_depth_reason") or "")
     if status_meta.get("directory_enum_message") and not status_meta.get("directory_enum_started"):
         lines.append(f"  {status_meta['directory_enum_message']}")
         lines.append("  Do not interpret zero hits as “0 hidden paths found” — enumeration has not run yet.")
-    elif total:
+    elif total or http_attempts:
         pct = min(100, int(tested * 100 / total)) if total else 0
-        lines.append(f"  Wordlist progress: {tested:,} / {total:,} ({pct}%).")
-        lines.append(f"  Hits: {len(model['enum_hits']):,}")
+        lines.append(f"  Base words loaded:        {total:,}")
+        lines.append(f"  Base words processed:     {tested:,} ({pct}%)")
+        lines.append(f"  Mutation candidates:      {int(snap.get('enum_mutation_candidates') or 0):,}")
+        lines.append(f"  Extension candidates:     {int(snap.get('enum_extension_candidates') or 0):,}")
+        lines.append(f"  Unique candidate URLs:    {int(snap.get('enum_unique_candidate_urls') or 0):,}")
+        lines.append(f"  HTTP attempts:            {http_attempts:,}")
+        lines.append(f"  Rate-limited attempts:    {rate_limited:,}")
+        lines.append(f"  Rejected wildcard hits:   {rejected_wc:,}")
+        lines.append(f"  Accepted validated hits:  {len(model['enum_hits']):,}")
+        if req_depth is not None or eff_depth is not None:
+            lines.append(
+                f"  Depth requested/effective: {req_depth}/{eff_depth}"
+                + (f" ({depth_reason})" if depth_reason else "")
+            )
+        # Coverage breakdown from enum status codes
+        enum_status = Counter(model.get("enum_status") or {})
+        confirmed_neg = int(enum_status.get(404, 0) or enum_status.get("404", 0) or 0)
+        redirects = sum(int(enum_status.get(c, 0) or enum_status.get(str(c), 0) or 0) for c in (301, 302, 303, 307, 308))
+        lines.append("  Coverage summary:")
+        lines.append(f"    Confirmed negative:     {confirmed_neg:,}")
+        lines.append(f"    Redirect responses:     {redirects:,}")
+        lines.append(f"    Accepted candidates:    {len(model['enum_hits']):,}")
+        lines.append(f"    Rate-limited/unknown:   {rate_limited:,}")
+        conclusion = str(snap.get("enum_validation_conclusion") or "")
+        if conclusion:
+            lines.append(f"  Validation note: {conclusion}")
     else:
         lines.append("  Wordlist progress: not started or not applicable.")
-        lines.append(f"  Hits: {len(model['enum_hits']):,}")
+        lines.append(f"  Accepted validated hits: {len(model['enum_hits']):,}")
     lines.append("  Enum HTTP status codes:")
     lines.extend(_counter_lines(Counter(model["enum_status"])))
-    lines.append("  Hidden paths found:")
+    lines.append("  Hidden paths found (validated):")
     lines.extend(_list_urls(model["enum_hits"], limit=40))
 
     lines += _hrule("B3. Discovery sources")

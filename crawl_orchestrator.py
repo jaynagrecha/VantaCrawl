@@ -1825,6 +1825,9 @@ async def _check_broken_links(
                     response = await client.head(link, timeout=8, follow_redirects=True)
                 if response.status_code >= 400:
                     status = str(response.status_code)
+                    # Rate-limited links are inconclusive — never "broken"
+                    if status == "429":
+                        return
                     class_ = "not_found" if status == "404" else (
                         "access_denied" if status in ("401", "403", "405") else (
                             "temporary_unavailable" if status.startswith("5") else "client_error"

@@ -6,6 +6,8 @@ import asyncio
 import hashlib
 import json
 import os
+import random
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
@@ -28,6 +30,23 @@ from crawler_common import (
     enqueue_discovered_url,
     looks_like_file_path_segment,
     save_enum_hit_async,
+)
+from enum_validation import (
+    ALL_SHAPES,
+    CLASS_INCONCLUSIVE_429,
+    CLASS_WILDCARD,
+    HitProvenanceTracker,
+    ResponseFingerprint,
+    ShapeBaseline,
+    WildcardProfile,
+    classify_path_shape,
+    control_paths_for_base,
+    enum_validation_conclusion,
+    text_similarity,
+    fingerprint_from_response,
+    matches_any_shape_baseline,
+    normalize_body_for_hash,
+    raw_body_hash,
 )
 
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
@@ -56,12 +75,21 @@ class ProbeResult:
     # Optional body retained for hit follow-up (avoids a second GET that can stall enum)
     body: bytes = b""
     content_type: str = ""
-
-
-@dataclass
-class WildcardProfile:
-    active: bool = False
-    signatures: Set[Tuple[int, int, str]] = field(default_factory=set)
+    redirect_chain: List[str] = field(default_factory=list)
+    title: str = ""
+    raw_hash: str = ""
+    normalized_hash: str = ""
+    duration_ms: float = 0.0
+    path_shape: str = ""
+    fingerprint: Optional[ResponseFingerprint] = None
+    classification: str = ""
+    validated: bool = False
+    already_known: bool = False
+    acceptance_reason: str = ""
+    baseline_used: str = ""
+    wildcard_similarity: float = 0.0
+    base_word: str = ""
+    inconclusive: bool = False
 
 
 class StatusCodeFilter:
@@ -132,16 +160,18 @@ async def follow_same_host_redirects(
     *,
     max_hops: int = 5,
     timeout: float = 8,
-) -> Tuple[int, int, str, bytes, str, int]:
+) -> Tuple[int, int, str, bytes, str, int, List[str], str]:
     """
     Follow Location hops on the same host. Returns
-    (status, length, body_hash, body, final_url, hops_taken).
+    (status, length, body_hash, body, final_url, hops_taken, redirect_chain, content_type).
     """
     current = start_url
     seen: Set[str] = set()
     body = b""
     status = 0
     hops = 0
+    chain: List[str] = [start_url]
+    content_type = ""
     max_hops = max(0, int(max_hops) or 0)
     for _ in range(max_hops + 1):
         if current in seen:
@@ -150,24 +180,26 @@ async def follow_same_host_redirects(
         try:
             response = await client.get(current, timeout=timeout, follow_redirects=False)
         except httpx.HTTPError:
-            return 0, 0, "", b"", current, hops
+            return 0, 0, "", b"", current, hops, chain, content_type
         status = response.status_code
         body = response.content or b""
+        content_type = (response.headers.get("content-type") or "")[:120]
         length = len(body) or response_length(response)
         digest = body_fingerprint(body)
         if status not in REDIRECT_STATUSES:
-            return status, length, digest, body, current, hops
+            return status, length, digest, body, current, hops, chain, content_type
         location = (response.headers.get("location") or "").strip()
         if not location:
-            return status, length, digest, body, current, hops
+            return status, length, digest, body, current, hops, chain, content_type
         nxt = urljoin(current, location)
         if not hosts_compatible(start_url, nxt):
             # Off-site redirect: keep redirect status (usually not a hit after whitelist change)
-            return status, length, digest, body, current, hops
+            return status, length, digest, body, current, hops, chain, content_type
         current = nxt
+        chain.append(nxt)
         hops += 1
     length = len(body) or 0
-    return status, length, body_fingerprint(body), body, current, hops
+    return status, length, body_fingerprint(body), body, current, hops, chain, content_type
 
 
 def iter_gobuster_word_variants(word: str, config: CrawlConfig) -> List[str]:
@@ -356,27 +388,98 @@ async def detect_wildcard(
     client: httpx.AsyncClient,
     base_url: str,
     *,
-    probes: int = 5,
+    probes: int = 2,
 ) -> WildcardProfile:
+    """Calibrate path-shape-specific wildcard controls.
+
+    Required shapes:
+      /random-<nonce>, /.<nonce>, /index.<nonce>, /<nonce>.php,
+      /<nonce>.bak, /<nonce>/<nonce>, /RANDOMCASE-<nonce>
+    """
+    shapes: Dict[str, ShapeBaseline] = {}
     signatures: Set[Tuple[int, int, str]] = set()
-    counts: Dict[Tuple[int, int, str], int] = {}
-    for _ in range(probes):
-        token = f"crawler-wildcard-{uuid.uuid4().hex[:12]}"
-        url = build_enum_url(base_url, [], token)
-        if not url:
+    notes: List[str] = []
+    shape_bodies: Dict[str, bytes] = {}
+    any_active = False
+    for _round in range(max(1, int(probes) or 1)):
+        controls = control_paths_for_base(base_url)
+        for shape, url in controls.items():
+            try:
+                response = await client.get(url, timeout=6, follow_redirects=False)
+                body = response.content or b""
+                status = int(response.status_code)
+                length = len(body) or response_length(response)
+                raw = raw_body_hash(body)
+                short = body_fingerprint(body)
+                norm = normalize_body_for_hash(body)
+                ctype = (response.headers.get("content-type") or "")[:120]
+                from enum_validation import extract_title
+
+                title = extract_title(body)
+                looks_wildcard = status not in (0, 404, 410) or (
+                    status in (404, 410) and length > 512 and norm not in ("", "empty")
+                )
+                if status in (200, 301, 302, 303, 307, 308, 401, 403):
+                    looks_wildcard = True
+                existing = shapes.get(shape)
+                if existing is None:
+                    shapes[shape] = ShapeBaseline(
+                        shape=shape,
+                        active=looks_wildcard,
+                        status=status,
+                        length=length,
+                        raw_hash=raw,
+                        normalized_hash=norm,
+                        content_type=ctype,
+                        title=title,
+                        samples=1,
+                        control_url=url,
+                    )
+                else:
+                    existing.samples += 1
+                    existing.active = existing.active or looks_wildcard
+                    if looks_wildcard and (existing.status in (404, 410) or not existing.raw_hash):
+                        existing.status = status
+                        existing.length = length
+                        existing.raw_hash = raw
+                        existing.normalized_hash = norm
+                        existing.content_type = ctype
+                        existing.title = title
+                        existing.control_url = url
+                if looks_wildcard:
+                    any_active = True
+                    signatures.add((status, length, short))
+                    notes.append(f"{shape}: HTTP {status} len={length} control={url}")
+                # Keep a small body sample for DOM/text similarity against candidates
+                if looks_wildcard and body:
+                    shape_bodies[shape] = body[:8192]
+            except httpx.HTTPError as exc:
+                notes.append(f"{shape}: probe_error ({exc.__class__.__name__})")
+                shapes.setdefault(
+                    shape,
+                    ShapeBaseline(shape=shape, active=False, samples=0, control_url=url),
+                )
+
+    calibration_ok = True
+    catch_all_200 = False
+    for shape in ALL_SHAPES:
+        base = shapes.get(shape)
+        if not base:
             continue
-        try:
-            response = await client.get(url, timeout=6, follow_redirects=False)
-            body = response.content or b""
-            sig = (response.status_code, response_length(response), body_fingerprint(body))
-            signatures.add(sig)
-            counts[sig] = counts.get(sig, 0) + 1
-        except httpx.HTTPError:
-            continue
-    dominant = max(counts.values()) if counts else 0
-    # Require a clearer majority so 2/5 coincidental matches do not activate wildcard mode
-    active = dominant >= max(3, probes - 1) and len(signatures) <= 2
-    return WildcardProfile(active=active, signatures=signatures if active else set())
+        if base.active and base.status in (200, 201, 204):
+            catch_all_200 = True
+            if not base.raw_hash or base.raw_hash in ("", "empty"):
+                calibration_ok = False
+
+    return WildcardProfile(
+        active=any_active,
+        signatures=signatures if any_active else set(),
+        shapes=shapes,
+        calibration_ok=calibration_ok and bool(shapes),
+        calibration_notes=notes[:40],
+        catch_all_200=catch_all_200,
+        shape_bodies=shape_bodies,
+    )
 
 
 async def probe_candidate(
@@ -387,18 +490,24 @@ async def probe_candidate(
     bypass_forbidden: bool = True,
     follow_redirects: bool = True,
     max_redirect_hops: int = 5,
-) -> Tuple[int, int, str, bytes, str, int]:
+) -> Tuple[int, int, str, bytes, str, int, List[str], str, float, str]:
     """
-    Probe a URL. When follow_redirects is on, same-host redirects are resolved and the
-    *final* status/body are returned (hops > 0). Tuple:
-    (status, length, body_hash, body, final_url, redirect_hops).
+    Probe a URL. Returns
+    (status, length, body_hash, body, final_url, redirect_hops, redirect_chain, content_type, duration_ms, retry_after).
     """
     body = b""
+    t0 = time.perf_counter()
+
+    def _retry_after(resp) -> str:
+        try:
+            return str(resp.headers.get("Retry-After") or resp.headers.get("retry-after") or "").strip()
+        except Exception:
+            return ""
+
     try:
         if use_head:
             response = await client.head(url, timeout=6, follow_redirects=False)
             status = response.status_code
-            # Always GET when status looks interesting or body fingerprint would be useless
             if status in (405, 501) or (bypass_forbidden and status in BYPASS_HTTP_CODES) or status in (
                 200,
                 204,
@@ -409,27 +518,67 @@ async def probe_candidate(
                 308,
                 401,
                 403,
+                429,
             ):
                 if follow_redirects and status in REDIRECT_STATUSES:
-                    return await follow_same_host_redirects(
+                    result = await follow_same_host_redirects(
                         client, url, max_hops=max_redirect_hops, timeout=8
+                    )
+                    return (*result, (time.perf_counter() - t0) * 1000.0, "")
+                if status == 429:
+                    # Honor HEAD 429 without forcing a GET
+                    return (
+                        status,
+                        response_length(response),
+                        "head-only",
+                        b"",
+                        url,
+                        0,
+                        [url],
+                        (response.headers.get("content-type") or "")[:120],
+                        (time.perf_counter() - t0) * 1000.0,
+                        _retry_after(response),
                     )
                 response = await client.get(url, timeout=8, follow_redirects=False)
                 body = response.content or b""
                 status = response.status_code
+                ctype = (response.headers.get("content-type") or "")[:120]
                 if follow_redirects and status in REDIRECT_STATUSES:
-                    return await follow_same_host_redirects(
+                    result = await follow_same_host_redirects(
                         client, url, max_hops=max_redirect_hops, timeout=8
                     )
-                return status, len(body) or response_length(response), body_fingerprint(body), body, url, 0
-            return status, response_length(response), "head-only", body, url, 0
+                    return (*result, (time.perf_counter() - t0) * 1000.0, "")
+                return (
+                    status,
+                    len(body) or response_length(response),
+                    body_fingerprint(body),
+                    body,
+                    url,
+                    0,
+                    [url],
+                    ctype,
+                    (time.perf_counter() - t0) * 1000.0,
+                    _retry_after(response),
+                )
+            return (
+                status,
+                response_length(response),
+                "head-only",
+                body,
+                url,
+                0,
+                [url],
+                (response.headers.get("content-type") or "")[:120],
+                (time.perf_counter() - t0) * 1000.0,
+                _retry_after(response),
+            )
         if follow_redirects:
-            # Start resolve from the requested URL (handles HEAD-skipped GET path too)
             first = await client.get(url, timeout=8, follow_redirects=False)
             if first.status_code in REDIRECT_STATUSES:
-                return await follow_same_host_redirects(
+                result = await follow_same_host_redirects(
                     client, url, max_hops=max_redirect_hops, timeout=8
                 )
+                return (*result, (time.perf_counter() - t0) * 1000.0, "")
             body = first.content or b""
             return (
                 first.status_code,
@@ -438,12 +587,27 @@ async def probe_candidate(
                 body,
                 url,
                 0,
+                [url],
+                (first.headers.get("content-type") or "")[:120],
+                (time.perf_counter() - t0) * 1000.0,
+                _retry_after(first),
             )
         response = await client.get(url, timeout=8, follow_redirects=False)
         body = response.content or b""
-        return response.status_code, len(body) or response_length(response), body_fingerprint(body), body, url, 0
+        return (
+            response.status_code,
+            len(body) or response_length(response),
+            body_fingerprint(body),
+            body,
+            url,
+            0,
+            [url],
+            (response.headers.get("content-type") or "")[:120],
+            (time.perf_counter() - t0) * 1000.0,
+            _retry_after(response),
+        )
     except httpx.HTTPError:
-        return 0, 0, "", b"", url, 0
+        return 0, 0, "", b"", url, 0, [url], "", (time.perf_counter() - t0) * 1000.0, ""
 
 
 def is_probe_hit(
@@ -460,21 +624,70 @@ def is_probe_hit(
 ) -> bool:
     if not probe.status:
         return False
+    if probe.status == 429:
+        return False
     if not status_filter.allows(probe.status):
         return False
     if probe.content_length in exclude_lengths:
         return False
-    if probe.body_hash in exclude_hashes:
+    short_hash = (probe.body_hash or "")[:16]
+    raw_hash = probe.raw_hash or probe.body_hash or ""
+    norm_hash = probe.normalized_hash or ""
+    if short_hash in exclude_hashes or raw_hash in exclude_hashes:
         return False
-    if fp_store and fp_store.is_false_positive(probe.status, probe.content_length, probe.body_hash, probe.url):
+    if fp_store and fp_store.is_false_positive(probe.status, probe.content_length, short_hash, probe.url):
         return False
-    sig = (probe.status, probe.content_length, probe.body_hash)
-    if wildcard.active and sig in wildcard.signatures:
+
+    matched, sim, shape_used = matches_any_shape_baseline(
+        wildcard,
+        path_or_word=probe.word or probe.url,
+        status=probe.status,
+        length=probe.content_length,
+        raw_hash=raw_hash,
+        normalized_hash=norm_hash,
+        similarity_threshold=int(getattr(config, "enum_similarity_threshold", 64) or 64),
+    )
+    # DOM/text similarity against the relevant shape baseline body
+    if not matched and wildcard and getattr(wildcard, "shape_bodies", None) and probe.body:
+        from enum_validation import relevant_shapes_for_candidate
+
+        for shape in relevant_shapes_for_candidate(probe.word or probe.url):
+            base_body = (wildcard.shape_bodies or {}).get(shape) or b""
+            base = (wildcard.shapes or {}).get(shape)
+            if not base or not base.active or not base_body:
+                continue
+            if probe.status != base.status:
+                continue
+            sim_txt = text_similarity(probe.body, base_body)
+            if sim_txt >= 0.82:
+                matched = True
+                sim = max(sim, sim_txt)
+                shape_used = shape
+                probe.wildcard_similarity = sim_txt
+                break
+    if matched:
+        probe.wildcard_similarity = sim
+        probe.baseline_used = shape_used
+        probe.classification = CLASS_WILDCARD
+        probe.acceptance_reason = f"matched_wildcard_shape:{shape_used}"
+        probe.validated = False
         if stats is not None:
             stats.soft_404s_filtered += 1
+            if hasattr(stats, "enum_rejected_wildcard"):
+                stats.enum_rejected_wildcard = int(getattr(stats, "enum_rejected_wildcard", 0) or 0) + 1
         return False
+
+    sig = (probe.status, probe.content_length, short_hash)
+    if wildcard.active and sig in wildcard.signatures:
+        probe.classification = CLASS_WILDCARD
+        probe.validated = False
+        if stats is not None:
+            stats.soft_404s_filtered += 1
+            if hasattr(stats, "enum_rejected_wildcard"):
+                stats.enum_rejected_wildcard = int(getattr(stats, "enum_rejected_wildcard", 0) or 0) + 1
+        return False
+
     baseline_len, baseline_status = baseline
-    # Soft-404 filter: length alone is too aggressive when hash differs (real content)
     if (
         config.smart_false_positive
         and baseline_len
@@ -482,18 +695,14 @@ def is_probe_hit(
         and probe.status == baseline_status
         and abs(probe.content_length - baseline_len) < config.enum_similarity_threshold
     ):
-        # If we have a real body fingerprint different from empty/head-only, keep as hit
         if probe.body_hash and probe.body_hash not in ("", "head-only"):
-            # Still suppress when fingerprint matches a known FP signature for this host
             if fp_store and fp_store.is_false_positive(
-                probe.status, probe.content_length, probe.body_hash, probe.url
+                probe.status, probe.content_length, short_hash, probe.url
             ):
                 return False
-            # Length-similar but hashed: treat as distinct content (reduce FN)
             pass
         else:
             if config.false_positive_learning and fp_store:
-                # Learn per-URL only — do not poison global signature store with soft-404 sizes
                 fp_store.record_url_only(probe.url)
             if stats is not None:
                 stats.soft_404s_filtered += 1
@@ -502,12 +711,14 @@ def is_probe_hit(
         near_wildcard = any(
             probe.status == s
             and abs(probe.content_length - length) < config.enum_similarity_threshold
-            and (not h or h == probe.body_hash)
+            and (not h or h == short_hash or (raw_hash and raw_hash.startswith(h)))
             for s, length, h in wildcard.signatures
         )
         if near_wildcard:
             if stats is not None:
                 stats.soft_404s_filtered += 1
+                if hasattr(stats, "enum_rejected_wildcard"):
+                    stats.enum_rejected_wildcard = int(getattr(stats, "enum_rejected_wildcard", 0) or 0) + 1
             return False
     return True
 
@@ -551,10 +762,31 @@ async def run_pro_directory_enum(
     wildcard = await detect_wildcard(client, config.start_url) if config.wildcard_detection else WildcardProfile()
     wildcard_cache = DirectoryWildcardCache()
     if wildcard.active:
-        output_callback(f"Wildcard detected — filtering {len(wildcard.signatures)} response fingerprint(s)")
-        # Seed cache root so first level reuses root calibration
+        shape_n = sum(1 for b in (wildcard.shapes or {}).values() if b.active)
+        output_callback(
+            f"Wildcard calibration — {shape_n} active path-shape baseline(s), "
+            f"{len(wildcard.signatures)} legacy signature(s)"
+        )
+        for note in (wildcard.calibration_notes or [])[:8]:
+            output_callback(f"  wildcard: {note}")
         wildcard_cache._cache["/"] = wildcard
+    elif config.wildcard_detection:
+        output_callback("Wildcard calibration — no catch-all responses detected")
+    stats.enum_wildcard_calibration_ok = bool(getattr(wildcard, "calibration_ok", False))  # type: ignore[attr-defined]
+    stats.enum_wildcard_active = bool(wildcard.active)  # type: ignore[attr-defined]
     per_dir = bool(getattr(config, "per_directory_wildcard", True)) and bool(config.wildcard_detection)
+
+    # Flat enum vs depth: flat forces effective depth 0
+    requested_depth = int(config.branch_depth_limit or config.max_depth or 0)
+    if config.enum_flat_scan:
+        effective_depth = 0
+        depth_reason = "flat enumeration enabled"
+    else:
+        effective_depth = requested_depth
+        depth_reason = ""
+    stats.enum_requested_depth = requested_depth  # type: ignore[attr-defined]
+    stats.enum_effective_depth = effective_depth  # type: ignore[attr-defined]
+    stats.enum_depth_reason = depth_reason  # type: ignore[attr-defined]
 
     limit = int(getattr(config, "enum_word_limit", 0) or 0)
     output_callback(
@@ -564,7 +796,6 @@ async def run_pro_directory_enum(
     if update_progress:
         update_progress(max(limit, 1), 0, "Building enum wordlist…")
 
-    # Off the event loop — large files + Free-tier CPU must not freeze live progress
     words = await asyncio.to_thread(
         build_smart_wordlist,
         config,
@@ -573,15 +804,47 @@ async def run_pro_directory_enum(
         merge_fn=merge_wordlists_fn,
     )
     total_words = len(words)
+    # Separate counters: base words ≠ HTTP attempts
+    stats.enum_base_words_loaded = total_words  # type: ignore[attr-defined]
+    stats.enum_base_words_processed = 0  # type: ignore[attr-defined]
+    stats.enum_mutation_candidates = int(getattr(config, "mutation_max_candidates", 0) or 0) if getattr(config, "mutation_enum", False) else 0  # type: ignore[attr-defined]
+    ext_list = config.parsed_enum_extensions() if getattr(config, "gobuster_style_extensions", False) else []
+    stats.enum_extension_candidates = len(ext_list)  # type: ignore[attr-defined]
+    stats.enum_http_attempts = 0  # type: ignore[attr-defined]
+    stats.enum_rate_limited = 0  # type: ignore[attr-defined]
+    stats.enum_rejected_wildcard = 0  # type: ignore[attr-defined]
+    stats.enum_unique_candidate_urls = 0  # type: ignore[attr-defined]
+    stats.enum_inconclusive = 0  # type: ignore[attr-defined]
+    # Progress bar uses base words only (never HTTP attempts as "words tested")
     stats.enum_words_total = total_words
     stats.enum_words_tested = 0
-    output_callback(f"Enum wordlist ready: {total_words:,} words.")
+    output_callback(f"Enum wordlist ready: {total_words:,} base words.")
     if update_progress and total_words:
         from user_output import format_enum_progress
 
         update_progress(total_words, 0, format_enum_progress(0, total_words, 0))
     enum_progress = {"started_at": None, "rate": 0}
     found_set = set()
+    provenance = HitProvenanceTracker(list(discovered or set()) + list(seed_urls or []))
+    if hasattr(stats, "discovered_urls"):
+        provenance.note_known(list(stats.discovered_urls or []))
+
+    # Adaptive concurrency (stealth-aware)
+    is_stealth = str(getattr(config, "profile", "") or "").lower() == "stealth" or str(
+        getattr(config, "evasion_level", "") or ""
+    ).lower() == "stealth"
+    configured_conc = max(1, int(config.enum_concurrency) or 1)
+    if is_stealth:
+        live_concurrency = min(configured_conc, 3)
+    else:
+        live_concurrency = configured_conc
+    concurrency_state = {
+        "n": live_concurrency,
+        "clean_streak": 0,
+        "max": configured_conc if not is_stealth else min(configured_conc, 3),
+        "min": 1 if is_stealth else max(1, min(2, configured_conc)),
+        "retry_after_until": 0.0,
+    }
 
     def live_download_extensions():
         if callable(extensions):
@@ -600,22 +863,55 @@ async def run_pro_directory_enum(
             found_set.update(state.get("found_urls", []))
             output_callback(f"Resumed enum checkpoint at word {resume_index:,}/{total_words:,}")
 
-    batch_size = max(1, int(config.enum_concurrency) or 1)
+    depth_label = (
+        f"flat (requested depth {requested_depth}, effective 0 — {depth_reason})"
+        if config.enum_flat_scan
+        else f"depth {effective_depth}"
+    )
     output_callback(
-        f"Pro enum: {total_words:,} words · {batch_size} threads · "
-        f"{'flat' if config.enum_flat_scan else f'depth {config.branch_depth_limit or config.max_depth}'}"
+        f"Pro enum: {total_words:,} base words · concurrency {concurrency_state['n']} · {depth_label}"
     )
 
     async def handle_hit(probe: ProbeResult, depth: int):
+        # Only persist / crawl / security-scan validated hits
+        if not probe.validated:
+            label = probe.classification or "rejected"
+            output_callback(
+                f"ENUM-SKIP [{label}] {probe.url} ({probe.acceptance_reason or 'not validated'})"
+            )
+            return
         if probe.url in found_set:
             return
         found_set.add(probe.url)
         stats.enum_hits += 1
         stats.enum_hit_urls.append(probe.url)
+        # Rich result rows for SQLite / reports
+        if not hasattr(stats, "enum_hit_records") or stats.enum_hit_records is None:  # type: ignore[attr-defined]
+            stats.enum_hit_records = []  # type: ignore[attr-defined]
+        rec = {
+            "url": probe.url,
+            "source": "directory_enum",
+            "base_word": probe.base_word or probe.word,
+            "variant": probe.word,
+            "already_known": bool(probe.already_known),
+            "requested_status": probe.status,
+            "final_status": probe.status,
+            "final_url": probe.final_url or probe.url,
+            "classification": probe.classification,
+            "path_shape": probe.path_shape,
+            "acceptance_reason": probe.acceptance_reason,
+            "baseline_used": probe.baseline_used,
+            "wildcard_similarity": probe.wildcard_similarity,
+            "validated": True,
+            "fingerprint": probe.fingerprint.to_dict() if probe.fingerprint else {},
+        }
+        stats.enum_hit_records.append(rec)  # type: ignore[attr-defined]
         via = ""
         if probe.redirect_hops and probe.final_url and probe.final_url != probe.url:
             via = f" → {probe.final_url} ({probe.redirect_hops} hop(s))"
-        output_callback(f"HIT [{probe.status}] {probe.url}{via} (size={probe.content_length})")
+        output_callback(
+            f"HIT [{probe.status}] {probe.url}{via} (size={probe.content_length}, {probe.classification})"
+        )
         log_to_file(config.output_file_path, probe.url)
         discovered.add(probe.url)
         stats.discovered_urls.add(probe.url)
@@ -656,10 +952,23 @@ async def run_pro_directory_enum(
         if on_hit_callback:
             await on_hit_callback(probe)
 
+    async def _honor_retry_after(headers_retry_after: str = "") -> None:
+        delay = 0.0
+        raw = (headers_retry_after or "").strip()
+        if raw.isdigit():
+            delay = float(raw)
+        elif raw:
+            delay = 5.0
+        # Stealth: always add jitter
+        if is_stealth:
+            delay = max(delay, random.uniform(0.35, 1.25))
+        if delay > 0:
+            concurrency_state["retry_after_until"] = time.time() + delay
+            await asyncio.sleep(delay)
+
     async def check_word(path_segments: List[str], word: str, depth: int) -> Optional[ProbeResult]:
         if not await is_running(running):
             return None
-        # Re-read filters each probe so Pause → change settings → Resume applies live
         status_filter = build_status_filter(config)
         exclude_lengths = parse_int_list(config.exclude_lengths)
         local_wildcard = await wildcard_cache.for_path(
@@ -669,32 +978,150 @@ async def run_pro_directory_enum(
             enabled=per_dir,
             root_fallback=wildcard,
         )
-        for variant in iter_gobuster_word_variants(word, config):
+        # Wait out Retry-After window
+        wait_for = concurrency_state["retry_after_until"] - time.time()
+        if wait_for > 0:
+            await asyncio.sleep(min(wait_for, 30.0))
+        if is_stealth:
+            await asyncio.sleep(random.uniform(0.05, 0.35))
+
+        variants = iter_gobuster_word_variants(word, config)
+        for variant in variants:
             test_url = build_enum_url(config.start_url, path_segments, variant)
             if not test_url:
                 continue
-            status, length, body_hash, body, final_url, hops = await probe_candidate(
-                client,
-                test_url,
-                use_head=config.enum_method.upper() != "GET",
-                bypass_forbidden=config.bypass_forbidden,
-                follow_redirects=bool(getattr(config, "enum_follow_redirects", True)),
-                max_redirect_hops=int(getattr(config, "enum_redirect_max_hops", 5) or 5),
-            )
-            stats.enum_words_tested = int(getattr(stats, "enum_words_tested", 0) or 0) + 1
-            if hasattr(stats, "note_enum_progress"):
-                stats.note_enum_progress(
-                    stats.enum_words_tested,
-                    word=variant,
-                    path=format_enum_path(path_segments),
-                    depth=depth,
+            stats.enum_unique_candidate_urls = int(getattr(stats, "enum_unique_candidate_urls", 0) or 0) + 1  # type: ignore[attr-defined]
+
+            max_attempts = 3
+            status = 0
+            length = 0
+            body_hash = ""
+            body = b""
+            final_url = test_url
+            hops = 0
+            chain: List[str] = [test_url]
+            ctype = ""
+            duration_ms = 0.0
+            retry_after = ""
+            for attempt in range(max_attempts):
+                (
+                    status,
+                    length,
+                    body_hash,
+                    body,
+                    final_url,
+                    hops,
+                    chain,
+                    ctype,
+                    duration_ms,
+                    retry_after,
+                ) = await probe_candidate(
+                    client,
+                    test_url,
+                    use_head=config.enum_method.upper() != "GET",
+                    bypass_forbidden=config.bypass_forbidden,
+                    follow_redirects=bool(getattr(config, "enum_follow_redirects", True)),
+                    max_redirect_hops=int(getattr(config, "enum_redirect_max_hops", 5) or 5),
                 )
-            if config.status_code_report and status:
-                stats.record_status(status, enum=True)
-            # Cap retained body so hit follow-up can reuse it without huge memory use
+                stats.enum_http_attempts = int(getattr(stats, "enum_http_attempts", 0) or 0) + 1  # type: ignore[attr-defined]
+                if config.status_code_report and status:
+                    stats.record_status(status, enum=True)
+                # Fingerprint every attempt (including 429 / misses) for auditability
+                attempt_body = body or b""
+                if len(attempt_body) > 8192:
+                    attempt_body_fp = attempt_body[:8192]
+                else:
+                    attempt_body_fp = attempt_body
+                attempt_fp = fingerprint_from_response(
+                    url=test_url,
+                    status=status,
+                    body=attempt_body_fp,
+                    final_url=final_url or test_url,
+                    redirect_chain=chain,
+                    content_type=ctype,
+                    duration_ms=duration_ms,
+                    length=length,
+                )
+                path_shape = classify_path_shape(variant)
+                if hasattr(stats, "record_enum_attempt"):
+                    stats.record_enum_attempt(
+                        {
+                            **attempt_fp.to_dict(),
+                            "path_shape": path_shape,
+                            "base_word": word,
+                            "variant": variant,
+                            "attempt": attempt + 1,
+                            "outcome": "rate_limited" if status == 429 else ("ok" if status else "error"),
+                        }
+                    )
+                if hasattr(stats, "record_request"):
+                    stats.record_request(
+                        phase="enumeration",
+                        source="directory_enum",
+                        url=test_url,
+                        depth=depth,
+                        status=status,
+                        final_url=final_url or test_url,
+                        response_type=ctype,
+                        bytes_=length,
+                        content_hash=attempt_fp.raw_hash or body_hash,
+                        duration_ms=duration_ms,
+                        outcome="rate_limited" if status == 429 else ("ok" if status else "error"),
+                        redirect_chain=list(chain or []),
+                        title=attempt_fp.title,
+                        raw_hash=attempt_fp.raw_hash,
+                        normalized_hash=attempt_fp.normalized_hash,
+                        path_shape=path_shape,
+                        classification=CLASS_INCONCLUSIVE_429 if status == 429 else "",
+                    )
+                if status != 429:
+                    concurrency_state["clean_streak"] += 1
+                    # Gradual recovery after clean responses
+                    if (
+                        is_stealth
+                        and concurrency_state["clean_streak"] >= 12
+                        and concurrency_state["n"] < concurrency_state["max"]
+                    ):
+                        concurrency_state["n"] += 1
+                        concurrency_state["clean_streak"] = 0
+                    break
+                # 429 — not coverage; requeue with backoff
+                stats.enum_rate_limited = int(getattr(stats, "enum_rate_limited", 0) or 0) + 1  # type: ignore[attr-defined]
+                concurrency_state["clean_streak"] = 0
+                if is_stealth or concurrency_state["n"] > concurrency_state["min"]:
+                    concurrency_state["n"] = concurrency_state["min"]
+                await _honor_retry_after(retry_after or "2")
+                if attempt + 1 >= max_attempts:
+                    stats.enum_inconclusive = int(getattr(stats, "enum_inconclusive", 0) or 0) + 1  # type: ignore[attr-defined]
+                    if not hasattr(stats, "enum_skipped_records") or stats.enum_skipped_records is None:
+                        stats.enum_skipped_records = []  # type: ignore[attr-defined]
+                    stats.enum_skipped_records.append(  # type: ignore[attr-defined]
+                        {
+                            "url": test_url,
+                            "classification": CLASS_INCONCLUSIVE_429,
+                            "validated": False,
+                            "acceptance_reason": "retries_exhausted_rate_limited",
+                            "fingerprint": attempt_fp.to_dict(),
+                        }
+                    )
+                    return None  # inconclusive — not a hit, not a negative for coverage stats
+
             retained = body or b""
             if len(retained) > 262_144:
                 retained = retained[:262_144]
+            fp = fingerprint_from_response(
+                url=test_url,
+                status=status,
+                body=retained,
+                final_url=final_url or test_url,
+                redirect_chain=chain,
+                content_type=ctype,
+                duration_ms=duration_ms,
+                length=length,
+            )
+            # Prefer full hashes on the probe
+            raw = fp.raw_hash
+            norm = fp.normalized_hash
             probe = ProbeResult(
                 test_url,
                 variant,
@@ -705,6 +1132,15 @@ async def run_pro_directory_enum(
                 final_url=final_url or test_url,
                 redirect_hops=hops,
                 body=retained,
+                content_type=ctype,
+                redirect_chain=list(chain or []),
+                title=fp.title,
+                raw_hash=raw,
+                normalized_hash=norm,
+                duration_ms=duration_ms,
+                path_shape=classify_path_shape(variant),
+                fingerprint=fp,
+                base_word=word,
             )
             if is_probe_hit(
                 probe,
@@ -717,21 +1153,51 @@ async def run_pro_directory_enum(
                 exclude_hashes=exclude_hashes,
                 stats=stats,
             ):
+                # Provenance / case / content grouping before acceptance
+                rec = provenance.classify_and_record(
+                    url=probe.url,
+                    base_word=word,
+                    variant=variant,
+                    requested_status=status,
+                    final_status=status,
+                    final_url=probe.final_url,
+                    fingerprint=fp,
+                    wildcard_rejected=False,
+                    wildcard_similarity=probe.wildcard_similarity,
+                    baseline_used=probe.baseline_used,
+                    soft_404=False,
+                    path_shape=probe.path_shape or classify_path_shape(variant),
+                )
+                probe.classification = rec.classification
+                probe.validated = rec.validated
+                probe.already_known = rec.already_known
+                probe.acceptance_reason = rec.acceptance_reason
+                probe.baseline_used = rec.baseline_used
+                if not rec.validated:
+                    # Track as skipped candidate, not a hit
+                    if not hasattr(stats, "enum_skipped_records"):
+                        stats.enum_skipped_records = []  # type: ignore[attr-defined]
+                    stats.enum_skipped_records.append(rec.to_dict())  # type: ignore[attr-defined]
+                    output_callback(
+                        f"ENUM-REJECT [{rec.classification}] {probe.url} ({rec.acceptance_reason})"
+                    )
+                    continue
                 return probe
+            elif probe.classification == CLASS_WILDCARD:
+                # Already counted in is_probe_hit
+                continue
         return None
 
     async def enumerate_level(path_segments: List[str], depth: int, start_index: int = 0):
-        max_d = 0 if config.enum_flat_scan else (config.branch_depth_limit or config.max_depth)
+        max_d = effective_depth
         if depth > max_d or not await is_running(running):
             return
-        # Recursive levels expand planned work so ETA does not freeze on the root wordlist
         if path_segments:
-            stats.enum_words_total = int(stats.enum_words_total or 0) + max(0, len(words) - start_index)
             output_callback(f"Enum under {format_enum_path(path_segments)} (depth {depth})")
 
         index = start_index if path_segments == resume_segments and depth == resume_depth else 0
         while index < len(words):
-            batch_size = max(1, int(config.enum_concurrency) or 1)
+            batch_size = max(1, int(concurrency_state["n"]) or 1)
             if not await is_running(running):
                 return
             if config.enum_word_limit and index >= config.enum_word_limit:
@@ -740,6 +1206,21 @@ async def run_pro_directory_enum(
             batch = words[index : index + batch_size]
             if config.enum_word_limit:
                 batch = batch[: max(0, config.enum_word_limit - index)]
+            # Progress = base words processed (not HTTP attempts)
+            done_words = min(index + len(batch), total_words)
+            stats.enum_base_words_processed = max(  # type: ignore[attr-defined]
+                int(getattr(stats, "enum_base_words_processed", 0) or 0),
+                done_words if not path_segments else int(getattr(stats, "enum_base_words_processed", 0) or 0),
+            )
+            if not path_segments:
+                stats.enum_words_tested = done_words
+            if hasattr(stats, "note_enum_progress"):
+                stats.note_enum_progress(
+                    stats.enum_words_tested,
+                    word=batch[-1] if batch else "",
+                    path=format_enum_path(path_segments),
+                    depth=depth,
+                )
             log_enum_batch_progress(
                 output_callback,
                 path_segments,
@@ -751,7 +1232,7 @@ async def run_pro_directory_enum(
                 update_progress=update_progress,
                 progress_state=enum_progress,
                 batch_words=batch,
-                use_cumulative_tested=True,
+                use_cumulative_tested=False,
             )
             tasks = [asyncio.create_task(check_word(path_segments, word, depth)) for word in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -765,15 +1246,15 @@ async def run_pro_directory_enum(
                 if not result:
                     continue
                 await handle_hit(result, depth)
-                if config.enum_flat_scan:
+                if config.enum_flat_scan or effective_depth <= 0:
                     continue
-                # Files (vite.svg, app.js, backup.zip, …) are hits — not folders.
                 if looks_like_file_path_segment(result.word):
                     output_callback(
                         f"Skipping folder enum under file hit {format_enum_path(path_segments + [result.word])}"
                     )
                     continue
-                await enumerate_level(path_segments + [result.word], depth + 1)
+                if depth + 1 <= max_d:
+                    await enumerate_level(path_segments + [result.word], depth + 1)
             next_index = index + batch_size
             if config.enum_checkpoint_interval and next_index and next_index % config.enum_checkpoint_interval == 0:
                 save_enum_checkpoint(
@@ -786,14 +1267,22 @@ async def run_pro_directory_enum(
                 )
             index = next_index
 
+        # Clear "Trying:" after level completes so UI does not stick on last word forever
+        if not path_segments and index >= len(words):
+            stats.enum_current_word = ""
+            stats.enum_words_tested = total_words
+
     prefix_roots: List[List[str]] = [[]]
     manual = [p.strip().strip("/") for p in (config.enum_prefixes or "").split(",") if p.strip()]
     auto = extract_auto_prefixes(seed_urls) if config.auto_prefix_enum and not manual else []
     for prefix in manual or auto:
         prefix_roots.append([prefix])
 
-    stats.enum_words_total = total_words * max(1, len(prefix_roots))
+    # Do NOT multiply total by prefix roots into HTTP-attempt space —
+    # progress stays base-word based; prefixes are sequential passes.
+    stats.enum_words_total = total_words
     stats.enum_words_tested = 0
+    stats.enum_base_words_loaded = total_words  # type: ignore[attr-defined]
 
     for roots in prefix_roots:
         await enumerate_level(roots, len(roots), resume_index if roots == resume_segments else 0)
@@ -801,5 +1290,20 @@ async def run_pro_directory_enum(
     if config.false_positive_learning:
         fp_store.save()
     save_enum_checkpoint(config.enum_checkpoint_file, config.start_url, len(words), [], 0, list(found_set))
-    output_callback(f"Directory enumeration finished — {stats.enum_hits} hit(s).")
+    stats.enum_current_word = ""
+    stats.enum_words_tested = total_words
+    stats.enum_base_words_processed = total_words  # type: ignore[attr-defined]
+    conclusion = enum_validation_conclusion(
+        http_attempts=int(getattr(stats, "enum_http_attempts", 0) or 0),
+        accepted_hits=int(stats.enum_hits or 0),
+        rejected_wildcard=int(getattr(stats, "enum_rejected_wildcard", 0) or 0),
+        rate_limited=int(getattr(stats, "enum_rate_limited", 0) or 0),
+        calibration_ok=bool(getattr(wildcard, "calibration_ok", True)),
+        wildcard_active=bool(wildcard.active),
+        catch_all_200=bool(getattr(wildcard, "catch_all_200", False)),
+    )
+    stats.enum_validation_conclusion = conclusion  # type: ignore[attr-defined]
+    stats.enum_wildcard_catch_all_200 = bool(getattr(wildcard, "catch_all_200", False))  # type: ignore[attr-defined]
+    output_callback(f"Directory enumeration finished — {stats.enum_hits} validated hit(s).")
+    output_callback(conclusion)
     return found_set

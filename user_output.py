@@ -188,9 +188,10 @@ def format_friendly_findings(findings: List[Dict[str, Any]]) -> str:
 def format_enum_progress(words_done: int, total_words: int, hits: int) -> str:
     if not total_words:
         return "Scanning folders and file names…"
-    pct = min(100, int(words_done * 100 / total_words))
+    done = min(int(words_done or 0), int(total_words))
+    pct = min(100, int(done * 100 / total_words))
     hit_part = f" · {hits} found so far" if hits else ""
-    return f"Trying folder/file names: {pct}% done ({words_done:,} of {total_words:,}){hit_part}"
+    return f"Trying folder/file names: {pct}% done ({done:,} of {total_words:,} base words){hit_part}"
 
 
 def simplify_log_line(message: str) -> str:

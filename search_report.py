@@ -100,6 +100,7 @@ def build_search_conclusion(
 
     finding_groups = model["finding_groups"]
     severity_counts = Counter(model["severity_counts"])
+    snap = model["snapshot"]
     recommendations: List[str] = []
     if severity_counts.get("critical") or severity_counts.get("high"):
         recommendations.append("Fix critical/high issues first — use the “How to fix it” steps in Part B6.")
@@ -110,11 +111,26 @@ def build_search_conclusion(
     if model["sensitive"]:
         recommendations.append("Lock down or remove sensitive paths; require strong login + MFA for admin panels.")
     if model["enum_hits"]:
-        recommendations.append(
-            f"Manually open the {len(model['enum_hits'])} hidden path(s) and confirm they are intentional."
-        )
+        conclusion = str(snap.get("enum_validation_conclusion") or "")
+        if "unverified" in conclusion.lower():
+            recommendations.append(conclusion)
+            recommendations.append(
+                "Do not treat enum hit URLs as confirmed hidden resources until wildcard validation is clean."
+            )
+        else:
+            recommendations.append(
+                f"Manually open the {len(model['enum_hits'])} validated hidden path(s) and confirm they are intentional."
+            )
     elif status_meta.get("directory_enum_message") and not status_meta.get("directory_enum_started"):
         recommendations.append(str(status_meta["directory_enum_message"]))
+    else:
+        conclusion = str(snap.get("enum_validation_conclusion") or "")
+        if "unverified" in conclusion.lower() or (
+            bool(snap.get("enum_wildcard_active")) and int(snap.get("enum_hits") or 0) == 0
+            and int(snap.get("enum_rejected_wildcard") or 0) > 0
+        ):
+            if conclusion:
+                recommendations.append(conclusion)
     if model["s3"] or model["gcs"]:
         recommendations.append("Review cloud bucket hits — public list/read access is often accidental.")
     if model["broken"]:
@@ -124,10 +140,11 @@ def build_search_conclusion(
         recommendations.append(
             "Bot/WAF catch rate is low — enable bot fight mode, rate limits, and CAPTCHA on login/signup."
         )
-    snap = model["snapshot"]
-    if snap.get("enum_words_total") and snap.get("enum_words_tested", 0) < snap["enum_words_total"] * 0.05:
+    base_total = int(snap.get("enum_base_words_loaded") or snap.get("enum_words_total") or 0)
+    base_done = int(snap.get("enum_base_words_processed") or snap.get("enum_words_tested") or 0)
+    if base_total and base_done < base_total * 0.05:
         recommendations.append(
-            "Directory scan was stopped very early (under ~5% of the wordlist). Leave it running longer for deeper coverage."
+            "Directory scan was stopped very early (under ~5% of the base wordlist). Leave it running longer for deeper coverage."
         )
     if not recommendations:
         recommendations.append("No urgent actions. Re-scan after you change headers, auth, or deploy new apps.")

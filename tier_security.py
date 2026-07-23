@@ -343,8 +343,23 @@ async def probe_graphql_schema(client, url: str) -> List[Finding]:
         resp = await client.post(url, json=query, timeout=12, follow_redirects=True)
         body = resp.text or ""
         if resp.status_code < 500 and re.search(r'(?i)"__schema"\s*:', body):
-            adminish = bool(re.search(r"(?i)(Mutation|Admin|Delete|User)", body[:8000]))
-            sev = gate_severity("high" if adminish else "medium", verification="confirmed")
+            # Downgrade: introspection alone is an API-surface observation unless
+            # privileged admin mutations / private customer fields are proven.
+            adminish = bool(
+                re.search(
+                    r"(?i)(mutationType|Admin|DeleteUser|customerAccessTokenCreate|"
+                    r"privateMetafield|staffMember)",
+                    body[:12000],
+                )
+            )
+            # Storefront GraphQL with only queryType is informational
+            storefrontish = bool(re.search(r"(?i)storefront|Shop\b|Product\b", body[:8000]))
+            if adminish and not storefrontish:
+                sev = gate_severity("medium", verification="confirmed")
+                impact = "Schema discloses privileged operation names — review auth on mutations"
+            else:
+                sev = "info"
+                impact = "Informational technology/API-surface observation — no private data or auth bypass proven"
             return [
                 (
                     "graphql",
@@ -353,16 +368,16 @@ async def probe_graphql_schema(client, url: str) -> List[Finding]:
                     _ev(body[:200], label="graphql_schema"),
                     _meta(
                         "confirmed",
-                        "high" if adminish else "medium",
+                        sev,
                         proof=proof_from_http(
                             method="POST",
                             url=url,
                             status=resp.status_code,
                             body_snippet=body[:200],
                             evidence="Introspection __schema returned",
-                            impact="Full API schema disclosure enables targeted attacks",
+                            impact=impact,
                         ),
-                        confidence="high",
+                        confidence="high" if adminish else "medium",
                         confidence_reason="Live introspection response contains __schema",
                     ),
                 )
