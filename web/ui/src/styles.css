@@ -83,7 +83,7 @@ a.job-card:hover { border-color: rgba(61,214,198,.45); text-decoration: none; ba
 .job-card-open {
   font-size: .88rem; font-weight: 800; color: var(--accent);
 }
-.stats-tri { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.stats-tri { grid-template-columns: repeat(auto-fit, minmax(72px, 1fr)); }
 .dash-hero {
   display: flex; flex-direction: column; gap: .85rem; margin-bottom: 1rem;
 }
@@ -258,6 +258,15 @@ a.btn:hover { text-decoration: none; }
 .badge.completed { color: #7dffa8; border-color: rgba(125,255,168,.35); background: rgba(125,255,168,.08); }
 .badge.cancelled, .badge.stopped, .badge.canceled {
   color: #cbd5e1; border-color: rgba(148,163,184,.45); background: rgba(148,163,184,.12);
+}
+.badge.report-final {
+  color: #7dffa8; border-color: rgba(125,255,168,.35); background: rgba(125,255,168,.06);
+}
+.badge.report-partial {
+  color: #9ecbff; border-color: rgba(158,203,255,.4); background: rgba(158,203,255,.08);
+}
+.badge.report-stopped {
+  color: #cbd5e1; border-color: rgba(148,163,184,.45); background: rgba(148,163,184,.1);
 }
 .badge.phase-crawl, .badge.phase-running, .badge.phase-starting, .badge.phase-recon { color: var(--accent); border-color: rgba(61,214,198,.4); }
 .badge.phase-enum { color: #9ecbff; border-color: rgba(158,203,255,.4); }
@@ -832,7 +841,7 @@ a.btn:hover { text-decoration: none; }
   .job-card-foot { padding-top: .55rem; }
   .job-card-open { font-size: .95rem; }
 
-  .stats-tri { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .55rem; }
+  .stats-tri { grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: .55rem; }
   .stats.cockpit { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stat { padding: .8rem .35rem; }
   .stat-num { font-size: 1.25rem; }

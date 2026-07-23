@@ -2,10 +2,29 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, Job } from "../api";
 import ScanActivity from "../components/ScanActivity";
-import { canDeleteJob } from "../jobStatus";
+import {
+  canDeleteJob,
+  formatJobStatus,
+  formatModeLabel,
+  formatScanCompleteness,
+  scanCompletenessClass,
+} from "../jobStatus";
 
-function modeLabel(mode: string) {
-  return mode.replace(/_/g, " ");
+function JobStatusBadges({ job }: { job: Job }) {
+  const progress = (job.progress_json || {}) as Record<string, unknown>;
+  const reportLabel =
+    ["completed", "failed", "cancelled", "canceled"].includes(job.status)
+      ? formatScanCompleteness(progress)
+      : null;
+  return (
+    <div className="status-cell">
+      <span className={`badge ${job.status}`}>{formatJobStatus(job.status)}</span>
+      {reportLabel ? (
+        <span className={`badge ${scanCompletenessClass(reportLabel)}`}>{reportLabel}</span>
+      ) : null}
+      <ScanActivity status={job.status} compact />
+    </div>
+  );
 }
 
 export default function DashboardPage() {
@@ -48,8 +67,9 @@ export default function DashboardPage() {
     }
   };
 
-  const running = jobs.filter((j) => j.status === "running").length;
-  const done = jobs.filter((j) => j.status === "completed").length;
+  const running = jobs.filter((j) => j.status === "running" || j.status === "queued").length;
+  const completed = jobs.filter((j) => j.status === "completed").length;
+  const cancelled = jobs.filter((j) => j.status === "cancelled" || j.status === "canceled").length;
 
   const stats = (
     <div className="stats stats-tri">
@@ -62,9 +82,15 @@ export default function DashboardPage() {
         <div className="stat-label">Running</div>
       </div>
       <div className="stat">
-        <div className="stat-num">{done}</div>
-        <div className="stat-label">Done</div>
+        <div className="stat-num">{completed}</div>
+        <div className="stat-label">Completed</div>
       </div>
+      {cancelled > 0 ? (
+        <div className="stat">
+          <div className="stat-num">{cancelled}</div>
+          <div className="stat-label">Cancelled</div>
+        </div>
+      ) : null}
     </div>
   );
 
@@ -105,16 +131,13 @@ export default function DashboardPage() {
                       <Link className="job-card" to={`/jobs/${job.id}`}>
                         <div className="job-card-top">
                           <div className="job-card-title">{job.title || "Untitled scan"}</div>
-                          <div className="status-cell">
-                            <span className={`badge ${job.status}`}>{job.status}</span>
-                            <ScanActivity status={job.status} compact />
-                          </div>
+                          <JobStatusBadges job={job} />
                         </div>
                         <div className="job-card-url mono" title={job.start_url}>
                           {job.start_url}
                         </div>
                         <div className="job-card-foot">
-                          <span className="job-card-mode">{modeLabel(job.mode)}</span>
+                          <span className="job-card-mode">{formatModeLabel(job.mode)}</span>
                           <span className="job-card-open">Open →</span>
                         </div>
                       </Link>
@@ -149,14 +172,13 @@ export default function DashboardPage() {
                       return (
                         <tr key={job.id}>
                           <td>{job.title}</td>
-                          <td className="mono table-url">{job.start_url}</td>
-                          <td>
-                            <div className="status-cell">
-                              <span className={`badge ${job.status}`}>{job.status}</span>
-                              <ScanActivity status={job.status} compact />
-                            </div>
+                          <td className="mono table-url" title={job.start_url}>
+                            {job.start_url}
                           </td>
-                          <td className="muted">{job.mode}</td>
+                          <td>
+                            <JobStatusBadges job={job} />
+                          </td>
+                          <td className="muted">{formatModeLabel(job.mode)}</td>
                           <td>
                             <div className="job-row-actions">
                               <Link className="btn" to={`/jobs/${job.id}`}>
@@ -183,7 +205,7 @@ export default function DashboardPage() {
             </>
           )}
         </section>
-        <section className="card desktop-only">
+        <aside className="card desktop-only">
           <h2>Quick start</h2>
           <p className="muted">
             Confirm authorization, pick a mode, choose a bundled wordlist (or upload your own), tune speed, then
@@ -193,7 +215,7 @@ export default function DashboardPage() {
             New scan
           </Link>
           <div style={{ marginTop: "1.25rem" }}>{stats}</div>
-        </section>
+        </aside>
       </div>
     </div>
   );
