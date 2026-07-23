@@ -39,11 +39,36 @@ CLASS_WILDCARD = "wildcard_response"
 CLASS_SOFT_404 = "soft_404"
 CLASS_CASE_VARIANT = "case_variant"
 CLASS_CONTENT_DUP = "content_equivalent_fallback"
+CLASS_EXTENSION_VARIANT = "implausible_extension_variant"
 CLASS_ALREADY_KNOWN = "already_known"
 CLASS_REDIRECT_EXISTING = "redirected_existing_route"
 CLASS_INCONCLUSIVE_429 = "inconclusive_rate_limited"
 CLASS_REJECTED_STATUS = "rejected_status"
 CLASS_UNVERIFIED = "unverified_candidate"
+
+# Stems that commonly explode into false multi-extension "hits"
+_MULTI_EXT_STEMS = frozenset(
+    {
+        "index",
+        "default",
+        "home",
+        "main",
+        "backup",
+        "config",
+        "admin",
+        "test",
+        "temp",
+        "tmp",
+        "old",
+        "new",
+        "copy",
+        "data",
+        "db",
+        "dump",
+        "robots",
+        "sitemap",
+    }
+)
 
 
 @dataclass
@@ -382,14 +407,46 @@ class EnumHitRecord:
         return json.loads(self.to_evidence_json())
 
 
+def extension_family_key(url_or_path: str) -> str:
+    """Group implausible multi-extension siblings (index.sql / index.bak / …)."""
+    path = urlparse(url_or_path).path if "://" in (url_or_path or "") else (url_or_path or "")
+    path = path.replace("\\", "/")
+    segs = [s for s in path.strip("/").split("/") if s]
+    if not segs:
+        return ""
+    leaf = segs[-1]
+    if "." not in leaf or leaf.startswith("."):
+        # Dotfiles like .robots — family by casefold leaf name without leading dots' case
+        if leaf.startswith(".") and len(leaf) > 1:
+            parent = "/".join(segs[:-1]).casefold()
+            stem = leaf.lstrip(".").casefold()
+            return f"dotfam:{parent}/{stem}"
+        return ""
+    stem, ext = leaf.rsplit(".", 1)
+    if not stem or not ext:
+        return ""
+    stem_l = stem.casefold()
+    if stem_l not in _MULTI_EXT_STEMS and not re.fullmatch(r"(?i)index", stem):
+        return ""
+    parent = "/".join(segs[:-1]).casefold()
+    return f"extfam:{parent}/{stem_l}"
+
+
 class HitProvenanceTracker:
-    """Tracks already-known URLs, case groups, and content-equivalent fallbacks."""
+    """Tracks already-known URLs, case groups, content-equivalent and extension-family dups.
+
+    Thread-safe: classify_and_record / note_* are safe under concurrent enum workers.
+    """
 
     def __init__(self, known_urls: Optional[Iterable[str]] = None):
+        import threading
+
+        self._lock = threading.RLock()
         self.known_casefold: Set[str] = set()
         self.known_exact: Set[str] = set()
         self.accepted_casefold: Dict[str, str] = {}  # casefold -> first url
         self.content_groups: Dict[str, str] = {}  # norm hash -> first url
+        self.extension_families: Dict[str, str] = {}  # family key -> first url
         self.records: List[EnumHitRecord] = []
         for u in known_urls or []:
             if not u:
@@ -398,11 +455,20 @@ class HitProvenanceTracker:
             self.known_casefold.add(casefold_path_key(u))
 
     def note_known(self, urls: Iterable[str]) -> None:
-        for u in urls or []:
-            if not u:
-                continue
-            self.known_exact.add(u)
-            self.known_casefold.add(casefold_path_key(u))
+        with self._lock:
+            for u in urls or []:
+                if not u:
+                    continue
+                self.known_exact.add(u)
+                self.known_casefold.add(casefold_path_key(u))
+
+    def note_content(self, url: str, normalized_hash: str) -> None:
+        """Seed content groups from crawl page bodies so enum fallbacks collide early."""
+        key = (normalized_hash or "").strip()
+        if not key or key in ("empty", "head-only") or not url:
+            return
+        with self._lock:
+            self.content_groups.setdefault(key, url)
 
     def classify_and_record(
         self,
@@ -420,9 +486,44 @@ class HitProvenanceTracker:
         soft_404: bool,
         path_shape: str,
     ) -> EnumHitRecord:
+        with self._lock:
+            return self._classify_locked(
+                url=url,
+                base_word=base_word,
+                variant=variant,
+                requested_status=requested_status,
+                final_status=final_status,
+                final_url=final_url,
+                fingerprint=fingerprint,
+                wildcard_rejected=wildcard_rejected,
+                wildcard_similarity=wildcard_similarity,
+                baseline_used=baseline_used,
+                soft_404=soft_404,
+                path_shape=path_shape,
+            )
+
+    def _classify_locked(
+        self,
+        *,
+        url: str,
+        base_word: str,
+        variant: str,
+        requested_status: int,
+        final_status: int,
+        final_url: str,
+        fingerprint: ResponseFingerprint,
+        wildcard_rejected: bool,
+        wildcard_similarity: float,
+        baseline_used: str,
+        soft_404: bool,
+        path_shape: str,
+    ) -> EnumHitRecord:
         ck = casefold_path_key(url)
-        already = url in self.known_exact or ck in self.known_casefold
+        already_exact = url in self.known_exact
+        already_case = ck in self.known_casefold
+        already = already_exact or already_case
         content_key = fingerprint.normalized_hash or fingerprint.raw_hash or ""
+        fam_key = extension_family_key(url) or extension_family_key(variant)
         case_group = ""
         content_group = ""
         classification = CLASS_CONFIRMED
@@ -437,10 +538,19 @@ class HitProvenanceTracker:
             classification = CLASS_SOFT_404
             validated = False
             reason = "soft_404_baseline"
-        elif already:
-            classification = CLASS_ALREADY_KNOWN
-            validated = True
-            reason = "path_known_before_enum"
+        elif already_exact or already_case:
+            # Already in crawl inventory (exact or case-insensitive) — not a new distinct hit
+            if already_exact:
+                classification = CLASS_ALREADY_KNOWN
+                reason = "path_known_before_enum"
+            else:
+                classification = CLASS_CASE_VARIANT
+                case_group = next(
+                    (u for u in self.known_exact if casefold_path_key(u) == ck),
+                    ck,
+                )
+                reason = f"case_variant_of_known:{case_group}"
+            validated = False
         elif ck in self.accepted_casefold:
             classification = CLASS_CASE_VARIANT
             validated = False
@@ -451,17 +561,30 @@ class HitProvenanceTracker:
             validated = False
             content_group = self.content_groups[content_key]
             reason = f"content_equivalent_to:{content_group}"
+        elif fam_key and fam_key in self.extension_families:
+            # index.sql after index.php (etc.) — implausible independent resources
+            classification = CLASS_EXTENSION_VARIANT
+            validated = False
+            case_group = self.extension_families[fam_key]
+            reason = f"extension_variant_of:{case_group}"
         elif final_url and casefold_path_key(final_url) != ck and (
             final_url in self.known_exact or casefold_path_key(final_url) in self.known_casefold
         ):
             classification = CLASS_REDIRECT_EXISTING
-            validated = True
+            # Redirect into known surface — inventory only, do not re-scan as new hit
+            validated = False
             reason = "redirects_to_known_route"
 
+        # Only brand-new distinct resources count as validated hits
         if classification == CLASS_CONFIRMED:
             self.accepted_casefold.setdefault(ck, url)
             if content_key and content_key not in ("empty", "head-only"):
                 self.content_groups.setdefault(content_key, url)
+            if fam_key:
+                self.extension_families.setdefault(fam_key, url)
+            validated = True
+        else:
+            validated = False
 
         fingerprint.acceptance_reason = reason
         fingerprint.baseline_shape = baseline_used
@@ -483,11 +606,7 @@ class HitProvenanceTracker:
             baseline_used=baseline_used,
             case_group=case_group,
             content_group=content_group,
-            validated=validated and classification in (
-                CLASS_CONFIRMED,
-                CLASS_ALREADY_KNOWN,
-                CLASS_REDIRECT_EXISTING,
-            ),
+            validated=validated,
         )
         self.records.append(rec)
         return rec

@@ -370,7 +370,23 @@ class ReportWriter:
                 ),
             )
         for u in list(getattr(stats, "discovered_urls", set()) or set())[:5000]:
-            conn.execute("INSERT OR IGNORE INTO url VALUES (?,?)", (u, "discovered"))
+            kind = "discovered"
+            kinds = getattr(stats, "url_kinds", None) or {}
+            if isinstance(kinds, dict) and u in kinds:
+                kind = str(kinds.get(u) or "discovered")
+            elif u in set(getattr(stats, "enum_hit_urls", []) or []):
+                kind = "enum"
+            conn.execute("INSERT OR IGNORE INTO url VALUES (?,?)", (u, kind))
+        # Ensure enum hits are present even if not yet in discovered_urls
+        for u in list(getattr(stats, "enum_hit_urls", []) or [])[:2000]:
+            if not u:
+                continue
+            conn.execute("INSERT OR IGNORE INTO url VALUES (?,?)", (u, "enum"))
+            # Prefer enum provenance when URL was also crawl-discovered
+            conn.execute(
+                "UPDATE url SET kind=? WHERE url=? AND kind NOT IN ('enum')",
+                ("enum", u),
+            )
         for row in list(getattr(stats, "broken_links", []) or []):
             if isinstance(row, dict) and row.get("url"):
                 conn.execute(

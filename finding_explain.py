@@ -789,8 +789,8 @@ def group_findings_for_report(findings: List[Dict[str, Any]], *, max_groups: int
             # One group per secret fingerprint (ignore product-label drift)
             key = (severity, category, evidence.lower())
             url_cap = 80
-        elif category in ("xss", "mixed_content") and evidence:
-            # Evidence-hash grouping: same sink / same HTTP resource → one issue, many URLs
+        elif category in ("xss", "csrf", "mixed_content") and evidence:
+            # Evidence-hash grouping: same sink / same CSRF token issue → one issue, many URLs
             import hashlib
 
             evid_key = hashlib.sha1(evidence.encode("utf-8", errors="replace")).hexdigest()[:16]

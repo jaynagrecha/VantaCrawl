@@ -513,10 +513,40 @@ def is_plausible_href(href):
 
 
 _LOG_FILE_LOCK = threading.Lock()
+# path → set of casefold URL keys already written (unique found_urls.txt)
+_LOG_URL_SEEN: dict = {}
 
 
 def log_to_file(output_file_path, url):
+    """Append URL to found_urls.txt once (exact + case-insensitive dedupe)."""
+    if not output_file_path or not url:
+        return
+    try:
+        from enum_validation import casefold_path_key
+
+        seen_key = casefold_path_key(url)
+    except Exception:
+        seen_key = (url or "").rstrip("/").casefold()
     with _LOG_FILE_LOCK:
+        seen = _LOG_URL_SEEN.setdefault(output_file_path, set())
+        if not seen and os.path.isfile(output_file_path):
+            try:
+                with open(output_file_path, "r", encoding="utf-8", errors="replace") as existing:
+                    for line in existing:
+                        prior = line.strip()
+                        if not prior:
+                            continue
+                        try:
+                            from enum_validation import casefold_path_key as _ck
+
+                            seen.add(_ck(prior))
+                        except Exception:
+                            seen.add(prior.rstrip("/").casefold())
+            except OSError:
+                pass
+        if seen_key in seen:
+            return
+        seen.add(seen_key)
         with open(output_file_path, "a", encoding="utf-8") as file:
             file.write(url + "\n")
 
@@ -1906,6 +1936,8 @@ def enqueue_discovered_url(
             stats.requests_queued += 1
         if hasattr(stats, "discovered_urls"):
             stats.discovered_urls.add(crawl_url)
+        if hasattr(stats, "note_url_kind"):
+            stats.note_url_kind(crawl_url, "crawl")
         # Fair frontier: prefer under-sampled route templates so one locale family
         # cannot monopolize the crawl queue.
         if hasattr(stats, "record_request"):

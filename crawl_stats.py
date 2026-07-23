@@ -75,6 +75,10 @@ class CrawlStats:
     forms: List[Dict[str, Any]] = field(default_factory=list)
     parameters: List[Dict[str, Any]] = field(default_factory=list)
     content_hashes: Set[str] = field(default_factory=set)
+    # norm_hash → first crawl URL (seeds enum content-equivalent rejection)
+    page_content_by_hash: Dict[str, str] = field(default_factory=dict)
+    # url → provenance kind (seed|crawl|enum|…) for report URL table
+    url_kinds: Dict[str, str] = field(default_factory=dict)
     etag_cache: Dict[str, str] = field(default_factory=dict)
     last_modified_cache: Dict[str, str] = field(default_factory=dict)
     queue_size: int = 0
@@ -176,6 +180,19 @@ class CrawlStats:
             return
         seen.add(url)
         target.append(url)
+
+    def note_url_kind(self, url: str, kind: str) -> None:
+        """Record first-seen provenance for a URL (seed/crawl/enum/…)."""
+        if not url or not kind:
+            return
+        self.url_kinds.setdefault(url, str(kind))
+
+    def note_page_content(self, url: str, normalized_hash: str) -> None:
+        """Seed content-equivalence map from a crawled page body."""
+        key = (normalized_hash or "").strip()
+        if not key or key in ("empty", "head-only") or not url:
+            return
+        self.page_content_by_hash.setdefault(key, url)
 
     def record_status(self, status_code: int, enum: bool = False):
         if enum:
@@ -375,6 +392,9 @@ class CrawlStats:
             except Exception:
                 upath = url
             dedupe_key = f"file_upload|{host}|{upath}"
+        elif category in ("xss", "csrf") and evidence_key:
+            # Same XSS sink / CSRF evidence across pages → one finding per host
+            dedupe_key = f"{category}|{host}|{evidence_key}"
         elif category in ("js_intel", "business_logic", "bot_management") or (
             category == "mass_assignment" and sev_l == "info"
         ):

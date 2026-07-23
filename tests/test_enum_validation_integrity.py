@@ -170,6 +170,7 @@ def test_plain_path_not_rejected_when_only_dot_wildcard():
 def test_case_and_content_grouping():
     tracker = HitProvenanceTracker(["https://example.com/about"])
     body = b"<html>same fallback cart-form</html>"
+    # Casefold of a known crawl URL must not become a validated hit
     fp1 = fingerprint_from_response(url="https://example.com/About", status=200, body=body)
     rec1 = tracker.classify_and_record(
         url="https://example.com/About",
@@ -185,8 +186,10 @@ def test_case_and_content_grouping():
         soft_404=False,
         path_shape="plain",
     )
-    assert rec1.classification == CLASS_CONFIRMED or rec1.already_known
-    # Same content different path
+    assert rec1.classification == CLASS_CASE_VARIANT
+    assert not rec1.validated
+    # Seed crawl body so enum fallbacks with identical content are rejected
+    tracker.note_content("https://example.com/about", fp1.normalized_hash)
     fp2 = fingerprint_from_response(url="https://example.com/blog", status=200, body=body)
     rec2 = tracker.classify_and_record(
         url="https://example.com/blog",
@@ -202,26 +205,148 @@ def test_case_and_content_grouping():
         soft_404=False,
         path_shape="plain",
     )
-    assert rec2.classification in ("content_equivalent_fallback", CLASS_CONFIRMED)
-    # Case variant of blog
-    if rec2.validated:
-        fp3 = fingerprint_from_response(url="https://example.com/Blog", status=200, body=b"other")
-        rec3 = tracker.classify_and_record(
-            url="https://example.com/Blog",
-            base_word="Blog",
-            variant="Blog",
-            requested_status=200,
-            final_status=200,
-            final_url="https://example.com/Blog",
-            fingerprint=fp3,
-            wildcard_rejected=False,
-            wildcard_similarity=0.0,
-            baseline_used="",
-            soft_404=False,
-            path_shape="plain",
+    assert rec2.classification == "content_equivalent_fallback"
+    assert not rec2.validated
+    # Distinct content still confirms, then case sibling is rejected
+    other = b"<html>distinct admin panel payload</html>"
+    fp3 = fingerprint_from_response(url="https://example.com/admin", status=200, body=other)
+    rec3 = tracker.classify_and_record(
+        url="https://example.com/admin",
+        base_word="admin",
+        variant="admin",
+        requested_status=200,
+        final_status=200,
+        final_url="https://example.com/admin",
+        fingerprint=fp3,
+        wildcard_rejected=False,
+        wildcard_similarity=0.0,
+        baseline_used="",
+        soft_404=False,
+        path_shape="plain",
+    )
+    assert rec3.classification == CLASS_CONFIRMED
+    assert rec3.validated
+    fp4 = fingerprint_from_response(url="https://example.com/Admin", status=200, body=b"other")
+    rec4 = tracker.classify_and_record(
+        url="https://example.com/Admin",
+        base_word="Admin",
+        variant="Admin",
+        requested_status=200,
+        final_status=200,
+        final_url="https://example.com/Admin",
+        fingerprint=fp4,
+        wildcard_rejected=False,
+        wildcard_similarity=0.0,
+        baseline_used="",
+        soft_404=False,
+        path_shape="plain",
+    )
+    assert rec4.classification == CLASS_CASE_VARIANT
+    assert not rec4.validated
+
+
+def test_extension_family_rejects_index_siblings():
+    from enum_validation import CLASS_EXTENSION_VARIANT, extension_family_key
+
+    assert extension_family_key("https://example.com/index.php") == extension_family_key(
+        "https://example.com/index.bak"
+    )
+    tracker = HitProvenanceTracker()
+    body = b"<html>index page</html>"
+    fp1 = fingerprint_from_response(url="https://example.com/index.php", status=200, body=body)
+    rec1 = tracker.classify_and_record(
+        url="https://example.com/index.php",
+        base_word="index",
+        variant="index.php",
+        requested_status=200,
+        final_status=200,
+        final_url="https://example.com/index.php",
+        fingerprint=fp1,
+        wildcard_rejected=False,
+        wildcard_similarity=0.0,
+        baseline_used="",
+        soft_404=False,
+        path_shape="index_ext",
+    )
+    assert rec1.validated and rec1.classification == CLASS_CONFIRMED
+    fp2 = fingerprint_from_response(
+        url="https://example.com/index.bak", status=200, body=b"<html>different</html>"
+    )
+    rec2 = tracker.classify_and_record(
+        url="https://example.com/index.bak",
+        base_word="index",
+        variant="index.bak",
+        requested_status=200,
+        final_status=200,
+        final_url="https://example.com/index.bak",
+        fingerprint=fp2,
+        wildcard_rejected=False,
+        wildcard_similarity=0.0,
+        baseline_used="",
+        soft_404=False,
+        path_shape="index_ext",
+    )
+    assert rec2.classification == CLASS_EXTENSION_VARIANT
+    assert not rec2.validated
+
+
+def test_followup_only_schedules_confirmed():
+    from unittest.mock import patch
+
+    from enum_followup import EnumFollowupScheduler
+
+    sched = EnumFollowupScheduler(
+        client=MagicMock(),
+        config=MagicMock(enum_auto_crawl_hits=True, enum_auto_vuln_scan=True),
+        stats=CrawlStats(),
+        run_security=AsyncMock(),
+        extract_forms=MagicMock(return_value=[]),
+    )
+    with patch("enum_followup.asyncio.create_task", return_value=MagicMock()) as create_task:
+        for cls in (
+            "already_known",
+            "redirected_existing_route",
+            "implausible_extension_variant",
+            "case_variant",
+            "content_equivalent_fallback",
+        ):
+            probe = ProbeResult(
+                "https://example.com/x",
+                "x",
+                200,
+                10,
+                "abcd",
+                [],
+                validated=True,
+                classification=cls,
+            )
+            sched.schedule(probe)
+            assert sched._scheduled == 0
+            create_task.assert_not_called()
+
+        def _swallow(coro, **_kwargs):
+            try:
+                coro.close()
+            except Exception:
+                pass
+            return MagicMock()
+
+        create_task.side_effect = _swallow
+        ok = ProbeResult(
+            "https://example.com/new",
+            "new",
+            200,
+            10,
+            "abcd",
+            [],
+            validated=True,
+            classification=CLASS_CONFIRMED,
+            body=b"<html>hi</html>",
+            content_type="text/html",
         )
-        assert rec3.classification == CLASS_CASE_VARIANT
-        assert not rec3.validated
+        sched.schedule(ok)
+        assert sched._scheduled == 1
+        assert create_task.called
 
 
 def test_enum_validation_conclusion_unverified():
