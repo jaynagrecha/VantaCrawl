@@ -163,7 +163,7 @@ export default function DashboardPage() {
                       <th>Target</th>
                       <th>Status</th>
                       <th>Mode</th>
-                      <th></th>
+                      <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
