@@ -890,7 +890,8 @@ def looks_like_existing_path(
 
 
 def get_sync_baseline(session, base_url):
-    probe_url = build_enum_url(base_url, [], f".crawler-baseline-{uuid.uuid4().hex}")
+    # Plain random path — do NOT use a dot-prefixed control (matches async baseline).
+    probe_url = build_enum_url(base_url, [], f"crawler-baseline-{uuid.uuid4().hex}")
     try:
         response = session.get(probe_url, timeout=5, allow_redirects=False)
         return response_length(response), response.status_code

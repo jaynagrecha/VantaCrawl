@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -11,13 +10,8 @@ from detailed_report import build_report_model, render_detailed_text
 
 
 def _risk_verdict(findings: List[dict], *, scan_status: str = "", phase: str = "") -> Tuple[str, str]:
-    from report_status import demonstrated_severity_counts, partial_executive_summary
-
-    if scan_status == "partial":
-        return (
-            "PARTIAL SCAN — candidate findings only",
-            partial_executive_summary(phase=phase or "crawl"),
-        )
+    """Risk posture from demonstrated findings — completeness is a separate report-status line."""
+    from report_status import demonstrated_severity_counts
 
     demo = demonstrated_severity_counts(findings)
     counts = Counter(f.get("severity", "info") for f in findings)
@@ -25,30 +19,45 @@ def _risk_verdict(findings: List[dict], *, scan_status: str = "", phase: str = "
     high = int(demo.get("high", 0))
     medium = int(demo.get("medium", 0)) or int(counts.get("medium", 0))
 
+    suffix = ""
+    if scan_status == "partial":
+        from report_status import partial_executive_summary
+
+        suffix = " " + partial_executive_summary(phase=phase or "crawl")
+
     if critical > 0:
         return (
             "HIGH RISK — immediate review required",
             f"The scan demonstrated {critical} critical issue type(s), {high} high, and {medium} medium. "
             "Prioritize critical/high items in Part B. Each issue includes what it means, how it could be abused, "
-            "and how to fix it.",
+            "and how to fix it."
+            + suffix,
         )
     if high > 0:
         return (
             "ELEVATED RISK — review recommended",
             f"No critical issues were recorded, but {high} demonstrated high-severity and {medium} medium issue(s) "
-            "need a closer look. Read the “How an attacker could use this” notes before deciding what to patch first.",
+            "need a closer look. Read the “How an attacker could use this” notes before deciding what to patch first."
+            + suffix,
         )
     if medium > 0:
         return (
             "MODERATE — harden when you can",
             f"{medium} medium-severity issue(s) were found (often missing security headers). "
-            "These are common on real sites and usually quick to fix — details and fixes are listed in Part B.",
+            "These are common on real sites and usually quick to fix — details and fixes are listed in Part B."
+            + suffix,
         )
     if findings:
         return (
             "LOW — informational findings only",
             f"{len(findings)} informational / candidate item(s) were recorded. No urgent exploit path is indicated, "
-            "but skim Part B so nothing important was mis-labeled.",
+            "but skim Part B so nothing important was mis-labeled."
+            + suffix,
+        )
+    if scan_status == "partial":
+        return (
+            "INCOMPLETE — no findings yet",
+            (suffix.strip() or "Scan was still in progress when this report was generated."),
         )
     return (
         "CLEAR — no security findings in this run",
@@ -96,7 +105,9 @@ def build_search_conclusion(
         text += f"\nFull URL list:     {output_file}"
     if download_dir:
         text += f"\nDownloaded files:  {download_dir}"
-    text += f"\nReport generated:  {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+    from report_time import format_dual
+
+    text += f"\nReport generated:  {format_dual()}\n"
 
     finding_groups = model["finding_groups"]
     severity_counts = Counter(model["severity_counts"])

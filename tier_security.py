@@ -390,10 +390,10 @@ async def probe_graphql_schema(client, url: str) -> List[Finding]:
 # --- Mass assignment / hidden params ----------------------------------------
 
 def scan_hidden_params_in_js(url: str, body_text: str) -> List[Finding]:
+    """Flag strong privilege/debug param names in JS — never weak UI flags like ``enabled``."""
     findings: List[Finding] = []
     if not body_text:
         return findings
-    # Prefer object-key shape (`"isAdmin":`) — bare string literals of weak names are noisy.
     found = sorted({m.group(1) for m in _HIDDEN_PARAM_RE.finditer(body_text[:200000])})
     if not found:
         for name in _HIDDEN_PARAM_NAMES:
@@ -404,6 +404,8 @@ def scan_hidden_params_in_js(url: str, body_text: str) -> List[Finding]:
             ):
                 found.append(name)
         found = sorted(set(found))
+    # Drop ubiquitous non-privilege flags if any slip through
+    found = [n for n in found if n.lower() not in {"enabled", "disabled", "visible", "active"}]
     if found:
         findings.append(
             (
@@ -585,9 +587,9 @@ def scan_business_logic_hints(url: str, body_text: str) -> List[Finding]:
                 _ev("coupon/redeem", label="biz_coupon"),
             )
         )
-    if re.search(r"(?i)(transfer|recipient|send[_-]?money|western.?union)", blob) and re.search(
+    if re.search(r"(?i)(transfer|recipient|send[_-]?money)", blob) and re.search(
         r"(?i)/(?:transfer|wallet|send(?:-|_ )?money|payout|wire|remit)/",
-        path + " " + blob[:2000],
+        path,
     ):
         findings.append(
             (

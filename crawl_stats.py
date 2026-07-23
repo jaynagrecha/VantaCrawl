@@ -256,7 +256,7 @@ class CrawlStats:
             row["classification"] = classification
         self.request_ledger.append(row)
 
-    def record_enum_attempt(self, fingerprint: Dict[str, Any], *, limit: int = 5000) -> None:
+    def record_enum_attempt(self, fingerprint: Dict[str, Any], *, limit: int = 20000) -> None:
         """Persist a capped fingerprint for every enum HTTP attempt (hits and misses)."""
         if not hasattr(self, "enum_attempt_fingerprints") or self.enum_attempt_fingerprints is None:
             self.enum_attempt_fingerprints = []

@@ -9,6 +9,7 @@ Only VERIFIED+ may raise above the detection ceiling (usually info/low).
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Optional
 
@@ -141,6 +142,26 @@ def proof_has_http_exchange(proof: Any) -> bool:
     if isinstance(proof, dict):
         return bool(str(proof.get("request") or "").strip() and str(proof.get("response") or "").strip())
     return False
+
+
+def proof_has_cors_headers(proof: Any, *, require_credentials: bool = False) -> bool:
+    """True when proof response includes ACAO (and ACAC:true when credentials required)."""
+    if not proof_has_http_exchange(proof):
+        return False
+    if isinstance(proof, FindingProof):
+        resp = str(proof.response or "")
+    elif isinstance(proof, dict):
+        resp = str(proof.get("response") or "")
+    else:
+        return False
+    if not re.search(r"(?im)^access-control-allow-origin\s*:", resp):
+        # Also allow single-line / folded header blobs without strict line starts
+        if not re.search(r"(?i)access-control-allow-origin\s*:", resp):
+            return False
+    if require_credentials:
+        if not re.search(r"(?i)access-control-allow-credentials\s*:\s*true\b", resp):
+            return False
+    return True
 
 
 def downgrade_unproven_confirmation(

@@ -555,3 +555,50 @@ def test_enum_followup_requires_validation():
         await asyncio.gather(*list(sched._tasks), return_exceptions=True)
 
     asyncio.run(_run())
+
+
+def test_parse_retry_after_http_date():
+    from datetime import datetime, timedelta, timezone
+
+    from enum_engine import parse_retry_after_seconds
+
+    assert parse_retry_after_seconds("12") == 12.0
+    assert parse_retry_after_seconds("") == 0.0
+    future = datetime.now(timezone.utc) + timedelta(seconds=42)
+    http_date = future.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    delay = parse_retry_after_seconds(http_date)
+    assert 30 <= delay <= 50
+
+
+def test_sync_baseline_not_dot_prefixed():
+    from urllib.parse import urlparse
+
+    from crawler_common import get_sync_baseline
+
+    class Sess:
+        def get(self, url, timeout=5, allow_redirects=False):
+            leaf = urlparse(url).path.rsplit("/", 1)[-1]
+            assert leaf.startswith("crawler-baseline-")
+            assert not leaf.startswith(".")
+
+            class R:
+                status_code = 404
+                headers = {}
+                content = b""
+
+            return R()
+
+    get_sync_baseline(Sess(), "https://example.com/")
+
+
+def test_risk_verdict_not_partial_scan_label():
+    from search_report import _risk_verdict
+
+    title, body = _risk_verdict(
+        [{"category": "header_audit", "severity": "medium", "detail": "missing HSTS"}],
+        scan_status="partial",
+        phase="crawl",
+    )
+    assert "PARTIAL SCAN" not in title
+    assert "MODERATE" in title
+    assert body

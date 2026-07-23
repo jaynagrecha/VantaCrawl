@@ -34,6 +34,7 @@ from crawler_common import (
 from enum_validation import (
     ALL_SHAPES,
     CLASS_INCONCLUSIVE_429,
+    CLASS_UNVERIFIED,
     CLASS_WILDCARD,
     HitProvenanceTracker,
     ResponseFingerprint,
@@ -723,6 +724,30 @@ def is_probe_hit(
     return True
 
 
+def parse_retry_after_seconds(raw: str, *, now: Optional[float] = None) -> float:
+    """Parse Retry-After as delta-seconds or HTTP-date. Caps at 300s."""
+    text = (raw or "").strip()
+    if not text:
+        return 0.0
+    if text.isdigit():
+        return float(min(int(text), 300))
+    try:
+        from datetime import timezone
+        from email.utils import parsedate_to_datetime
+
+        dt = parsedate_to_datetime(text)
+        if dt is None:
+            return 5.0
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        delay = dt.timestamp() - float(now if now is not None else time.time())
+        if delay < 0:
+            return 0.0
+        return float(min(delay, 300.0))
+    except Exception:
+        return 5.0
+
+
 async def run_pro_directory_enum(
     config: CrawlConfig,
     client: httpx.AsyncClient,
@@ -965,15 +990,19 @@ async def run_pro_directory_enum(
                 running=running,
             )
         if on_hit_callback:
-            await on_hit_callback(probe)
+            # Catch-all HTTP 200 wildcards: inventory hits only — do not security-scan
+            # until end-of-enum validation proves filters actually rejected fallbacks.
+            if getattr(wildcard, "catch_all_200", False) and int(
+                getattr(stats, "enum_rejected_wildcard", 0) or 0
+            ) == 0:
+                output_callback(
+                    f"ENUM-DEFER follow-up {probe.url} (catch-all wildcard — awaiting validation)"
+                )
+            else:
+                await on_hit_callback(probe)
 
     async def _honor_retry_after(headers_retry_after: str = "") -> None:
-        delay = 0.0
-        raw = (headers_retry_after or "").strip()
-        if raw.isdigit():
-            delay = float(raw)
-        elif raw:
-            delay = 5.0
+        delay = parse_retry_after_seconds(headers_retry_after)
         # Stealth: always add jitter
         if is_stealth:
             delay = max(delay, random.uniform(0.35, 1.25))
@@ -1319,6 +1348,27 @@ async def run_pro_directory_enum(
     )
     stats.enum_validation_conclusion = conclusion  # type: ignore[attr-defined]
     stats.enum_wildcard_catch_all_200 = bool(getattr(wildcard, "catch_all_200", False))  # type: ignore[attr-defined]
+    # Demote accepted hits when wildcard validation failed — inventory only, not confirmed
+    validation_failed = (not bool(getattr(wildcard, "calibration_ok", True)) and bool(wildcard.active)) or (
+        bool(getattr(wildcard, "catch_all_200", False))
+        and int(getattr(stats, "enum_rejected_wildcard", 0) or 0) == 0
+        and int(stats.enum_hits or 0) > 0
+    )
+    if validation_failed and getattr(stats, "enum_hit_records", None):
+        demoted = 0
+        for rec in list(stats.enum_hit_records or []):
+            if not isinstance(rec, dict):
+                continue
+            if rec.get("validated"):
+                demoted += 1
+            rec["validated"] = False
+            rec["classification"] = CLASS_UNVERIFIED
+            rec["acceptance_reason"] = "unverified_catch_all_or_failed_calibration"
+        stats.enum_unverified_candidate_hits = demoted or int(stats.enum_hits or 0)  # type: ignore[attr-defined]
+        output_callback(
+            f"Enum validation unsuccessful — {stats.enum_unverified_candidate_hits} hit(s) "
+            "marked unverified candidates (not confirmed hidden resources)."
+        )
     output_callback(f"Directory enumeration finished — {stats.enum_hits} validated hit(s).")
     output_callback(conclusion)
     return found_set

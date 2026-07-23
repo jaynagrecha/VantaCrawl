@@ -51,6 +51,21 @@ def test_cors_assess_requires_proof():
     assert bare.validation == "unverified"
     assert bare.severity == "info"
 
+    # Non-empty HTTP exchange WITHOUT ACAO/ACAC must not confirm
+    hollow = {
+        "request": "GET / HTTP/1.1\nHost: lab.example\nOrigin: https://evil.example",
+        "response": "HTTP/1.1 200\nContent-Type: text/html",
+    }
+    hollow_result = assess_cors(
+        "CORS reflects arbitrary Origin with credentials",
+        "high",
+        url="https://lab.example/account",
+        cookies=[{"name": "session", "host": "lab.example", "role": "auth_session"}],
+        proof=hollow,
+    )
+    assert hollow_result.validation == "unverified"
+    assert hollow_result.severity == "info"
+
     proof = {
         "request": "GET / HTTP/1.1\nHost: lab.example\nOrigin: https://evil.example",
         "response": (
