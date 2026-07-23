@@ -387,15 +387,17 @@ a.btn:hover { text-decoration: none; }
   50% { opacity: 1; }
 }
 .stats.cockpit {
-  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
 }
 .stat-warn .stat-num { color: var(--danger); }
 .stat-caution .stat-num { color: var(--warn); }
 .stat-ok .stat-num { color: #7dffa8; }
-.stat-phase .stat-num { font-size: 1.05rem; }
+.stat-phase .stat-num {
+  font-size: clamp(.85rem, 2vw, 1.05rem);
+}
 .stat-text .stat-num {
-  font-size: .82rem; font-weight: 700; line-height: 1.25;
-  word-break: break-word; padding: 0 .2rem;
+  font-size: clamp(.68rem, 1.7vw, .82rem); font-weight: 700; line-height: 1.25;
+  overflow-wrap: anywhere; word-break: break-word; padding: 0 .15rem;
 }
 
 @keyframes progress-shine {
@@ -408,10 +410,21 @@ a.btn:hover { text-decoration: none; }
 }
 .stat {
   text-align: center; background: var(--bg-soft); border: 1px solid var(--line);
-  border-radius: 12px; padding: .75rem .4rem;
+  border-radius: 12px; padding: .7rem .55rem;
+  min-width: 0; /* allow grid shrink without spilling */
+  overflow: hidden;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .2rem;
 }
-.stat-num { font-size: 1.35rem; font-weight: 800; color: var(--accent); }
-.stat-label { font-size: .72rem; color: var(--muted); }
+.stat-num {
+  font-size: clamp(.78rem, 2.2vw, 1.35rem); font-weight: 800; color: var(--accent);
+  max-width: 100%; line-height: 1.2;
+  overflow-wrap: anywhere; word-break: break-word;
+}
+.stat-label {
+  font-size: .72rem; color: var(--muted);
+  max-width: 100%; line-height: 1.2;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 .log {
   background: #070b14; border: 1px solid var(--line); border-radius: 12px;
@@ -922,10 +935,17 @@ a.btn:hover { text-decoration: none; }
 
   .stats-tri { grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: .55rem; }
   .stats.cockpit { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .stat { padding: .8rem .35rem; }
-  .stat-num { font-size: 1.25rem; }
+  .stat { padding: .75rem .5rem; min-width: 0; overflow: hidden; }
+  .stat-num {
+    font-size: clamp(.72rem, 3.6vw, 1.15rem);
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
   .stat-label { font-size: .74rem; }
-  .stat-phase .stat-num, .stat-text .stat-num { font-size: .78rem; }
+  .stat-phase .stat-num, .stat-text .stat-num {
+    font-size: clamp(.66rem, 3.2vw, .78rem);
+  }
 
   .page-head { flex-direction: column; }
   .page-actions { width: 100%; }
