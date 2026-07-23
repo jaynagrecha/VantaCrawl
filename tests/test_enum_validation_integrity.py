@@ -269,6 +269,54 @@ def test_stealth_profile_caps_concurrency():
     assert cfg.enum_concurrency <= 3
 
 
+def test_probe_candidate_returns_retry_after_on_429():
+    import httpx
+    from enum_engine import probe_candidate
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, headers={"Retry-After": "7"}, text="slow down")
+
+    transport = httpx.MockTransport(handler)
+
+    async def _run():
+        async with httpx.AsyncClient(transport=transport) as client:
+            return await probe_candidate(client, "https://example.com/x", use_head=False)
+
+    result = asyncio.run(_run())
+    assert result[0] == 429
+    assert result[-1] == "7"
+
+
+def test_detailed_report_separates_http_attempts():
+    from detailed_report import build_report_model, render_detailed_text
+
+    stats = CrawlStats()
+    stats.enum_base_words_loaded = 100
+    stats.enum_base_words_processed = 100
+    stats.enum_words_total = 100
+    stats.enum_words_tested = 100
+    stats.enum_http_attempts = 1500
+    stats.enum_rate_limited = 12
+    stats.enum_rejected_wildcard = 40
+    stats.enum_hits = 2
+    stats.enum_hit_urls = ["https://example.com/admin", "https://example.com/login"]
+    stats.enum_status_codes.update({404: 1400, 200: 50, 429: 12})
+    stats.enum_validation_conclusion = "Directory enumeration executed 1,500 HTTP candidate requests."
+    stats.enum_requested_depth = 2
+    stats.enum_effective_depth = 0
+    stats.enum_depth_reason = "flat enumeration enabled"
+    stats.enum_started_at = 1.0
+    model = build_report_model(stats, "https://example.com/")
+    text = render_detailed_text(model)
+    assert "Base words processed" in text
+    assert "HTTP attempts" in text
+    assert "1,500" in text
+    assert "Rate-limited/unknown" in text
+    assert "flat enumeration enabled" in text
+    assert "Wordlist progress: 1,500 / 100" not in text  # never mix HTTP into word progress ratio
+
+
+
 def test_broken_link_skips_429():
     from crawl_orchestrator import _check_broken_links
 

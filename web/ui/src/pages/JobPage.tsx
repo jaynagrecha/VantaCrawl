@@ -386,8 +386,10 @@ export default function JobPage() {
         )}
         {(() => {
           const pct = Math.max(0, Math.min(100, Number(progress.progress_pct) || 0));
-          const wordsDone = Number(progress.enum_words_tested) || 0;
-          const wordsTotal = Number(progress.enum_words_total) || 0;
+          const wordsDone = Number(progress.enum_base_words_processed ?? progress.enum_words_tested) || 0;
+          const wordsTotal = Number(progress.enum_base_words_loaded ?? progress.enum_words_total) || 0;
+          const httpAttempts = Number(progress.enum_http_attempts) || 0;
+          const rateLimited = Number(progress.enum_rate_limited) || 0;
           const pagesEst = Number(progress.pages_estimate) || 0;
           const pages = Number(progress.pages_crawled) || 0;
           const active = ["queued", "running", "paused", "stopping"].includes(job.status);
@@ -414,21 +416,21 @@ export default function JobPage() {
                   .toLowerCase()
                   .includes("subdomain")));
           const hitsLabel = isApiRecon ? "API hits" : isSubRecon ? "Sub hits" : "Enum hits";
-          const wordsLabel = isApiRecon ? "API probes" : isSubRecon ? "Subdomains" : "Enum words";
+          const wordsLabel = isApiRecon ? "API probes" : isSubRecon ? "Subdomains" : "Base words";
           const probingValue =
             isApiRecon || isSubRecon
               ? String(progress.enum_current_path || progress.enum_current_word || "—")
-              : String(progress.enum_current_word || "—");
+              : String(progress.enum_current_word || "").trim() || "—";
           const wordsHint = isApiRecon
             ? probingLine || "Active API path probes completed / planned"
             : isSubRecon
               ? probingLine || "Subdomain hosts probed / planned"
-              : probingLine || "Words tried from the directory wordlist";
+              : "Base wordlist entries processed — not HTTP attempts or extension variants";
           const probingHint = isApiRecon
             ? probingLine || "Current API path under test (including during WAF backoff)"
             : isSubRecon
               ? probingLine || "Current subdomain host under test"
-              : probingLine || "Current folder/file name under test";
+              : probingLine || "Current folder/file name under test (clears when enum finishes)";
           const etaHint =
             phaseKey === "enum"
               ? "Based on enum-phase speed (not whole-job time). Hidden until warm-up."
@@ -457,6 +459,18 @@ export default function JobPage() {
                   ? `${wordsHint} · Exact: ${wordsDone.toLocaleString()}/${wordsTotal.toLocaleString()}`
                   : wordsHint,
             },
+            ...(phaseKey === "enum" || httpAttempts > 0
+              ? [
+                  {
+                    label: "HTTP tries",
+                    value: compactCount(httpAttempts),
+                    hint:
+                      rateLimited > 0
+                        ? `Enum HTTP attempts (not “words”). Rate-limited: ${rateLimited.toLocaleString()}`
+                        : "Enum HTTP attempts generated from base words + variants (not the wordlist size)",
+                  },
+                ]
+              : []),
             {
               label: "ETA",
               value: formatEta(progress.eta_seconds),

@@ -478,13 +478,20 @@ async def probe_candidate(
     bypass_forbidden: bool = True,
     follow_redirects: bool = True,
     max_redirect_hops: int = 5,
-) -> Tuple[int, int, str, bytes, str, int, List[str], str, float]:
+) -> Tuple[int, int, str, bytes, str, int, List[str], str, float, str]:
     """
     Probe a URL. Returns
-    (status, length, body_hash, body, final_url, redirect_hops, redirect_chain, content_type, duration_ms).
+    (status, length, body_hash, body, final_url, redirect_hops, redirect_chain, content_type, duration_ms, retry_after).
     """
     body = b""
     t0 = time.perf_counter()
+
+    def _retry_after(resp) -> str:
+        try:
+            return str(resp.headers.get("Retry-After") or resp.headers.get("retry-after") or "").strip()
+        except Exception:
+            return ""
+
     try:
         if use_head:
             response = await client.head(url, timeout=6, follow_redirects=False)
@@ -505,7 +512,21 @@ async def probe_candidate(
                     result = await follow_same_host_redirects(
                         client, url, max_hops=max_redirect_hops, timeout=8
                     )
-                    return (*result, (time.perf_counter() - t0) * 1000.0)
+                    return (*result, (time.perf_counter() - t0) * 1000.0, "")
+                if status == 429:
+                    # Honor HEAD 429 without forcing a GET
+                    return (
+                        status,
+                        response_length(response),
+                        "head-only",
+                        b"",
+                        url,
+                        0,
+                        [url],
+                        (response.headers.get("content-type") or "")[:120],
+                        (time.perf_counter() - t0) * 1000.0,
+                        _retry_after(response),
+                    )
                 response = await client.get(url, timeout=8, follow_redirects=False)
                 body = response.content or b""
                 status = response.status_code
@@ -514,7 +535,7 @@ async def probe_candidate(
                     result = await follow_same_host_redirects(
                         client, url, max_hops=max_redirect_hops, timeout=8
                     )
-                    return (*result, (time.perf_counter() - t0) * 1000.0)
+                    return (*result, (time.perf_counter() - t0) * 1000.0, "")
                 return (
                     status,
                     len(body) or response_length(response),
@@ -525,6 +546,7 @@ async def probe_candidate(
                     [url],
                     ctype,
                     (time.perf_counter() - t0) * 1000.0,
+                    _retry_after(response),
                 )
             return (
                 status,
@@ -536,6 +558,7 @@ async def probe_candidate(
                 [url],
                 (response.headers.get("content-type") or "")[:120],
                 (time.perf_counter() - t0) * 1000.0,
+                _retry_after(response),
             )
         if follow_redirects:
             first = await client.get(url, timeout=8, follow_redirects=False)
@@ -543,7 +566,7 @@ async def probe_candidate(
                 result = await follow_same_host_redirects(
                     client, url, max_hops=max_redirect_hops, timeout=8
                 )
-                return (*result, (time.perf_counter() - t0) * 1000.0)
+                return (*result, (time.perf_counter() - t0) * 1000.0, "")
             body = first.content or b""
             return (
                 first.status_code,
@@ -555,6 +578,7 @@ async def probe_candidate(
                 [url],
                 (first.headers.get("content-type") or "")[:120],
                 (time.perf_counter() - t0) * 1000.0,
+                _retry_after(first),
             )
         response = await client.get(url, timeout=8, follow_redirects=False)
         body = response.content or b""
@@ -568,9 +592,10 @@ async def probe_candidate(
             [url],
             (response.headers.get("content-type") or "")[:120],
             (time.perf_counter() - t0) * 1000.0,
+            _retry_after(response),
         )
     except httpx.HTTPError:
-        return 0, 0, "", b"", url, 0, [url], "", (time.perf_counter() - t0) * 1000.0
+        return 0, 0, "", b"", url, 0, [url], "", (time.perf_counter() - t0) * 1000.0, ""
 
 
 def is_probe_hit(
@@ -947,6 +972,7 @@ async def run_pro_directory_enum(
             chain: List[str] = [test_url]
             ctype = ""
             duration_ms = 0.0
+            retry_after = ""
             for attempt in range(max_attempts):
                 (
                     status,
@@ -958,6 +984,7 @@ async def run_pro_directory_enum(
                     chain,
                     ctype,
                     duration_ms,
+                    retry_after,
                 ) = await probe_candidate(
                     client,
                     test_url,
@@ -1000,27 +1027,9 @@ async def run_pro_directory_enum(
                 concurrency_state["clean_streak"] = 0
                 if is_stealth or concurrency_state["n"] > concurrency_state["min"]:
                     concurrency_state["n"] = concurrency_state["min"]
-                await _honor_retry_after("2")
+                await _honor_retry_after(retry_after or "2")
                 if attempt + 1 >= max_attempts:
                     stats.enum_inconclusive = int(getattr(stats, "enum_inconclusive", 0) or 0) + 1  # type: ignore[attr-defined]
-                    # Do not count as tested coverage hit/miss — leave inconclusive
-                    probe_429 = ProbeResult(
-                        test_url,
-                        variant,
-                        429,
-                        length,
-                        body_hash,
-                        list(path_segments),
-                        final_url=final_url or test_url,
-                        redirect_hops=hops,
-                        body=b"",
-                        content_type=ctype,
-                        classification=CLASS_INCONCLUSIVE_429,
-                        validated=False,
-                        inconclusive=True,
-                        acceptance_reason="retries_exhausted_rate_limited",
-                        base_word=word,
-                    )
                     return None  # inconclusive — not a hit, not a negative for coverage stats
 
             retained = body or b""

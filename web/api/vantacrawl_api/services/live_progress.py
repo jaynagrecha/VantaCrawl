@@ -450,6 +450,21 @@ def build_live_progress(
         "enum_hits": enum_hits,
         "enum_words_tested": enum_done,
         "enum_words_total": enum_total,
+        "enum_base_words_loaded": int(
+            snap.get("enum_base_words_loaded") or prev.get("enum_base_words_loaded") or enum_total or 0
+        ),
+        "enum_base_words_processed": int(
+            snap.get("enum_base_words_processed") or prev.get("enum_base_words_processed") or enum_done or 0
+        ),
+        "enum_http_attempts": int(
+            snap.get("enum_http_attempts") or prev.get("enum_http_attempts") or 0
+        ),
+        "enum_rate_limited": int(
+            snap.get("enum_rate_limited") or prev.get("enum_rate_limited") or 0
+        ),
+        "enum_rejected_wildcard": int(
+            snap.get("enum_rejected_wildcard") or prev.get("enum_rejected_wildcard") or 0
+        ),
         "enum_probing": enum_probing,
         "enum_current_word": enum_current_word,
         "enum_current_path": enum_current_path,
