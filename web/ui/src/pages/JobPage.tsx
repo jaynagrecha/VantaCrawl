@@ -50,6 +50,23 @@ function tileValue(value: unknown, fallback = "0"): string {
   return String(value);
 }
 
+/** Compact counts for cockpit tiles so "18437/14680" does not blow the box. */
+function compactCount(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "0";
+  if (n >= 1_000_000) {
+    const v = n / 1_000_000;
+    return `${v >= 10 ? Math.round(v) : v.toFixed(1).replace(/\.0$/, "")}M`;
+  }
+  if (n >= 10_000) return `${Math.round(n / 1000)}k`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  return String(Math.floor(n));
+}
+
+function formatCountRatio(done: number, total: number): string {
+  if (!(total > 0)) return compactCount(done);
+  return `${compactCount(done)}/${compactCount(total)}`;
+}
+
 /** API stores UTC without timezone; browsers would otherwise treat that as local (IST +5:30 → inflated duration). */
 function parseUtcMs(raw: string): number {
   const s = raw.trim();
@@ -433,9 +450,12 @@ export default function JobPage() {
               label: wordsLabel,
               value:
                 wordsTotal > 0
-                  ? `${wordsDone.toLocaleString()}/${wordsTotal.toLocaleString()}`
-                  : tileValue(wordsDone),
-              hint: wordsHint,
+                  ? formatCountRatio(wordsDone, wordsTotal)
+                  : compactCount(wordsDone),
+              hint:
+                wordsTotal > 0
+                  ? `${wordsHint} · Exact: ${wordsDone.toLocaleString()}/${wordsTotal.toLocaleString()}`
+                  : wordsHint,
             },
             {
               label: "ETA",
@@ -489,7 +509,8 @@ export default function JobPage() {
                     ? `Detected: ${(progress.protections as string[]).join(", ")}`
                     : "Bot/WAF fingerprints seen so far",
               tone: "text",
-            },            { label: "Mode", value: job.mode, tone: "text" },
+            },
+            { label: "Mode", value: job.mode.replace(/_/g, " "), tone: "text" },
           ];
           const journal = Array.isArray(progress.block_journal) ? progress.block_journal : [];
           const protectionsDetail = Array.isArray(progress.protections_detail)
