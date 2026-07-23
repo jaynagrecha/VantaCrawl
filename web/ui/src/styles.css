@@ -52,7 +52,7 @@ button, input, select, textarea { font: inherit; }
 }
 .report-actions { margin-bottom: .75rem; }
 .table-url {
-  max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .job-cards { display: none; list-style: none; margin: 0; padding: 0; gap: .75rem; }
 .job-cards > li { margin: 0; }
@@ -83,41 +83,57 @@ button, input, select, textarea { font: inherit; }
   overflow-x: auto;
   overflow-y: visible;
 }
+/* Auto layout + min-widths: Target stays readable; Actions stay visible; scroll if needed */
 .dash-jobs-card .table {
-  width: 100%;
-  min-width: 640px;
-  table-layout: fixed;
+  width: max-content;
+  min-width: 100%;
+  table-layout: auto;
+  border-collapse: collapse;
 }
 .dash-jobs-card .table th:nth-child(1),
-.dash-jobs-card .table td:nth-child(1) { width: 20%; }
+.dash-jobs-card .table td:nth-child(1) {
+  min-width: 11rem;
+  max-width: 15rem;
+}
 .dash-jobs-card .table th:nth-child(2),
-.dash-jobs-card .table td:nth-child(2) { width: 20%; }
+.dash-jobs-card .table td:nth-child(2) {
+  min-width: 18rem;
+  max-width: 26rem;
+}
 .dash-jobs-card .table th:nth-child(3),
-.dash-jobs-card .table td:nth-child(3) { width: 22%; }
+.dash-jobs-card .table td:nth-child(3) {
+  min-width: 8.5rem;
+}
 .dash-jobs-card .table th:nth-child(4),
-.dash-jobs-card .table td:nth-child(4) { width: 12%; }
-.dash-jobs-card .table th:nth-child(5),
-.dash-jobs-card .table td:nth-child(5) {
-  width: 26%;
-  min-width: 9.5rem;
-  text-align: right;
-  /* Keep action buttons from collapsing out of view */
+.dash-jobs-card .table td:nth-child(4) {
+  min-width: 5.5rem;
   white-space: nowrap;
 }
-.dash-jobs-card .table td:nth-child(1),
-.dash-jobs-card .table td:nth-child(2) {
+.dash-jobs-card .table th:nth-child(5),
+.dash-jobs-card .table td:nth-child(5) {
+  /* Shrink-wrap to Open/Delete — do not steal Target width */
+  width: 1%;
+  min-width: 9.5rem;
+  text-align: right;
+  white-space: nowrap;
+}
+.dash-jobs-card .table td:nth-child(1) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .dash-jobs-card .table-url {
-  max-width: none;
   display: block;
+  max-width: 26rem;
+  min-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .dash-jobs-card .status-cell {
   flex-wrap: wrap;
   white-space: normal;
-  max-width: 100%;
+  max-width: 12rem;
 }
 a.job-card, .job-card {
   border: 1px solid var(--line); border-radius: 16px; background: var(--bg-soft);
