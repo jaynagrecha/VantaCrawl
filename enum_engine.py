@@ -828,6 +828,19 @@ async def run_pro_directory_enum(
     provenance = HitProvenanceTracker(list(discovered or set()) + list(seed_urls or []))
     if hasattr(stats, "discovered_urls"):
         provenance.note_known(list(stats.discovered_urls or []))
+    # Seed content groups from crawl page bodies so enum fallbacks collide early
+    if hasattr(stats, "page_content_by_hash"):
+        for norm_h, first_url in list((stats.page_content_by_hash or {}).items()):
+            provenance.note_content(first_url, norm_h)
+    for row in list(getattr(stats, "request_ledger", []) or []):
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("phase") or "") not in ("crawl", "page"):
+            continue
+        nh = str(row.get("normalized_hash") or "").strip()
+        u = str(row.get("url") or row.get("final_url") or "").strip()
+        if nh and u:
+            provenance.note_content(u, nh)
 
     # Adaptive concurrency (stealth-aware)
     is_stealth = str(getattr(config, "profile", "") or "").lower() == "stealth" or str(
@@ -915,6 +928,8 @@ async def run_pro_directory_enum(
         log_to_file(config.output_file_path, probe.url)
         discovered.add(probe.url)
         stats.discovered_urls.add(probe.url)
+        if hasattr(stats, "note_url_kind"):
+            stats.note_url_kind(probe.url, "enum")
         if config.queue_enum_for_crawl:
             enqueue_discovered_url(
                 probe.url,

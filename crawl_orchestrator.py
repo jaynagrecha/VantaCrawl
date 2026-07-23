@@ -293,15 +293,26 @@ async def run_full_crawl_async(
         data = load_checkpoint(config.checkpoint_file)
         if data and data.get("start_url") == config.start_url:
             visited, discovered, queue, link_depths = restore_sets(data)
+            # Keep pages_crawled aligned with visited inventory after resume
+            stats.pages_crawled = max(int(stats.pages_crawled or 0), len(visited))
+            for u in discovered:
+                if hasattr(stats, "note_url_kind"):
+                    stats.note_url_kind(u, "crawl")
             output_callback(f"Resumed checkpoint: {len(queue)} queued, {len(visited)} visited.")
         else:
             discovered, queue = init_crawl_state(
                 config.start_url, config.restrict_domain, config.ignore_robots, extra_seeds
             )
+            if hasattr(stats, "note_url_kind"):
+                for u in discovered:
+                    stats.note_url_kind(u, "seed")
     else:
         discovered, queue = init_crawl_state(
             config.start_url, config.restrict_domain, config.ignore_robots, extra_seeds
         )
+        if hasattr(stats, "note_url_kind"):
+            for u in discovered:
+                stats.note_url_kind(u, "seed")
 
     use_priority = config.priority_html_first
     if use_priority:
@@ -620,6 +631,19 @@ async def run_full_crawl_async(
                     status_code_t = 0
                 if status_code_t:
                     stats.record_status(status_code_t, enum=False)
+                    raw_h = ""
+                    norm_h = ""
+                    try:
+                        if body:
+                            from enum_validation import normalize_body_for_hash, raw_body_hash
+
+                            raw_h = raw_body_hash(body)
+                            norm_h = normalize_body_for_hash(body)
+                            if hasattr(stats, "note_page_content"):
+                                stats.note_page_content(current_url, norm_h)
+                    except Exception:
+                        raw_h = ""
+                        norm_h = ""
                     try:
                         stats.record_request(
                             phase="crawl",
@@ -630,10 +654,15 @@ async def run_full_crawl_async(
                             final_url=current_url,
                             response_type=(content_type or "")[:80],
                             bytes_=len(body) if body else 0,
+                            content_hash=raw_h,
+                            raw_hash=raw_h,
+                            normalized_hash=norm_h,
                             outcome="ok" if status_code_t < 400 else "http_error",
                         )
                     except Exception:
                         pass
+                    if hasattr(stats, "note_url_kind"):
+                        stats.note_url_kind(current_url, "crawl")
                 if body:
                     stats.bytes_downloaded += len(body)
 

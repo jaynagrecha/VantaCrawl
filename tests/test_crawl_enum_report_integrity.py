@@ -217,6 +217,41 @@ def test_sqlite_expanded_tables(tmp_path: Path):
     conn.close()
 
 
+def test_sqlite_url_kinds_not_only_discovered(tmp_path: Path):
+    stats = CrawlStats()
+    stats.discovered_urls.add("https://example.com/")
+    stats.discovered_urls.add("https://example.com/about")
+    stats.discovered_urls.add("https://example.com/admin")
+    stats.note_url_kind("https://example.com/", "seed")
+    stats.note_url_kind("https://example.com/about", "crawl")
+    stats.note_url_kind("https://example.com/admin", "enum")
+    stats.enum_hit_urls.append("https://example.com/admin")
+    writer = ReportWriter(str(tmp_path), "https://example.com/", title="kinds")
+    db_path = writer.write_sqlite(stats)
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    rows = dict(conn.execute("SELECT url, kind FROM url").fetchall())
+    assert rows["https://example.com/"] == "seed"
+    assert rows["https://example.com/about"] == "crawl"
+    assert rows["https://example.com/admin"] == "enum"
+    conn.close()
+
+
+def test_found_urls_casefold_unique(tmp_path: Path):
+    from crawler_common import log_to_file
+
+    path = str(tmp_path / "found_urls.txt")
+    log_to_file(path, "https://example.com/About")
+    log_to_file(path, "https://example.com/about")
+    log_to_file(path, "https://example.com/About/")
+    log_to_file(path, "https://example.com/other")
+    lines = Path(path).read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 2
+    assert lines[0] == "https://example.com/About"
+    assert lines[1] == "https://example.com/other"
+
+
 def test_config_parallel_enum_defaults():
     cfg = CrawlConfig(start_url="https://example.com/")
     assert cfg.enum_parallel_with_crawl is True

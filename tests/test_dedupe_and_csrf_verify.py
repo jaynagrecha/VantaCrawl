@@ -98,6 +98,30 @@ def test_report_groups_same_evidence_once():
     }
 
 
+def test_report_groups_csrf_by_evidence():
+    ev = "form POST /checkout missing anti-forgery token"
+    findings = [
+        {
+            "category": "csrf",
+            "severity": "medium",
+            "url": "https://shop.example/checkout",
+            "detail": "CSRF token missing",
+            "evidence": ev,
+        },
+        {
+            "category": "csrf",
+            "severity": "medium",
+            "url": "https://shop.example/cart/checkout",
+            "detail": "CSRF token missing",
+            "evidence": ev,
+        },
+    ]
+    groups = group_findings_for_report(findings)
+    csrf_groups = [g for g in groups if g["category"] == "csrf"]
+    assert len(csrf_groups) == 1
+    assert csrf_groups[0]["count"] == 2
+
+
 def test_facebook_pixel_csrf_suppressed():
     forms = [
         {

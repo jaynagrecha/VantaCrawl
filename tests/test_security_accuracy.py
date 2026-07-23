@@ -102,8 +102,30 @@ def test_traversal_file_passwd_detected():
 
 def test_record_finding_does_not_host_dedupe_non_headers():
     stats = CrawlStats()
+    # Without evidence, XSS stays per-URL (path-specific reflection context)
     stats.record_finding("xss", "medium", "https://a/x?q=<b>", "reflected")
     stats.record_finding("xss", "medium", "https://a/y?q=<b>", "reflected")
+    assert len(stats.findings) == 2
+
+
+def test_record_finding_dedupes_xss_csrf_by_evidence():
+    stats = CrawlStats()
+    ev = "reflected_param[q]: <script>x</script>"
+    stats.record_finding(
+        "xss", "medium", "https://a.example/x?q=1", "reflected XSS", evidence=ev
+    )
+    stats.record_finding(
+        "xss", "medium", "https://a.example/y?q=1", "reflected XSS", evidence=ev
+    )
+    assert len(stats.findings) == 1
+    assert stats.finding_repeat_suppressed == 1
+    csrf_ev = "missing csrf token on POST /checkout"
+    stats.record_finding(
+        "csrf", "medium", "https://a.example/checkout", "CSRF", evidence=csrf_ev
+    )
+    stats.record_finding(
+        "csrf", "medium", "https://a.example/cart/checkout", "CSRF", evidence=csrf_ev
+    )
     assert len(stats.findings) == 2
 
 
