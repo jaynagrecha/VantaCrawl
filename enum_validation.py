@@ -35,6 +35,9 @@ ALL_SHAPES = (
 
 # Classifications for accepted / rejected candidates
 CLASS_CONFIRMED = "confirmed_unique_resource"
+CLASS_PROVISIONAL = "provisional_cluster_representative"
+CLASS_QUARANTINED = "quarantined_probable_fallback"
+CLASS_REVOKED = "revoked_fallback_cluster_anchor"
 CLASS_WILDCARD = "wildcard_response"
 CLASS_SOFT_404 = "soft_404"
 CLASS_CASE_VARIANT = "case_variant"
@@ -44,8 +47,14 @@ CLASS_ALREADY_KNOWN = "already_known"
 CLASS_REDIRECT_EXISTING = "redirected_existing_route"
 CLASS_INCONCLUSIVE_429 = "inconclusive_rate_limited"
 CLASS_BLOCKED_INCONCLUSIVE = "blocked_inconclusive"
+CLASS_EDGE_CHECKPOINT = "edge_checkpoint"
 CLASS_REJECTED_STATUS = "rejected_status"
 CLASS_UNVERIFIED = "unverified_candidate"
+
+# Cluster-anchor revocation: ≥3 unrelated paths + ≥2 extensions ⇒ fallback/interstitial
+CLUSTER_REVOKE_MIN_MEMBERS = 3
+CLUSTER_REVOKE_MIN_EXTENSIONS = 2
+CLUSTER_QUARANTINE_MIN_MEMBERS = 3
 
 # Stems that commonly explode into false multi-extension "hits"
 _MULTI_EXT_STEMS = frozenset(
@@ -359,6 +368,84 @@ def is_dot_prefixed_path(url_or_path: str) -> bool:
     return bool(leaf.startswith(".") and len(leaf) > 1)
 
 
+def path_leaf_name(url_or_path: str) -> str:
+    path = urlparse(url_or_path).path if "://" in (url_or_path or "") else (url_or_path or "")
+    path = path.replace("\\", "/")
+    segs = [s for s in path.strip("/").split("/") if s]
+    return segs[-1] if segs else ""
+
+
+def path_stem_and_ext(url_or_path: str) -> Tuple[str, str]:
+    leaf = path_leaf_name(url_or_path)
+    if not leaf:
+        return "", ""
+    if leaf.startswith(".") and "." not in leaf[1:]:
+        return leaf.casefold(), ""
+    if "." not in leaf or leaf.startswith("."):
+        # .env / .git — treat whole leaf as stem, no extension family
+        if leaf.startswith("."):
+            return leaf.casefold(), "dotfile"
+        return leaf.casefold(), ""
+    stem, ext = leaf.rsplit(".", 1)
+    return stem.casefold(), ext.casefold()
+
+
+@dataclass
+class ContentCluster:
+    """Fingerprint cluster for content-equivalent enum responses."""
+
+    key: str
+    anchor_url: str
+    members: List[str] = field(default_factory=list)
+    stems: Set[str] = field(default_factory=set)
+    extensions: Set[str] = field(default_factory=set)
+    classification: str = CLASS_PROVISIONAL
+    revoked: bool = False
+    edge_signal: str = ""
+
+    def add(self, url: str) -> None:
+        if url not in self.members:
+            self.members.append(url)
+        stem, ext = path_stem_and_ext(url)
+        if stem:
+            self.stems.add(stem)
+        if ext:
+            self.extensions.add(ext)
+
+    @property
+    def unrelated_path_count(self) -> int:
+        return len(self.stems)
+
+    def should_revoke(self) -> bool:
+        if self.revoked:
+            return False
+        return (
+            len(self.members) >= CLUSTER_REVOKE_MIN_MEMBERS
+            and self.unrelated_path_count >= CLUSTER_REVOKE_MIN_MEMBERS
+            and len(self.extensions) >= CLUSTER_REVOKE_MIN_EXTENSIONS
+        )
+
+    def should_quarantine(self) -> bool:
+        if self.revoked:
+            return False
+        return (
+            len(self.members) >= CLUSTER_QUARANTINE_MIN_MEMBERS
+            and self.unrelated_path_count >= CLUSTER_QUARANTINE_MIN_MEMBERS
+        )
+
+
+@dataclass
+class RevokeEvent:
+    """Retroactive invalidation of a provisional cluster anchor."""
+
+    url: str
+    reason: str
+    cluster_key: str
+    cluster_size: int
+    classification: str = CLASS_REVOKED
+    members: List[str] = field(default_factory=list)
+
+
 @dataclass
 class EnumHitRecord:
     """Rich enumeration result persisted to SQLite / reports."""
@@ -380,6 +467,8 @@ class EnumHitRecord:
     case_group: str = ""
     content_group: str = ""
     validated: bool = False
+    state: str = ""  # provisional | quarantined | confirmed | revoked | blocked
+    revoke_events: List[RevokeEvent] = field(default_factory=list)
 
     def to_evidence_json(self) -> str:
         import json
@@ -401,6 +490,11 @@ class EnumHitRecord:
             "case_group": self.case_group,
             "content_group": self.content_group,
             "validated": self.validated,
+            "state": self.state or (
+                "confirmed"
+                if self.validated
+                else ("provisional" if self.classification == CLASS_PROVISIONAL else "rejected")
+            ),
             "fingerprint": self.fingerprint.to_dict() if self.fingerprint else {},
         }
         return json.dumps(payload, ensure_ascii=False)
@@ -439,6 +533,10 @@ def extension_family_key(url_or_path: str) -> str:
 class HitProvenanceTracker:
     """Tracks already-known URLs, case groups, content-equivalent and extension-family dups.
 
+    First sight of a content fingerprint is *provisional* — never auto-confirmed.
+    When a cluster gathers ≥3 unrelated paths with multiple extensions, the anchor
+    is retroactively revoked (first-response poisoning / cluster-anchor fix).
+
     Thread-safe: classify_and_record / note_* are safe under concurrent enum workers.
     """
 
@@ -451,6 +549,10 @@ class HitProvenanceTracker:
         self.accepted_casefold: Dict[str, str] = {}  # casefold -> first url
         self.content_groups: Dict[str, str] = {}  # norm hash -> first url
         self.extension_families: Dict[str, str] = {}  # family key -> first url
+        self.clusters: Dict[str, ContentCluster] = {}
+        self.provisional_urls: Set[str] = set()
+        self.revoked_urls: Set[str] = set()
+        self.pending_revokes: List[RevokeEvent] = []
         self.records: List[EnumHitRecord] = []
         for u in known_urls or []:
             if not u:
@@ -473,6 +575,114 @@ class HitProvenanceTracker:
             return
         with self._lock:
             self.content_groups.setdefault(key, url)
+            cluster = self.clusters.get(key)
+            if cluster is None:
+                cluster = ContentCluster(key=key, anchor_url=url)
+                self.clusters[key] = cluster
+            cluster.add(url)
+
+    def drain_revokes(self) -> List[RevokeEvent]:
+        with self._lock:
+            out = list(self.pending_revokes)
+            self.pending_revokes.clear()
+            return out
+
+    def promote_survivors(self) -> List[EnumHitRecord]:
+        """End-of-enum: provisional anchors whose clusters stayed unique → confirmed."""
+        promoted: List[EnumHitRecord] = []
+        with self._lock:
+            for rec in self.records:
+                if rec.classification != CLASS_PROVISIONAL or rec.validated:
+                    continue
+                if rec.url in self.revoked_urls:
+                    continue
+                content_key = ""
+                title_l = ""
+                if rec.fingerprint:
+                    content_key = rec.fingerprint.normalized_hash or rec.fingerprint.raw_hash or ""
+                    title_l = (rec.fingerprint.title or "").lower()
+                cluster = self.clusters.get(content_key) if content_key else None
+                # Never confirm checkpoint / interstitial pages
+                if "checkpoint" in title_l or "just a moment" in title_l or "attention required" in title_l:
+                    if cluster is None and content_key:
+                        cluster = ContentCluster(key=content_key, anchor_url=rec.url)
+                        cluster.add(rec.url)
+                        self.clusters[content_key] = cluster
+                    if cluster:
+                        self._revoke_cluster_locked(
+                            cluster,
+                            reason="anchor_of_content_equivalent_fallback_cluster",
+                        )
+                    else:
+                        rec.classification = CLASS_REVOKED
+                        rec.state = "revoked"
+                        rec.validated = False
+                        rec.acceptance_reason = "anchor_of_content_equivalent_fallback_cluster"
+                        self.provisional_urls.discard(rec.url)
+                        self.revoked_urls.add(rec.url)
+                    continue
+                if cluster and (cluster.revoked or cluster.should_revoke() or cluster.should_quarantine()):
+                    if cluster.should_revoke() and not cluster.revoked:
+                        self._revoke_cluster_locked(
+                            cluster,
+                            reason="anchor_of_content_equivalent_fallback_cluster",
+                        )
+                    continue
+                # Unique resource — cluster never attracted unrelated paths
+                if cluster and len(cluster.members) > 1 and cluster.unrelated_path_count >= 2:
+                    # Small multi-path cluster without enough extensions → quarantine
+                    rec.classification = CLASS_QUARANTINED
+                    rec.state = "quarantined"
+                    rec.validated = False
+                    rec.acceptance_reason = "probable_fallback_cluster"
+                    self.provisional_urls.discard(rec.url)
+                    continue
+                rec.classification = CLASS_CONFIRMED
+                rec.state = "confirmed"
+                rec.validated = True
+                rec.acceptance_reason = "confirmed_unique_after_cluster_review"
+                if rec.fingerprint:
+                    rec.fingerprint.acceptance_reason = rec.acceptance_reason
+                self.provisional_urls.discard(rec.url)
+                ck = casefold_path_key(rec.url)
+                self.accepted_casefold.setdefault(ck, rec.url)
+                promoted.append(rec)
+        return promoted
+
+    def _revoke_cluster_locked(self, cluster: ContentCluster, *, reason: str) -> Optional[RevokeEvent]:
+        if cluster.revoked:
+            return None
+        cluster.revoked = True
+        cluster.classification = CLASS_REVOKED
+        anchor = cluster.anchor_url
+        self.revoked_urls.add(anchor)
+        self.provisional_urls.discard(anchor)
+        # Downgrade any provisional/confirmed record for the anchor
+        for rec in self.records:
+            if rec.url == anchor or rec.url in cluster.members:
+                if rec.classification in (CLASS_PROVISIONAL, CLASS_CONFIRMED, CLASS_QUARANTINED):
+                    if rec.url == anchor:
+                        rec.classification = CLASS_REVOKED
+                        rec.state = "revoked"
+                        rec.acceptance_reason = reason
+                        rec.validated = False
+                        if rec.fingerprint:
+                            rec.fingerprint.acceptance_reason = reason
+                    elif rec.classification == CLASS_PROVISIONAL:
+                        rec.classification = CLASS_CONTENT_DUP
+                        rec.state = "rejected"
+                        rec.validated = False
+                        rec.content_group = anchor
+                        rec.acceptance_reason = f"content_equivalent_to:{anchor}"
+        event = RevokeEvent(
+            url=anchor,
+            reason=reason,
+            cluster_key=cluster.key,
+            cluster_size=len(cluster.members),
+            members=list(cluster.members),
+        )
+        self.pending_revokes.append(event)
+        return event
 
     def classify_and_record(
         self,
@@ -489,6 +699,9 @@ class HitProvenanceTracker:
         baseline_used: str,
         soft_404: bool,
         path_shape: str,
+        edge_checkpoint: str = "",
+        rate_limited: bool = False,
+        access_denied: bool = False,
     ) -> EnumHitRecord:
         with self._lock:
             return self._classify_locked(
@@ -504,6 +717,9 @@ class HitProvenanceTracker:
                 baseline_used=baseline_used,
                 soft_404=soft_404,
                 path_shape=path_shape,
+                edge_checkpoint=edge_checkpoint,
+                rate_limited=rate_limited,
+                access_denied=access_denied,
             )
 
     def _classify_locked(
@@ -521,6 +737,9 @@ class HitProvenanceTracker:
         baseline_used: str,
         soft_404: bool,
         path_shape: str,
+        edge_checkpoint: str = "",
+        rate_limited: bool = False,
+        access_denied: bool = False,
     ) -> EnumHitRecord:
         ck = casefold_path_key(url)
         already_exact = url in self.known_exact
@@ -530,20 +749,40 @@ class HitProvenanceTracker:
         fam_key = extension_family_key(url) or extension_family_key(variant)
         case_group = ""
         content_group = ""
-        classification = CLASS_CONFIRMED
-        validated = True
-        reason = "distinct_from_wildcard_baselines"
+        classification = CLASS_PROVISIONAL
+        validated = False
+        state = "provisional"
+        reason = "provisional_awaiting_cluster_review"
+        revoke_events: List[RevokeEvent] = []
 
-        if wildcard_rejected:
+        # Classification order (audit): edge → rate-limit → auth → wildcard/soft-404
+        # → duplicate content → genuine (provisional) candidate.
+        if edge_checkpoint:
+            classification = CLASS_EDGE_CHECKPOINT
+            state = "blocked"
+            validated = False
+            reason = f"edge_checkpoint:{edge_checkpoint}"
+        elif rate_limited or final_status == 429:
+            classification = CLASS_INCONCLUSIVE_429
+            state = "blocked"
+            validated = False
+            reason = "rate_limited"
+        elif access_denied:
+            classification = CLASS_BLOCKED_INCONCLUSIVE
+            state = "blocked"
+            validated = False
+            reason = "access_denied"
+        elif wildcard_rejected:
             classification = CLASS_WILDCARD
+            state = "rejected"
             validated = False
             reason = f"matched_wildcard_shape:{baseline_used or path_shape}"
         elif soft_404:
             classification = CLASS_SOFT_404
+            state = "rejected"
             validated = False
             reason = "soft_404_baseline"
         elif already_exact or already_case:
-            # Already in crawl inventory (exact or case-insensitive) — not a new distinct hit
             if already_exact:
                 classification = CLASS_ALREADY_KNOWN
                 reason = "path_known_before_enum"
@@ -554,20 +793,55 @@ class HitProvenanceTracker:
                     ck,
                 )
                 reason = f"case_variant_of_known:{case_group}"
+            state = "rejected"
             validated = False
-        elif ck in self.accepted_casefold:
+        elif ck in self.accepted_casefold or ck in {casefold_path_key(u) for u in self.provisional_urls}:
             classification = CLASS_CASE_VARIANT
+            state = "rejected"
             validated = False
-            case_group = self.accepted_casefold[ck]
+            case_group = self.accepted_casefold.get(ck) or next(
+                (u for u in self.provisional_urls if casefold_path_key(u) == ck),
+                ck,
+            )
             reason = f"case_variant_of:{case_group}"
         elif content_key and content_key not in ("empty", "head-only") and content_key in self.content_groups:
             classification = CLASS_CONTENT_DUP
+            state = "rejected"
             validated = False
             content_group = self.content_groups[content_key]
             reason = f"content_equivalent_to:{content_group}"
+            cluster = self.clusters.get(content_key)
+            if cluster is None:
+                cluster = ContentCluster(key=content_key, anchor_url=content_group)
+                cluster.add(content_group)
+                self.clusters[content_key] = cluster
+            cluster.add(url)
+            if edge_checkpoint or (fingerprint.title or "").lower().find("checkpoint") >= 0:
+                cluster.edge_signal = edge_checkpoint or "edge_security_checkpoint"
+                event = self._revoke_cluster_locked(
+                    cluster,
+                    reason="anchor_of_content_equivalent_fallback_cluster",
+                )
+                if event:
+                    revoke_events.append(event)
+            elif cluster.should_revoke():
+                event = self._revoke_cluster_locked(
+                    cluster,
+                    reason="anchor_of_content_equivalent_fallback_cluster",
+                )
+                if event:
+                    revoke_events.append(event)
+            elif cluster.should_quarantine():
+                cluster.classification = CLASS_QUARANTINED
+                for prec in self.records:
+                    if prec.url == cluster.anchor_url and prec.classification == CLASS_PROVISIONAL:
+                        prec.classification = CLASS_QUARANTINED
+                        prec.state = "quarantined"
+                        prec.validated = False
+                        prec.acceptance_reason = "probable_fallback_cluster"
         elif fam_key and fam_key in self.extension_families:
-            # index.sql after index.php (etc.) — implausible independent resources
             classification = CLASS_EXTENSION_VARIANT
+            state = "rejected"
             validated = False
             case_group = self.extension_families[fam_key]
             reason = f"extension_variant_of:{case_group}"
@@ -575,20 +849,26 @@ class HitProvenanceTracker:
             final_url in self.known_exact or casefold_path_key(final_url) in self.known_casefold
         ):
             classification = CLASS_REDIRECT_EXISTING
-            # Redirect into known surface — inventory only, do not re-scan as new hit
+            state = "rejected"
             validated = False
             reason = "redirects_to_known_route"
 
-        # Only brand-new distinct resources count as validated hits
-        if classification == CLASS_CONFIRMED:
+        # Brand-new distinct content → provisional only (never auto-confirmed)
+        if classification == CLASS_PROVISIONAL:
             self.accepted_casefold.setdefault(ck, url)
+            self.provisional_urls.add(url)
             if content_key and content_key not in ("empty", "head-only"):
                 self.content_groups.setdefault(content_key, url)
+                cluster = self.clusters.get(content_key)
+                if cluster is None:
+                    cluster = ContentCluster(key=content_key, anchor_url=url)
+                    self.clusters[content_key] = cluster
+                cluster.add(url)
             if fam_key:
                 self.extension_families.setdefault(fam_key, url)
-            validated = True
-        else:
             validated = False
+            state = "provisional"
+            reason = "provisional_awaiting_cluster_review"
 
         fingerprint.acceptance_reason = reason
         fingerprint.baseline_shape = baseline_used
@@ -611,6 +891,8 @@ class HitProvenanceTracker:
             case_group=case_group,
             content_group=content_group,
             validated=validated,
+            state=state,
+            revoke_events=revoke_events,
         )
         self.records.append(rec)
         return rec

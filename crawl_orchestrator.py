@@ -1662,19 +1662,34 @@ async def _run_security_checks(
             login_why = None
         scheme = (urlparse(url).scheme or "").lower()
         header_once = host_key and host_key not in getattr(stats, "_header_hardening_hosts", set())
-        for cat, severity, detail in audit_security_headers(headers or {}, url):
-            d = (detail or "").lower()
-            emit_header = False
-            if "hsts" in d or "strict-transport" in d:
-                emit_header = scheme == "https" and bool(header_once)
-            elif login_why and (
-                "x-frame" in d or "csp" in d or "content-security" in d
-            ):
-                emit_header = bool(header_once) or bool(login_why)
-            if emit_header:
-                if host_key:
-                    stats._header_hardening_hosts.add(host_key)
-                await emit(cat, severity, url, detail)
+        # Never emit application header findings from edge-checkpoint / interstitial bodies
+        try:
+            from edge_checkpoint import is_edge_checkpoint
+
+            _hdr_cp = is_edge_checkpoint(
+                status_code,
+                body_for_gate or body_text or b"",
+                headers or {},
+            )
+        except Exception:
+            _hdr_cp = ""
+        if _hdr_cp:
+            # Checkpoint HSTS/CSP is irrelevant to application posture
+            pass
+        else:
+            for cat, severity, detail in audit_security_headers(headers or {}, url):
+                d = (detail or "").lower()
+                emit_header = False
+                if "hsts" in d or "strict-transport" in d:
+                    emit_header = scheme == "https" and bool(header_once)
+                elif login_why and (
+                    "x-frame" in d or "csp" in d or "content-security" in d
+                ):
+                    emit_header = bool(header_once) or bool(login_why)
+                if emit_header:
+                    if host_key:
+                        stats._header_hardening_hosts.add(host_key)
+                    await emit(cat, severity, url, detail)
     if forms:
         for form in forms:
             if form.get("has_file_input") or form.get("file_fields"):
