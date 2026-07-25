@@ -31,8 +31,14 @@ from crawler_common import (
     looks_like_file_path_segment,
     save_enum_hit_async,
 )
+from edge_checkpoint import (
+    enum_blocked_conclusion,
+    is_edge_checkpoint,
+    uniform_checkpoint_across,
+)
 from enum_validation import (
     ALL_SHAPES,
+    CLASS_BLOCKED_INCONCLUSIVE,
     CLASS_INCONCLUSIVE_429,
     CLASS_UNVERIFIED,
     CLASS_WILDCARD,
@@ -401,6 +407,7 @@ async def detect_wildcard(
     signatures: Set[Tuple[int, int, str]] = set()
     notes: List[str] = []
     shape_bodies: Dict[str, bytes] = {}
+    checkpoint_samples: List[Dict] = []
     any_active = False
     for _round in range(max(1, int(probes) or 1)):
         controls = control_paths_for_base(base_url)
@@ -417,6 +424,39 @@ async def detect_wildcard(
                 from enum_validation import extract_title
 
                 title = extract_title(body)
+                headers = dict(response.headers)
+                cp_signal = is_edge_checkpoint(status, body, headers, title=title)
+                checkpoint_samples.append(
+                    {
+                        "status": status,
+                        "body": body[:4096],
+                        "headers": headers,
+                        "title": title,
+                        "raw_hash": raw,
+                        "normalized_hash": norm,
+                        "shape": shape,
+                        "url": url,
+                    }
+                )
+                # Edge checkpoint is NOT a soft-404 / wildcard calibration hit
+                if cp_signal:
+                    notes.append(f"{shape}: EDGE CHECKPOINT ({cp_signal}) HTTP {status} control={url}")
+                    shapes.setdefault(
+                        shape,
+                        ShapeBaseline(
+                            shape=shape,
+                            active=False,
+                            status=status,
+                            length=length,
+                            raw_hash=raw,
+                            normalized_hash=norm,
+                            content_type=ctype,
+                            title=title,
+                            samples=1,
+                            control_url=url,
+                        ),
+                    )
+                    continue
                 looks_wildcard = status not in (0, 404, 410) or (
                     status in (404, 410) and length > 512 and norm not in ("", "empty")
                 )
@@ -472,14 +512,32 @@ async def detect_wildcard(
             if not base.raw_hash or base.raw_hash in ("", "empty"):
                 calibration_ok = False
 
+    edge_signal = uniform_checkpoint_across(checkpoint_samples)
+    # Also treat majority checkpoint on first-round controls as blocked
+    if not edge_signal and checkpoint_samples:
+        cp_hits = [
+            is_edge_checkpoint(
+                int(s.get("status") or 0),
+                s.get("body") or b"",
+                s.get("headers") or {},
+                title=str(s.get("title") or ""),
+            )
+            for s in checkpoint_samples
+        ]
+        nonzero = [c for c in cp_hits if c]
+        if nonzero and len(nonzero) >= max(2, len(checkpoint_samples) // 2):
+            edge_signal = nonzero[0]
+
     return WildcardProfile(
-        active=any_active,
-        signatures=signatures if any_active else set(),
+        active=any_active and not bool(edge_signal),
+        signatures=signatures if any_active and not edge_signal else set(),
         shapes=shapes,
-        calibration_ok=calibration_ok and bool(shapes),
+        calibration_ok=(calibration_ok and bool(shapes) and not bool(edge_signal)),
         calibration_notes=notes[:40],
-        catch_all_200=catch_all_200,
-        shape_bodies=shape_bodies,
+        catch_all_200=catch_all_200 and not bool(edge_signal),
+        edge_blocked=bool(edge_signal),
+        edge_checkpoint_signal=edge_signal or "",
+        shape_bodies={} if edge_signal else shape_bodies,
     )
 
 
@@ -626,6 +684,22 @@ def is_probe_hit(
     if not probe.status:
         return False
     if probe.status == 429:
+        return False
+    # Edge checkpoint → inconclusive block (NOT soft-404 / wildcard)
+    cp = is_edge_checkpoint(
+        probe.status,
+        getattr(probe, "body", b"") or b"",
+        {"content-type": getattr(probe, "content_type", "") or ""},
+        title=getattr(probe, "title", "") or "",
+    )
+    if cp:
+        probe.classification = CLASS_BLOCKED_INCONCLUSIVE
+        probe.validated = False
+        probe.acceptance_reason = f"edge_checkpoint:{cp}"
+        probe.inconclusive = True
+        if stats is not None:
+            stats.enum_inconclusive = int(getattr(stats, "enum_inconclusive", 0) or 0) + 1  # type: ignore[attr-defined]
+            stats.enum_blocked_checkpoint = int(getattr(stats, "enum_blocked_checkpoint", 0) or 0) + 1  # type: ignore[attr-defined]
         return False
     if not status_filter.allows(probe.status):
         return False
@@ -786,6 +860,38 @@ async def run_pro_directory_enum(
     baseline = await get_async_baseline(client, config.start_url)
     wildcard = await detect_wildcard(client, config.start_url) if config.wildcard_detection else WildcardProfile()
     wildcard_cache = DirectoryWildcardCache()
+    if getattr(wildcard, "edge_blocked", False):
+        signal = str(getattr(wildcard, "edge_checkpoint_signal", "") or "edge_security_checkpoint")
+        conclusion = enum_blocked_conclusion(signal=signal, blocked_count=0, http_attempts=0)
+        stats.enum_wildcard_calibration_ok = False  # type: ignore[attr-defined]
+        stats.enum_wildcard_active = False  # type: ignore[attr-defined]
+        stats.enum_edge_blocked = True  # type: ignore[attr-defined]
+        stats.enum_edge_checkpoint_signal = signal  # type: ignore[attr-defined]
+        stats.enum_validation_conclusion = conclusion  # type: ignore[attr-defined]
+        stats.enum_words_total = 0
+        stats.enum_words_tested = 0
+        stats.enum_base_words_loaded = 0  # type: ignore[attr-defined]
+        stats.enum_base_words_processed = 0  # type: ignore[attr-defined]
+        stats.enum_http_attempts = int(getattr(stats, "enum_http_attempts", 0) or 0)  # type: ignore[attr-defined]
+        stats.enum_inconclusive = int(getattr(stats, "enum_inconclusive", 0) or 0)  # type: ignore[attr-defined]
+        output_callback(
+            f"Directory enum aborted — calibration blocked by {signal.replace('_', ' ')}. "
+            "Further wordlist probes would add no discovery value."
+        )
+        output_callback(conclusion)
+        # Surface to defense inventory when available
+        tracker = getattr(stats, "defense_tracker", None)
+        if tracker is not None and hasattr(tracker, "record_response"):
+            try:
+                tracker.record_response(
+                    config.start_url,
+                    403,
+                    {"server": "Vercel"} if "vercel" in signal else {},
+                    "Vercel Security Checkpoint" if "vercel" in signal else "Edge security checkpoint",
+                )
+            except Exception:
+                pass
+        return set()
     if wildcard.active:
         shape_n = sum(1 for b in (wildcard.shapes or {}).values() if b.active)
         output_callback(
@@ -799,6 +905,7 @@ async def run_pro_directory_enum(
         output_callback("Wildcard calibration — no catch-all responses detected")
     stats.enum_wildcard_calibration_ok = bool(getattr(wildcard, "calibration_ok", False))  # type: ignore[attr-defined]
     stats.enum_wildcard_active = bool(wildcard.active)  # type: ignore[attr-defined]
+    stats.enum_edge_blocked = False  # type: ignore[attr-defined]
     per_dir = bool(getattr(config, "per_directory_wildcard", True)) and bool(config.wildcard_detection)
 
     # Flat enum vs depth: flat forces effective depth 0
@@ -1290,6 +1397,26 @@ async def run_pro_directory_enum(
                 if not result:
                     continue
                 await handle_hit(result, depth)
+            # Mid-enum safety: uniform edge checkpoint → stop burning probes
+            blocked_n = int(getattr(stats, "enum_blocked_checkpoint", 0) or 0)
+            attempts_n = int(getattr(stats, "enum_http_attempts", 0) or 0)
+            if (
+                blocked_n >= 20
+                and int(stats.enum_hits or 0) == 0
+                and int(getattr(stats, "enum_rejected_wildcard", 0) or 0) == 0
+                and attempts_n > 0
+                and blocked_n >= max(20, int(attempts_n * 0.8))
+            ):
+                stats.enum_edge_blocked = True  # type: ignore[attr-defined]
+                stats.enum_edge_checkpoint_signal = (  # type: ignore[attr-defined]
+                    str(getattr(stats, "enum_edge_checkpoint_signal", "") or "")
+                    or "edge_security_checkpoint"
+                )
+                output_callback(
+                    f"Directory enum stopped early — {blocked_n:,}/{attempts_n:,} probes hit "
+                    "the same edge security checkpoint (inconclusive, not soft-404)."
+                )
+                return
                 if config.enum_flat_scan or effective_depth <= 0:
                     continue
                 if looks_like_file_path_segment(result.word):
@@ -1345,6 +1472,9 @@ async def run_pro_directory_enum(
         calibration_ok=bool(getattr(wildcard, "calibration_ok", True)),
         wildcard_active=bool(wildcard.active),
         catch_all_200=bool(getattr(wildcard, "catch_all_200", False)),
+        edge_blocked=bool(getattr(wildcard, "edge_blocked", False)),
+        edge_checkpoint_signal=str(getattr(wildcard, "edge_checkpoint_signal", "") or ""),
+        blocked_count=int(getattr(stats, "enum_blocked_checkpoint", 0) or 0),
     )
     stats.enum_validation_conclusion = conclusion  # type: ignore[attr-defined]
     stats.enum_wildcard_catch_all_200 = bool(getattr(wildcard, "catch_all_200", False))  # type: ignore[attr-defined]

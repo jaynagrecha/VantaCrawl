@@ -48,9 +48,11 @@ def classify_bucket_response(
             return False, "NoSuchBucket"
         if "nosuchkey" in lowered:
             return False, "NoSuchKey"
+        # 403 AccessDenied proves inaccessibility, not a public bucket hit.
+        # Ownership/existence remain unverified for wordlist guessing — do not count as a hit.
         if "accessdenied" in lowered or "access denied" in lowered or "forbidden" in lowered:
-            return True, f"{provider} exists but listing denied (403 AccessDenied)"
-        return True, f"{provider} HTTP 403 (ambiguous; may exist)"
+            return False, f"{provider} HTTP 403 AccessDenied (denied — not a public hit)"
+        return False, f"{provider} HTTP 403 (denied/ambiguous — not a public hit)"
     return False, f"ignored HTTP {status}"
 
 

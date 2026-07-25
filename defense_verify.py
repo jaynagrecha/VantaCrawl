@@ -389,7 +389,29 @@ class DefenseTracker:
         url: str = "",
         challenged: bool = False,
     ) -> None:
+        from edge_checkpoint import hosts_in_scope, third_party_storage_host
+        from protection_evidence import VENDOR_META
+
         for vendor, items in (by_vendor or {}).items():
+            # Third-party cloud probes must never change the primary target WAF verdict
+            if url and third_party_storage_host(url):
+                continue
+            meta = VENDOR_META.get(vendor) or {}
+            is_edge = (meta.get("category") or "") == "edge_waf"
+            if (
+                is_edge
+                and url
+                and self.start_url
+                and not hosts_in_scope(url, self.start_url, allow_subdomains=True)
+            ):
+                # Keep inventory sample but do not attribute edge WAF to the target
+                det = self.vendor_detections.get(vendor)
+                if det is None:
+                    det = VendorDetection(vendor=vendor)
+                    self.vendor_detections[vendor] = det
+                det.add_evidence({f"third-party:{e}" for e in (items or set())})
+                det.note_url(url, challenged=False)
+                continue
             det = self.vendor_detections.get(vendor)
             if det is None:
                 det = VendorDetection(vendor=vendor)
@@ -423,11 +445,26 @@ class DefenseTracker:
         headers: Optional[Dict[str, str]] = None,
         body_preview: str = "",
     ):
+        from edge_checkpoint import hosts_in_scope, third_party_storage_host
+
         headers = dict(headers or {})
         headers_l = {str(k).lower(): v for k, v in headers.items()}
-        self.observe_headers(headers, body_preview)
+        # Third-party storage/CDN probes must not set the target's WAF inventory
+        third_party = bool(url) and (
+            third_party_storage_host(url)
+            or (
+                bool(self.start_url)
+                and not hosts_in_scope(url, self.start_url, allow_subdomains=True)
+                and any(
+                    tok in (urlparse(url).netloc or "").lower()
+                    for tok in ("googleapis.com", "amazonaws.com", "cloudfront.net")
+                )
+            )
+        )
+        if not third_party:
+            self.observe_headers(headers, body_preview)
         self._note_bm_cookies_from_headers(headers_l)
-        on_response = _fingerprint_protections(headers, body_preview)
+        on_response = [] if third_party else _fingerprint_protections(headers, body_preview)
         forensic_headers = _extract_forensic_headers(headers)
         snippet = _body_snippet(body_preview)
 
@@ -936,6 +973,7 @@ async def probe_defense_fingerprint(
     output_callback=None,
     *,
     skip_static_probes: bool = False,
+    stats=None,
 ):
     """One-shot probe of the home page / a few paths to fingerprint protections early.
 
@@ -966,7 +1004,19 @@ async def probe_defense_fingerprint(
                 body = raw.decode("utf-8", errors="replace")
             except Exception:
                 body = ""
-            tracker.observe_headers(dict(response.headers), body)
+            tracker.record_response(url, int(response.status_code), dict(response.headers), body)
+            if stats is not None and hasattr(stats, "record_request"):
+                try:
+                    stats.record_request(
+                        phase="defense",
+                        source="fingerprint",
+                        url=url,
+                        status=int(response.status_code),
+                        bytes_=len(body.encode("utf-8", errors="replace")),
+                        outcome="ok",
+                    )
+                except Exception:
+                    pass
         except Exception:
             tracker.error_count += 1
     if output_callback:

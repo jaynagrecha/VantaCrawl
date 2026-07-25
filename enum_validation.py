@@ -43,6 +43,7 @@ CLASS_EXTENSION_VARIANT = "implausible_extension_variant"
 CLASS_ALREADY_KNOWN = "already_known"
 CLASS_REDIRECT_EXISTING = "redirected_existing_route"
 CLASS_INCONCLUSIVE_429 = "inconclusive_rate_limited"
+CLASS_BLOCKED_INCONCLUSIVE = "blocked_inconclusive"
 CLASS_REJECTED_STATUS = "rejected_status"
 CLASS_UNVERIFIED = "unverified_candidate"
 
@@ -163,6 +164,9 @@ class WildcardProfile:
     calibration_ok: bool = False
     calibration_notes: List[str] = field(default_factory=list)
     catch_all_200: bool = False
+    # Uniform edge checkpoint across control paths (Vercel etc.) — abort enum
+    edge_blocked: bool = False
+    edge_checkpoint_signal: str = ""
     # Optional raw bodies for DOM/text similarity (shape -> body bytes, capped)
     shape_bodies: Dict[str, bytes] = field(default_factory=dict)
 
@@ -689,8 +693,19 @@ def enum_validation_conclusion(
     calibration_ok: bool,
     wildcard_active: bool,
     catch_all_200: bool = False,
+    edge_blocked: bool = False,
+    edge_checkpoint_signal: str = "",
+    blocked_count: int = 0,
 ) -> str:
     """Defensible overall conclusion for reports when enum ran."""
+    if edge_blocked:
+        from edge_checkpoint import enum_blocked_conclusion
+
+        return enum_blocked_conclusion(
+            signal=edge_checkpoint_signal or "edge_security_checkpoint",
+            blocked_count=blocked_count or http_attempts,
+            http_attempts=http_attempts,
+        )
     # Validation unsuccessful: catch-all 200 detected but filter never rejected anything
     # while hits were still accepted — or calibration failed to capture fingerprints.
     validation_failed = (not calibration_ok and wildcard_active) or (

@@ -43,19 +43,19 @@ _OAUTH_PATH_RE = re.compile(
     r"(?i)/(?:oauth|oidc|authorize|auth/realms|sso|saml|connect/authorize)(?:/|$|\?)"
 )
 _HIDDEN_PARAM_RE = re.compile(
-    r"""(?i)['"`](isAdmin|is_admin|debug|role|internal|staff|isStaff|is_staff|admin)['"`]\s*:"""
+    r"""(?i)['"`](isAdmin|is_admin|debug|internal|staff|isStaff|is_staff)['"`]\s*:"""
 )
-# Strong privilege/debug names only — bare "enabled" is ubiquitous UI noise.
+# Strong privilege/debug names only.
+# "role" is an HTML accessibility / frontend string — not mass-assignment evidence alone.
+# "enabled" / bare "admin" are ubiquitous UI noise.
 _HIDDEN_PARAM_NAMES = (
     "isAdmin",
     "is_admin",
     "debug",
-    "role",
     "internal",
     "staff",
     "isStaff",
     "is_staff",
-    "admin",
 )
 # Require a host-like shape with an env token as a DNS label (not substring of "device").
 _ENV_HINT_RE = re.compile(
