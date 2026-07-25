@@ -23,9 +23,15 @@ def _workers_label(meta: dict) -> str:
 
 def _wordlist_name(meta: dict) -> str:
     path = (meta.get("wordlist_file") or "").strip()
-    if not path:
+    loaded = int(meta.get("enum_words_loaded") or 0)
+    if not path or path in ("(none)", "none"):
+        if loaded > 0:
+            return f"(runtime · {loaded:,} words)"
         return "(none)"
-    return os.path.basename(path)
+    name = os.path.basename(path)
+    if loaded > 0 and name in ("(runtime wordlist)", "runtime wordlist"):
+        return f"(runtime · {loaded:,} words)"
+    return name
 
 
 def build_scan_setup(meta: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -37,7 +43,8 @@ def build_scan_setup(meta: Dict[str, Any] | None) -> Dict[str, Any]:
     vuln = _on(meta.get("vuln_scan"))
     active = _on(meta.get("vuln_active_probe"))
     enum_only = _on(meta.get("enum_only"))
-    use_wordlist = _on(meta.get("use_wordlist"))
+    # Prefer observed runtime facts over stale defaults (stopped-scan reports)
+    use_wordlist = _on(meta.get("use_wordlist")) or int(meta.get("enum_words_loaded") or 0) > 0
     mutation = _on(meta.get("mutation_enum"))
     deep = _on(meta.get("deep_mirror")) or _on(meta.get("selenium_fallback"))
     stealth_on = _on(meta.get("evasion_enabled")) and (meta.get("evasion_level") or "off") != "off"

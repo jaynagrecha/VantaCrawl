@@ -175,7 +175,18 @@ def build_report_model(
         "tech_list": list(stats.technologies.most_common(25)),
         "crawl_status": dict(stats.status_codes),
         "enum_status": dict(stats.enum_status_codes),
-        "enum_hits": list(stats.enum_hit_urls),
+        "enum_hits": [
+            u
+            for u in (
+                [
+                    r.get("url")
+                    for r in list(getattr(stats, "enum_hit_records", []) or [])
+                    if isinstance(r, dict) and r.get("validated") and r.get("url")
+                ]
+                or list(stats.enum_hit_urls)
+            )
+            if u
+        ],
         "sensitive": list(stats.sensitive_urls),
         "broken": list(stats.broken_links),
         "broken_summary": CrawlStats.summarize_broken_links(stats.broken_links),

@@ -30,6 +30,7 @@ from crawler_common import (
     enqueue_discovered_url,
     looks_like_file_path_segment,
     save_enum_hit_async,
+    unlog_from_file,
 )
 from edge_checkpoint import (
     enum_blocked_conclusion,
@@ -39,7 +40,11 @@ from edge_checkpoint import (
 from enum_validation import (
     ALL_SHAPES,
     CLASS_BLOCKED_INCONCLUSIVE,
+    CLASS_CONFIRMED,
+    CLASS_CONTENT_DUP,
     CLASS_INCONCLUSIVE_429,
+    CLASS_PROVISIONAL,
+    CLASS_REVOKED,
     CLASS_UNVERIFIED,
     CLASS_WILDCARD,
     HitProvenanceTracker,
@@ -1017,9 +1022,97 @@ async def run_pro_directory_enum(
         f"Pro enum: {total_words:,} base words · concurrency {concurrency_state['n']} · {depth_label}"
     )
 
-    async def handle_hit(probe: ProbeResult, depth: int):
+    def _ensure_hit_records() -> list:
+        if not hasattr(stats, "enum_hit_records") or stats.enum_hit_records is None:  # type: ignore[attr-defined]
+            stats.enum_hit_records = []  # type: ignore[attr-defined]
+        return stats.enum_hit_records  # type: ignore[attr-defined]
+
+    def _apply_revokes(events) -> None:
+        for event in events or []:
+            url = getattr(event, "url", "") or ""
+            if not url:
+                continue
+            reason = getattr(event, "reason", "") or "anchor_of_content_equivalent_fallback_cluster"
+            members = list(getattr(event, "members", []) or [])
+            cluster_size = int(getattr(event, "cluster_size", 0) or len(members) or 0)
+            output_callback(
+                f"ENUM-REVOKE {url}\n"
+                f"Reason: {reason}\n"
+                f"Cluster members: {cluster_size}+"
+            )
+            stats.enum_revoked_hits = int(getattr(stats, "enum_revoked_hits", 0) or 0) + 1  # type: ignore[attr-defined]
+            # Remove from validated/provisional inventory
+            if url in found_set:
+                found_set.discard(url)
+            if url in list(getattr(stats, "enum_hit_urls", []) or []):
+                try:
+                    stats.enum_hit_urls = [u for u in stats.enum_hit_urls if u != url]
+                except Exception:
+                    pass
+            if int(stats.enum_hits or 0) > 0:
+                # Only decrement if it had been counted as a validated hit
+                for rec in list(_ensure_hit_records()):
+                    if isinstance(rec, dict) and rec.get("url") == url and rec.get("validated"):
+                        stats.enum_hits = max(0, int(stats.enum_hits or 0) - 1)
+                        break
+            for rec in list(_ensure_hit_records()):
+                if isinstance(rec, dict) and rec.get("url") == url:
+                    rec["validated"] = False
+                    rec["classification"] = CLASS_REVOKED
+                    rec["state"] = "revoked"
+                    rec["acceptance_reason"] = reason
+            if not hasattr(stats, "enum_skipped_records") or stats.enum_skipped_records is None:
+                stats.enum_skipped_records = []  # type: ignore[attr-defined]
+            stats.enum_skipped_records.append(  # type: ignore[attr-defined]
+                {
+                    "url": url,
+                    "classification": CLASS_REVOKED,
+                    "validated": False,
+                    "state": "revoked",
+                    "acceptance_reason": reason,
+                    "cluster_size": cluster_size,
+                    "cluster_members": members[:40],
+                }
+            )
+            unlog_from_file(config.output_file_path, url)
+            try:
+                stats.discovered_urls.discard(url)
+            except Exception:
+                pass
+
+    async def handle_hit(probe: ProbeResult, depth: int, *, force_confirmed: bool = False):
+        # Provisional cluster anchors are inventory-only until end-of-enum promotion
+        if probe.classification == CLASS_PROVISIONAL and not force_confirmed:
+            if not hasattr(stats, "enum_provisional_urls") or stats.enum_provisional_urls is None:  # type: ignore[attr-defined]
+                stats.enum_provisional_urls = []  # type: ignore[attr-defined]
+            if probe.url not in stats.enum_provisional_urls:  # type: ignore[attr-defined]
+                stats.enum_provisional_urls.append(probe.url)  # type: ignore[attr-defined]
+            rec = {
+                "url": probe.url,
+                "source": "directory_enum",
+                "base_word": probe.base_word or probe.word,
+                "variant": probe.word,
+                "already_known": bool(probe.already_known),
+                "requested_status": probe.status,
+                "final_status": probe.status,
+                "final_url": probe.final_url or probe.url,
+                "classification": CLASS_PROVISIONAL,
+                "path_shape": probe.path_shape,
+                "acceptance_reason": probe.acceptance_reason,
+                "baseline_used": probe.baseline_used,
+                "wildcard_similarity": probe.wildcard_similarity,
+                "validated": False,
+                "state": "provisional",
+                "fingerprint": probe.fingerprint.to_dict() if probe.fingerprint else {},
+            }
+            _ensure_hit_records().append(rec)
+            output_callback(
+                f"ENUM-PROVISIONAL [{probe.status}] {probe.url} "
+                f"(cluster representative — not a validated hit yet)"
+            )
+            return
         # Only persist / crawl / security-scan validated hits
-        if not probe.validated:
+        if not probe.validated and probe.classification != CLASS_CONFIRMED:
             label = probe.classification or "rejected"
             output_callback(
                 f"ENUM-SKIP [{label}] {probe.url} ({probe.acceptance_reason or 'not validated'})"
@@ -1030,9 +1123,13 @@ async def run_pro_directory_enum(
         found_set.add(probe.url)
         stats.enum_hits += 1
         stats.enum_hit_urls.append(probe.url)
+        # Drop from provisional list if promoting
+        try:
+            if hasattr(stats, "enum_provisional_urls") and probe.url in (stats.enum_provisional_urls or []):  # type: ignore[attr-defined]
+                stats.enum_provisional_urls = [u for u in stats.enum_provisional_urls if u != probe.url]  # type: ignore[attr-defined]
+        except Exception:
+            pass
         # Rich result rows for SQLite / reports
-        if not hasattr(stats, "enum_hit_records") or stats.enum_hit_records is None:  # type: ignore[attr-defined]
-            stats.enum_hit_records = []  # type: ignore[attr-defined]
         rec = {
             "url": probe.url,
             "source": "directory_enum",
@@ -1042,15 +1139,25 @@ async def run_pro_directory_enum(
             "requested_status": probe.status,
             "final_status": probe.status,
             "final_url": probe.final_url or probe.url,
-            "classification": probe.classification,
+            "classification": probe.classification or CLASS_CONFIRMED,
             "path_shape": probe.path_shape,
             "acceptance_reason": probe.acceptance_reason,
             "baseline_used": probe.baseline_used,
             "wildcard_similarity": probe.wildcard_similarity,
             "validated": True,
+            "state": "confirmed",
             "fingerprint": probe.fingerprint.to_dict() if probe.fingerprint else {},
         }
-        stats.enum_hit_records.append(rec)  # type: ignore[attr-defined]
+        # Replace provisional row if present
+        rows = _ensure_hit_records()
+        replaced = False
+        for i, existing in enumerate(rows):
+            if isinstance(existing, dict) and existing.get("url") == probe.url:
+                rows[i] = rec
+                replaced = True
+                break
+        if not replaced:
+            rows.append(rec)
         via = ""
         if probe.redirect_hops and probe.final_url and probe.final_url != probe.url:
             via = f" → {probe.final_url} ({probe.redirect_hops} hop(s))"
@@ -1305,6 +1412,7 @@ async def run_pro_directory_enum(
                 stats=stats,
             ):
                 # Provenance / case / content grouping before acceptance
+                # Classification order: edge/rate-limit already handled in is_probe_hit.
                 rec = provenance.classify_and_record(
                     url=probe.url,
                     base_word=word,
@@ -1324,11 +1432,22 @@ async def run_pro_directory_enum(
                 probe.already_known = rec.already_known
                 probe.acceptance_reason = rec.acceptance_reason
                 probe.baseline_used = rec.baseline_used
+                if rec.revoke_events:
+                    _apply_revokes(rec.revoke_events)
+                # Drain any pending revokes from concurrent workers
+                _apply_revokes(provenance.drain_revokes())
+                if rec.classification == CLASS_PROVISIONAL:
+                    # First sight of a fingerprint — provisional, not confirmed
+                    return probe
                 if not rec.validated:
                     # Track as skipped candidate, not a hit
                     if not hasattr(stats, "enum_skipped_records"):
                         stats.enum_skipped_records = []  # type: ignore[attr-defined]
                     stats.enum_skipped_records.append(rec.to_dict())  # type: ignore[attr-defined]
+                    if rec.classification == CLASS_CONTENT_DUP:
+                        stats.enum_content_equivalent_rejects = (  # type: ignore[attr-defined]
+                            int(getattr(stats, "enum_content_equivalent_rejects", 0) or 0) + 1
+                        )
                     output_callback(
                         f"ENUM-REJECT [{rec.classification}] {probe.url} ({rec.acceptance_reason})"
                     )
@@ -1336,6 +1455,17 @@ async def run_pro_directory_enum(
                 return probe
             elif probe.classification == CLASS_WILDCARD:
                 # Already counted in is_probe_hit
+                continue
+            elif probe.classification == CLASS_BLOCKED_INCONCLUSIVE:
+                signal = (probe.acceptance_reason or "edge_checkpoint").replace(
+                    "edge_checkpoint:", ""
+                )
+                cluster = (probe.normalized_hash or probe.raw_hash or "")[:8] or "unknown"
+                output_callback(
+                    f"ENUM-BLOCK [edge_checkpoint:{signal}] {probe.url}\n"
+                    f"cluster={cluster}\n"
+                    f"action=rejected"
+                )
                 continue
         return None
 
@@ -1397,35 +1527,59 @@ async def run_pro_directory_enum(
                 if not result:
                     continue
                 await handle_hit(result, depth)
-            # Mid-enum safety: uniform edge checkpoint → stop burning probes
+                # Nested enum under confirmed hits only (never provisional)
+                if (
+                    result.validated
+                    and result.classification == CLASS_CONFIRMED
+                    and not config.enum_flat_scan
+                    and effective_depth > 0
+                ):
+                    if looks_like_file_path_segment(result.word):
+                        output_callback(
+                            f"Skipping folder enum under file hit "
+                            f"{format_enum_path(path_segments + [result.word])}"
+                        )
+                    elif depth + 1 <= max_d:
+                        await enumerate_level(path_segments + [result.word], depth + 1)
+            # Drain revokes produced by concurrent classify calls
+            _apply_revokes(provenance.drain_revokes())
+            # Mid-enum safety: uniform edge checkpoint / fallback cluster → stop early
             blocked_n = int(getattr(stats, "enum_blocked_checkpoint", 0) or 0)
             attempts_n = int(getattr(stats, "enum_http_attempts", 0) or 0)
-            if (
-                blocked_n >= 20
-                and int(stats.enum_hits or 0) == 0
-                and int(getattr(stats, "enum_rejected_wildcard", 0) or 0) == 0
+            content_dup_n = int(getattr(stats, "enum_content_equivalent_rejects", 0) or 0)
+            confirmed_hits = int(stats.enum_hits or 0)
+            # Abort when first ~10–20 probes are uniformly checkpointed, or when a
+            # content-equivalent fallback cluster is dominating differentiation.
+            early_checkpoint = (
+                blocked_n >= 10
+                and confirmed_hits == 0
                 and attempts_n > 0
-                and blocked_n >= max(20, int(attempts_n * 0.8))
-            ):
+                and blocked_n >= max(10, int(attempts_n * 0.7))
+            )
+            cluster_poison = (
+                content_dup_n >= 20
+                and confirmed_hits == 0
+                and int(getattr(stats, "enum_revoked_hits", 0) or 0) >= 1
+            )
+            if early_checkpoint or cluster_poison:
                 stats.enum_edge_blocked = True  # type: ignore[attr-defined]
                 stats.enum_edge_checkpoint_signal = (  # type: ignore[attr-defined]
                     str(getattr(stats, "enum_edge_checkpoint_signal", "") or "")
+                    or str(getattr(wildcard, "edge_checkpoint_signal", "") or "")
                     or "edge_security_checkpoint"
                 )
+                reason = (
+                    "edge checkpoint prevented endpoint differentiation"
+                    if early_checkpoint
+                    else "content-equivalent fallback cluster prevented endpoint differentiation"
+                )
                 output_callback(
-                    f"Directory enum stopped early — {blocked_n:,}/{attempts_n:,} probes hit "
-                    "the same edge security checkpoint (inconclusive, not soft-404)."
+                    f"Enum execution: aborted\n"
+                    f"Reason: {reason}\n"
+                    f"Confirmed positives: {confirmed_hits}\n"
+                    f"Blocked/inconclusive: {blocked_n + content_dup_n:,} of {attempts_n:,} attempts"
                 )
                 return
-                if config.enum_flat_scan or effective_depth <= 0:
-                    continue
-                if looks_like_file_path_segment(result.word):
-                    output_callback(
-                        f"Skipping folder enum under file hit {format_enum_path(path_segments + [result.word])}"
-                    )
-                    continue
-                if depth + 1 <= max_d:
-                    await enumerate_level(path_segments + [result.word], depth + 1)
             next_index = index + batch_size
             if config.enum_checkpoint_interval and next_index and next_index % config.enum_checkpoint_interval == 0:
                 save_enum_checkpoint(
@@ -1454,16 +1608,67 @@ async def run_pro_directory_enum(
     stats.enum_words_total = total_words
     stats.enum_words_tested = 0
     stats.enum_base_words_loaded = total_words  # type: ignore[attr-defined]
+    # Persist effective runtime config so stopped reports do not show defaults
+    try:
+        from scan_setup_report import config_to_report_meta
+
+        stats.effective_config_meta = config_to_report_meta(config)  # type: ignore[attr-defined]
+        stats.effective_config_meta["use_wordlist"] = True  # type: ignore[attr-defined]
+        stats.effective_config_meta["enum_words_loaded"] = total_words  # type: ignore[attr-defined]
+        stats.effective_config_meta["enum_concurrency"] = int(config.enum_concurrency or 0)  # type: ignore[attr-defined]
+        stats.effective_config_meta["crawl_concurrency"] = int(config.crawl_concurrency or 0)  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
     for roots in prefix_roots:
         await enumerate_level(roots, len(roots), resume_index if roots == resume_segments else 0)
+
+    # Promote provisional anchors that never grew into fallback clusters
+    if not bool(getattr(stats, "enum_edge_blocked", False)):
+        for prec in provenance.promote_survivors():
+            probe = ProbeResult(
+                prec.url,
+                prec.variant or prec.base_word,
+                prec.final_status or prec.requested_status,
+                int((prec.fingerprint.length if prec.fingerprint else 0) or 0),
+                (prec.fingerprint.raw_hash if prec.fingerprint else "") or "",
+                [],
+                final_url=prec.final_url or prec.url,
+                classification=CLASS_CONFIRMED,
+                validated=True,
+                acceptance_reason=prec.acceptance_reason,
+                fingerprint=prec.fingerprint,
+                base_word=prec.base_word,
+                path_shape=prec.path_shape,
+            )
+            await handle_hit(probe, 0, force_confirmed=True)
+    else:
+        # Edge-blocked: revoke any remaining provisional anchors
+        for url in list(getattr(stats, "enum_provisional_urls", []) or []):
+            for rec in list(getattr(stats, "enum_hit_records", []) or []):
+                if isinstance(rec, dict) and rec.get("url") == url and not rec.get("validated"):
+                    rec["classification"] = CLASS_REVOKED
+                    rec["state"] = "revoked"
+                    rec["acceptance_reason"] = "anchor_of_content_equivalent_fallback_cluster"
+            output_callback(
+                f"ENUM-REVOKE {url}\n"
+                f"Reason: anchor_of_content_equivalent_fallback_cluster\n"
+                f"Cluster members: blocked-enum"
+            )
+
+    _apply_revokes(provenance.drain_revokes())
 
     if config.false_positive_learning:
         fp_store.save()
     save_enum_checkpoint(config.enum_checkpoint_file, config.start_url, len(words), [], 0, list(found_set))
     stats.enum_current_word = ""
-    stats.enum_words_tested = total_words
-    stats.enum_base_words_processed = total_words  # type: ignore[attr-defined]
+    # Preserve tested count when aborted early
+    if not bool(getattr(stats, "enum_edge_blocked", False)):
+        stats.enum_words_tested = total_words
+        stats.enum_base_words_processed = total_words  # type: ignore[attr-defined]
+    edge_blocked = bool(getattr(stats, "enum_edge_blocked", False)) or bool(
+        getattr(wildcard, "edge_blocked", False)
+    )
     conclusion = enum_validation_conclusion(
         http_attempts=int(getattr(stats, "enum_http_attempts", 0) or 0),
         accepted_hits=int(stats.enum_hits or 0),
@@ -1472,8 +1677,12 @@ async def run_pro_directory_enum(
         calibration_ok=bool(getattr(wildcard, "calibration_ok", True)),
         wildcard_active=bool(wildcard.active),
         catch_all_200=bool(getattr(wildcard, "catch_all_200", False)),
-        edge_blocked=bool(getattr(wildcard, "edge_blocked", False)),
-        edge_checkpoint_signal=str(getattr(wildcard, "edge_checkpoint_signal", "") or ""),
+        edge_blocked=edge_blocked,
+        edge_checkpoint_signal=str(
+            getattr(stats, "enum_edge_checkpoint_signal", "")
+            or getattr(wildcard, "edge_checkpoint_signal", "")
+            or ""
+        ),
         blocked_count=int(getattr(stats, "enum_blocked_checkpoint", 0) or 0),
     )
     stats.enum_validation_conclusion = conclusion  # type: ignore[attr-defined]
@@ -1492,13 +1701,24 @@ async def run_pro_directory_enum(
             if rec.get("validated"):
                 demoted += 1
             rec["validated"] = False
+            rec["state"] = "unverified"
             rec["classification"] = CLASS_UNVERIFIED
             rec["acceptance_reason"] = "unverified_catch_all_or_failed_calibration"
         stats.enum_unverified_candidate_hits = demoted or int(stats.enum_hits or 0)  # type: ignore[attr-defined]
+        stats.enum_hits = 0
+        stats.enum_hit_urls = []
         output_callback(
             f"Enum validation unsuccessful — {stats.enum_unverified_candidate_hits} hit(s) "
             "marked unverified candidates (not confirmed hidden resources)."
         )
+    # Keep enum_hits aligned with validated records only
+    validated_urls = [
+        r.get("url")
+        for r in list(getattr(stats, "enum_hit_records", []) or [])
+        if isinstance(r, dict) and r.get("validated") and r.get("url")
+    ]
+    stats.enum_hit_urls = [u for u in validated_urls if u]
+    stats.enum_hits = len(stats.enum_hit_urls)
     output_callback(f"Directory enumeration finished — {stats.enum_hits} validated hit(s).")
     output_callback(conclusion)
     return found_set

@@ -625,6 +625,19 @@ def write_stats_reports(
             config_meta.setdefault("mode", getattr(config, "profile", "full"))
             if getattr(config, "report_title", ""):
                 config_meta["title"] = str(config.report_title)
+        else:
+            # Stopped scans: prefer effective runtime config persisted on stats
+            config_meta = dict(getattr(stats, "effective_config_meta", {}) or {})
+        # Overlay observed runtime facts so reports never show blank defaults
+        if int(getattr(stats, "enum_words_total", 0) or 0) > 0:
+            config_meta["use_wordlist"] = True
+            config_meta.setdefault(
+                "enum_words_loaded", int(getattr(stats, "enum_words_total", 0) or 0)
+            )
+            if not config_meta.get("wordlist_file"):
+                config_meta["wordlist_file"] = "(runtime wordlist)"
+        if int(getattr(stats, "enum_base_words_loaded", 0) or 0) > 0:
+            config_meta["enum_words_loaded"] = int(stats.enum_base_words_loaded)  # type: ignore[attr-defined]
     except Exception:
         config_meta = {"title": title or "", "start_url": start_url}
 
@@ -735,11 +748,19 @@ def write_findings_snapshot(report_dir: str | Path, stats: CrawlStats) -> str:
             "is_final": scan_status == "final",
         }
 
+    # Prefer live CrawlStats.snapshot() counters so stop/cancel never rebuilds from
+    # empty summary fields. Overlay report-status metadata afterward.
+    try:
+        live = stats.snapshot() if hasattr(stats, "snapshot") else {}
+    except Exception:
+        live = {}
     payload = {
-        "pages_crawled": int(getattr(stats, "pages_crawled", 0) or 0),
-        "links_found": int(getattr(stats, "links_found", 0) or 0),
-        "errors": int(getattr(stats, "errors", 0) or 0),
-        "bytes_downloaded": int(getattr(stats, "bytes_downloaded", 0) or 0),
+        "pages_crawled": int(live.get("pages_crawled") or getattr(stats, "pages_crawled", 0) or 0),
+        "links_found": int(live.get("links_found") or getattr(stats, "links_found", 0) or 0),
+        "errors": int(live.get("errors") or getattr(stats, "errors", 0) or 0),
+        "bytes_downloaded": int(
+            live.get("bytes_downloaded") or getattr(stats, "bytes_downloaded", 0) or 0
+        ),
         "queue_size": queue_size,
         "started_at": float(getattr(stats, "started_at", 0) or 0) or None,
         "finished_at": float(getattr(stats, "finished_at", 0) or 0) or None,
@@ -753,18 +774,55 @@ def write_findings_snapshot(report_dir: str | Path, stats: CrawlStats) -> str:
         ),
         "route_templates": list(getattr(stats, "route_templates", []) or [])[:500],
         "protection_artifacts": list(getattr(stats, "protection_artifacts", []) or [])[:200],
+        "forms": list(getattr(stats, "forms", []) or [])[:200],
         "form_count": len(getattr(stats, "forms", []) or []),
         "login_count": len(getattr(stats, "login_surfaces", []) or []),
+        "js_route_urls": list(getattr(stats, "js_route_urls", []) or [])[:500],
         "js_route_count": len(getattr(stats, "js_route_urls", []) or []),
         "cookie_count": len(getattr(stats, "cookie_inventory", []) or []),
         "requests_queued": int(getattr(stats, "requests_queued", 0) or 0),
         "static_assets_recorded": int(getattr(stats, "static_assets_recorded", 0) or 0),
         "forms_deduped": int(getattr(stats, "forms_deduped", 0) or 0),
         "internal_host_count": len(getattr(stats, "internal_hosts", []) or []),
-        "enum_hits": int(getattr(stats, "enum_hits", 0) or 0),
+        "enum_hits": int(live.get("enum_hits") or getattr(stats, "enum_hits", 0) or 0),
         "enum_words_tested": enum_done,
         "enum_words_total": enum_total,
-        "enum_hit_urls": list(getattr(stats, "enum_hit_urls", []) or [])[:200],
+        "enum_http_attempts": int(
+            live.get("enum_http_attempts") or getattr(stats, "enum_http_attempts", 0) or 0
+        ),
+        "enum_rejected_wildcard": int(
+            live.get("enum_rejected_wildcard")
+            or getattr(stats, "enum_rejected_wildcard", 0)
+            or 0
+        ),
+        "enum_content_equivalent_rejects": int(
+            getattr(stats, "enum_content_equivalent_rejects", 0) or 0
+        ),
+        "enum_revoked_hits": int(getattr(stats, "enum_revoked_hits", 0) or 0),
+        "enum_blocked_checkpoint": int(
+            live.get("enum_blocked_checkpoint")
+            or getattr(stats, "enum_blocked_checkpoint", 0)
+            or 0
+        ),
+        "enum_started_at": getattr(stats, "enum_started_at", None),
+        "enum_elapsed_seconds": float(live.get("enum_elapsed_seconds") or 0),
+        "enum_unique_candidate_urls": int(
+            live.get("enum_unique_candidate_urls")
+            or getattr(stats, "enum_unique_candidate_urls", 0)
+            or 0
+        ),
+        "enum_status_codes": dict(getattr(stats, "enum_status_codes", {}) or {}),
+        "enum_hit_urls": [
+            u
+            for u in list(getattr(stats, "enum_hit_urls", []) or [])[:200]
+            if u
+        ],
+        "enum_hit_records": list(getattr(stats, "enum_hit_records", []) or [])[:2000],
+        "enum_skipped_records": list(getattr(stats, "enum_skipped_records", []) or [])[:1000],
+        "enum_provisional_urls": list(getattr(stats, "enum_provisional_urls", []) or [])[:200],
+        "enum_validation_conclusion": str(
+            getattr(stats, "enum_validation_conclusion", "") or ""
+        ),
         "enum_configured": bool(
             status_meta.get("enum_configured")
             if status_meta.get("enum_configured") is not None
@@ -773,6 +831,7 @@ def write_findings_snapshot(report_dir: str | Path, stats: CrawlStats) -> str:
         "enum_complete": bool(getattr(stats, "enum_complete", False)),
         "enum_skip_reason": getattr(stats, "enum_skip_reason", None)
         or status_meta.get("enum_skip_reason"),
+        "effective_config_meta": dict(getattr(stats, "effective_config_meta", {}) or {}),
         "route_variants_skipped": int(getattr(stats, "route_variants_skipped", 0) or 0),
         "out_of_scope_skipped": int(getattr(stats, "out_of_scope_skipped", 0) or 0),
         "status_codes": dict(getattr(stats, "status_codes", {}) or {}),
@@ -780,7 +839,15 @@ def write_findings_snapshot(report_dir: str | Path, stats: CrawlStats) -> str:
         "broken_links_summary": CrawlStats.summarize_broken_links(
             getattr(stats, "broken_links", []) or []
         ),
-        "request_ledger_count": len(getattr(stats, "request_ledger", []) or []),
+        "request_ledger_count": int(
+            live.get("request_ledger_count")
+            or len(getattr(stats, "request_ledger", []) or [])
+        ),
+        "total_requests_observed": int(
+            live.get("total_requests_observed")
+            or getattr(stats, "total_requests_observed", 0)
+            or 0
+        ),
         "findings": list(getattr(stats, "findings", []) or []),
         "technologies": dict(getattr(stats, "technologies", {}) or {}),
         "sensitive_urls": list(getattr(stats, "sensitive_urls", []) or [])[:100],
@@ -794,7 +861,57 @@ def write_findings_snapshot(report_dir: str | Path, stats: CrawlStats) -> str:
         "directory_enum_message": str(status_meta.get("directory_enum_message") or ""),
         "remaining_jobs": int(status_meta.get("remaining_jobs") or queue_size),
         "is_final": bool(status_meta.get("is_final")),
+        "target_content_coverage": str(
+            getattr(stats, "target_content_coverage", "") or ""
+        ),
+        "assessment_inconclusive_reason": str(
+            getattr(stats, "assessment_inconclusive_reason", "") or ""
+        ),
     }
+    # Never overwrite a richer prior snapshot with a poorer empty one
+    try:
+        prior = load_findings_snapshot(root)
+    except Exception:
+        prior = None
+    if isinstance(prior, dict):
+        for key in (
+            "pages_crawled",
+            "links_found",
+            "request_ledger_count",
+            "total_requests_observed",
+            "enum_http_attempts",
+            "enum_words_tested",
+            "enum_words_total",
+            "form_count",
+            "js_route_count",
+            "broken_links",
+            "findings",
+            "forms",
+            "js_route_urls",
+            "enum_hit_records",
+            "enum_skipped_records",
+            "cookie_inventory",
+            "discovered_urls",
+        ):
+            prior_v = prior.get(key)
+            new_v = payload.get(key)
+            if isinstance(prior_v, list) and isinstance(new_v, list):
+                if len(prior_v) > len(new_v):
+                    payload[key] = prior_v
+            elif isinstance(prior_v, (int, float)) and isinstance(new_v, (int, float)):
+                if prior_v > new_v:
+                    payload[key] = prior_v
+        if prior.get("enum_started_at") and not payload.get("enum_started_at"):
+            payload["enum_started_at"] = prior.get("enum_started_at")
+        if prior.get("effective_config_meta") and not payload.get("effective_config_meta"):
+            payload["effective_config_meta"] = prior.get("effective_config_meta")
+        # Keep list counts aligned with preserved lists
+        if isinstance(payload.get("forms"), list):
+            payload["form_count"] = max(int(payload.get("form_count") or 0), len(payload["forms"]))
+        if isinstance(payload.get("js_route_urls"), list):
+            payload["js_route_count"] = max(
+                int(payload.get("js_route_count") or 0), len(payload["js_route_urls"])
+            )
     path.write_text(json.dumps(payload, ensure_ascii=False, default=str), encoding="utf-8")
     return str(path)
 
@@ -851,6 +968,45 @@ def crawl_stats_from_partial(
     stats.enum_words_total = int(
         snap.get("enum_words_total") or prog.get("enum_words_total") or 0
     )
+    stats.enum_http_attempts = int(
+        snap.get("enum_http_attempts") or prog.get("enum_http_attempts") or 0
+    )
+    stats.enum_rejected_wildcard = int(
+        snap.get("enum_rejected_wildcard") or prog.get("enum_rejected_wildcard") or 0
+    )
+    stats.enum_unique_candidate_urls = int(
+        snap.get("enum_unique_candidate_urls")
+        or prog.get("enum_unique_candidate_urls")
+        or 0
+    )
+    if snap.get("enum_started_at"):
+        try:
+            stats.enum_started_at = float(snap.get("enum_started_at"))
+        except Exception:
+            pass
+    if isinstance(snap.get("enum_status_codes"), dict):
+        try:
+            stats.enum_status_codes.update(
+                {int(k) if str(k).isdigit() else k: int(v) for k, v in snap["enum_status_codes"].items()}
+            )
+        except Exception:
+            pass
+    if isinstance(snap.get("effective_config_meta"), dict):
+        stats.effective_config_meta = dict(snap.get("effective_config_meta") or {})  # type: ignore[attr-defined]
+    if isinstance(snap.get("enum_hit_records"), list):
+        stats.enum_hit_records = [r for r in snap["enum_hit_records"] if isinstance(r, dict)]  # type: ignore[attr-defined]
+    if isinstance(snap.get("forms"), list) and snap["forms"]:
+        stats.forms = [f for f in snap["forms"] if isinstance(f, dict)]
+    if isinstance(snap.get("js_route_urls"), list):
+        for u in snap["js_route_urls"]:
+            if u and u not in stats.js_route_urls:
+                stats.js_route_urls.append(str(u))
+    if snap.get("target_content_coverage"):
+        stats.target_content_coverage = str(snap.get("target_content_coverage"))  # type: ignore[attr-defined]
+    if snap.get("assessment_inconclusive_reason"):
+        stats.assessment_inconclusive_reason = str(  # type: ignore[attr-defined]
+            snap.get("assessment_inconclusive_reason")
+        )
     stats.route_variants_skipped = int(
         snap.get("route_variants_skipped") or prog.get("route_variants_skipped") or 0
     )

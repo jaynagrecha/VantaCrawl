@@ -224,8 +224,12 @@ def test_case_and_content_grouping():
         soft_404=False,
         path_shape="plain",
     )
-    assert rec3.classification == CLASS_CONFIRMED
-    assert rec3.validated
+    from enum_validation import CLASS_PROVISIONAL
+
+    assert rec3.classification == CLASS_PROVISIONAL
+    assert not rec3.validated
+    promoted = tracker.promote_survivors()
+    assert any(p.url == "https://example.com/admin" and p.validated for p in promoted)
     fp4 = fingerprint_from_response(url="https://example.com/Admin", status=200, body=b"other")
     rec4 = tracker.classify_and_record(
         url="https://example.com/Admin",
@@ -246,7 +250,7 @@ def test_case_and_content_grouping():
 
 
 def test_extension_family_rejects_index_siblings():
-    from enum_validation import CLASS_EXTENSION_VARIANT, extension_family_key
+    from enum_validation import CLASS_EXTENSION_VARIANT, CLASS_PROVISIONAL, extension_family_key
 
     assert extension_family_key("https://example.com/index.php") == extension_family_key(
         "https://example.com/index.bak"
@@ -268,7 +272,7 @@ def test_extension_family_rejects_index_siblings():
         soft_404=False,
         path_shape="index_ext",
     )
-    assert rec1.validated and rec1.classification == CLASS_CONFIRMED
+    assert not rec1.validated and rec1.classification == CLASS_PROVISIONAL
     fp2 = fingerprint_from_response(
         url="https://example.com/index.bak", status=200, body=b"<html>different</html>"
     )

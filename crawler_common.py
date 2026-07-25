@@ -551,6 +551,44 @@ def log_to_file(output_file_path, url):
             file.write(url + "\n")
 
 
+def unlog_from_file(output_file_path, url):
+    """Remove a previously logged URL from found_urls.txt (cluster-anchor revoke)."""
+    if not output_file_path or not url:
+        return
+    try:
+        from enum_validation import casefold_path_key
+
+        drop_key = casefold_path_key(url)
+    except Exception:
+        drop_key = (url or "").rstrip("/").casefold()
+    with _LOG_FILE_LOCK:
+        seen = _LOG_URL_SEEN.setdefault(output_file_path, set())
+        seen.discard(drop_key)
+        if not os.path.isfile(output_file_path):
+            return
+        try:
+            with open(output_file_path, "r", encoding="utf-8", errors="replace") as handle:
+                lines = handle.readlines()
+            kept = []
+            for line in lines:
+                prior = line.strip()
+                if not prior:
+                    continue
+                try:
+                    from enum_validation import casefold_path_key as _ck
+
+                    key = _ck(prior)
+                except Exception:
+                    key = prior.rstrip("/").casefold()
+                if key == drop_key:
+                    continue
+                kept.append(prior + "\n")
+            with open(output_file_path, "w", encoding="utf-8") as handle:
+                handle.writelines(kept)
+        except OSError:
+            pass
+
+
 def load_wordlist(wordlist_file, max_words: int = 0):
     """Load wordlist lines. If max_words > 0, stop after that many usable entries."""
     words = []
