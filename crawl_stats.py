@@ -71,6 +71,10 @@ class CrawlStats:
     # Append-only request ledger (capped) for auditable aggregates
     request_ledger: List[Dict[str, Any]] = field(default_factory=list)
     _request_ledger_cap: int = 8000
+    # Honest totals — always incremented even when the capped ledger omits a row
+    total_requests_observed: int = 0
+    requests_retained: int = 0
+    requests_omitted: int = 0
     sensitive_urls: List[str] = field(default_factory=list)
     forms: List[Dict[str, Any]] = field(default_factory=list)
     parameters: List[Dict[str, Any]] = field(default_factory=list)
@@ -222,8 +226,16 @@ class CrawlStats:
         path_shape: str = "",
         classification: str = "",
     ) -> None:
-        """Append-only request ledger row (fetch-queue inventory stays separate)."""
-        if len(self.request_ledger) >= int(getattr(self, "_request_ledger_cap", 8000) or 8000):
+        """Append-only request ledger row (fetch-queue inventory stays separate).
+
+        Always increments ``total_requests_observed``. When the retention cap is
+        reached, the row is omitted but ``requests_omitted`` still grows so reports
+        never claim the capped length is the full total.
+        """
+        self.total_requests_observed = int(self.total_requests_observed or 0) + 1
+        cap = int(getattr(self, "_request_ledger_cap", 8000) or 8000)
+        if len(self.request_ledger) >= cap:
+            self.requests_omitted = int(self.requests_omitted or 0) + 1
             return
         row = {
             "phase": phase,
@@ -255,6 +267,7 @@ class CrawlStats:
         if classification:
             row["classification"] = classification
         self.request_ledger.append(row)
+        self.requests_retained = len(self.request_ledger)
 
     def record_enum_attempt(self, fingerprint: Dict[str, Any], *, limit: int = 20000) -> None:
         """Persist a capped fingerprint for every enum HTTP attempt (hits and misses)."""
@@ -706,6 +719,20 @@ class CrawlStats:
             "broken_links_summary": self.summarize_broken_links(self.broken_links),
             "request_ledger_count": len(self.request_ledger),
             "request_ledger_cap": int(getattr(self, "_request_ledger_cap", 8000) or 8000),
+            "total_requests_observed": int(self.total_requests_observed or 0),
+            "requests_retained": int(self.requests_retained or len(self.request_ledger)),
+            "requests_exported": min(len(self.request_ledger), 2000),
+            "requests_omitted": int(self.requests_omitted or 0),
+            "request_retention_cap": int(getattr(self, "_request_ledger_cap", 8000) or 8000),
+            "enum_attempt_fingerprint_count": len(getattr(self, "enum_attempt_fingerprints", []) or []),
+            "enum_attempt_fingerprints_exported": min(
+                len(getattr(self, "enum_attempt_fingerprints", []) or []), 2000
+            ),
+            "enum_http_attempts": int(getattr(self, "enum_http_attempts", 0) or 0),
+            "enum_blocked_checkpoint": int(getattr(self, "enum_blocked_checkpoint", 0) or 0),
+            "enum_edge_blocked": bool(getattr(self, "enum_edge_blocked", False)),
+            "target_content_coverage": getattr(self, "target_content_coverage", "") or "",
+            "assessment_inconclusive_reason": getattr(self, "assessment_inconclusive_reason", "") or "",
             "technologies": dict(self.technologies.most_common(20)),
             "paused": self.paused,
             "backoff_remaining_seconds": round(backoff_rem, 1),

@@ -29,6 +29,8 @@ VENDOR_META: Dict[str, Dict[str, str]] = {
     "imperva": {"category": "edge_waf", "display": "Imperva"},
     "sucuri": {"category": "edge_waf", "display": "Sucuri"},
     "modsecurity": {"category": "edge_waf", "display": "ModSecurity"},
+    "vercel": {"category": "edge_waf", "display": "Vercel Security Checkpoint"},
+    "edge_checkpoint": {"category": "edge_waf", "display": "Edge security checkpoint"},
     "recaptcha": {"category": "app_challenge", "display": "Google reCAPTCHA"},
     "hcaptcha": {"category": "app_challenge", "display": "hCaptcha"},
     "cloudflare_turnstile": {"category": "app_challenge", "display": "Cloudflare Turnstile"},
@@ -96,6 +98,8 @@ _BODY_MARKERS: Tuple[Tuple[str, str, str], ...] = (
     ("challenge-platform", "cloudflare", "deny-body"),
     ("rate-burst", "akamai", "deny-body"),
     ("rate burst", "akamai", "deny-body"),
+    ("vercel security checkpoint", "vercel", "deny-body"),
+    ("cdn.vercel-insights.com", "vercel", "js-reference"),
 )
 
 _SIGNAL_VENDOR: Dict[str, str] = {
@@ -106,6 +110,7 @@ _SIGNAL_VENDOR: Dict[str, str] = {
     "cloudflare": "cloudflare",
     "cloudflare_block": "cloudflare",
     "cloudflare_soft_deny": "cloudflare",
+    "cloudflare_challenge": "cloudflare",
     "cf-challenge": "cloudflare",
     "cloudflare_turnstile": "cloudflare_turnstile",
     "datadome": "datadome",
@@ -113,6 +118,9 @@ _SIGNAL_VENDOR: Dict[str, str] = {
     "aws_waf": "aws_waf",
     "imperva": "imperva",
     "sucuri": "sucuri",
+    "vercel": "vercel",
+    "vercel_security_checkpoint": "vercel",
+    "edge_security_checkpoint": "edge_checkpoint",
     "recaptcha": "recaptcha",
     "hcaptcha": "hcaptcha",
     "rate_limit": "rate_limit",

@@ -94,8 +94,22 @@ def scan_status_from_stats(stats: Any) -> Dict[str, Any]:
     else:
         phase = "starting"
 
+    edge_blocked = bool(getattr(stats, "enum_edge_blocked", False))
+    edge_signal = str(getattr(stats, "enum_edge_checkpoint_signal", "") or "")
+    coverage = str(getattr(stats, "target_content_coverage", "") or "")
+    inconclusive_reason = str(getattr(stats, "assessment_inconclusive_reason", "") or "")
+    if edge_blocked and not inconclusive_reason:
+        inconclusive_reason = f"edge security checkpoint ({edge_signal or 'blocked'})"
+    if edge_blocked and not coverage:
+        coverage = "failed"
+
     if not enum_configured:
         enum_message = "Directory enumeration disabled for this scan."
+    elif edge_blocked:
+        enum_message = (
+            "Directory enumeration blocked by edge security checkpoint — coverage inconclusive "
+            "(not a wildcard soft-404)."
+        )
     elif enum_skip_reason:
         enum_message = f"Directory enumeration did not complete ({enum_skip_reason})."
     elif not enum_started:
@@ -112,6 +126,11 @@ def scan_status_from_stats(stats: Any) -> Dict[str, Any]:
     else:
         enum_message = "Directory enumeration status unavailable."
 
+    # Process can be final while assessment remains inconclusive (checkpoint-only crawl)
+    assessment_status = "inconclusive" if (edge_blocked or coverage == "failed") else (
+        "complete" if status == "final" else status
+    )
+
     return {
         "scan_status": status,
         "phase": phase,
@@ -123,6 +142,10 @@ def scan_status_from_stats(stats: Any) -> Dict[str, Any]:
         "enum_started": enum_started,
         "enum_complete": enum_complete if enum_configured else True,
         "enum_skip_reason": enum_skip_reason,
+        "enum_edge_blocked": edge_blocked,
+        "target_content_coverage": coverage or ("ok" if status == "final" and pages > 0 else ""),
+        "assessment_status": assessment_status,
+        "assessment_inconclusive_reason": inconclusive_reason,
         # Legacy aliases for older report templates
         "directory_enum_enabled": enum_enabled,
         "directory_enum_started": enum_started,

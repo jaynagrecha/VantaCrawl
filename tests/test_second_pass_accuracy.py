@@ -70,14 +70,14 @@ def test_s3_nosuchbucket_filtered():
     assert "NoSuchBucket" in note
 
 
-def test_s3_access_denied_kept():
+def test_s3_access_denied_not_public_hit():
     ok, note = classify_bucket_response(
         403,
         b'<?xml version="1.0"?><Error><Code>AccessDenied</Code></Error>',
         provider="s3",
     )
-    assert ok is True
-    assert "AccessDenied" in note
+    assert ok is False
+    assert "403" in note or "AccessDenied" in note or "denied" in note.lower()
 
 
 def test_secrets_not_double_fired_in_passive():

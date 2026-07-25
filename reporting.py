@@ -194,8 +194,16 @@ class ReportWriter:
         )
         payload["route_templates"] = list(getattr(stats, "route_templates", []) or [])[:2000]
         payload["request_ledger"] = list(getattr(stats, "request_ledger", []) or [])[:2000]
+        payload["total_requests_observed"] = int(getattr(stats, "total_requests_observed", 0) or 0)
+        payload["requests_retained"] = int(
+            getattr(stats, "requests_retained", 0) or len(getattr(stats, "request_ledger", []) or [])
+        )
+        payload["request_retention_cap"] = int(getattr(stats, "_request_ledger_cap", 8000) or 8000)
+        payload["requests_exported"] = min(len(getattr(stats, "request_ledger", []) or []), 2000)
+        payload["requests_omitted"] = int(getattr(stats, "requests_omitted", 0) or 0)
         payload["request_ledger_note"] = (
-            "request_ledger is append-only and capped; use request_ledger_count for the full total."
+            "request_ledger rows are capped for export. Use total_requests_observed for the full "
+            "attempt count; requests_retained/request_retention_cap/requests_omitted describe retention."
         )
         payload["discovered_urls"] = sorted(getattr(stats, "discovered_urls", set()))[:5000]
         payload["discovered_urls_note"] = (
@@ -204,9 +212,14 @@ class ReportWriter:
         payload["enum_hit_urls"] = list(getattr(stats, "enum_hit_urls", []))
         payload["enum_hit_records"] = list(getattr(stats, "enum_hit_records", []) or [])[:2000]
         payload["enum_skipped_records"] = list(getattr(stats, "enum_skipped_records", []) or [])[:500]
-        payload["enum_attempt_fingerprints"] = list(getattr(stats, "enum_attempt_fingerprints", []) or [])[:2000]
+        fps = list(getattr(stats, "enum_attempt_fingerprints", []) or [])
+        payload["enum_attempt_fingerprints"] = fps[:2000]
+        payload["enum_attempt_fingerprint_count"] = len(fps)
+        payload["enum_attempt_fingerprints_exported"] = min(len(fps), 2000)
+        payload["enum_http_attempts"] = int(getattr(stats, "enum_http_attempts", 0) or 0)
         payload["enum_attempt_fingerprints_note"] = (
-            "enum_attempt_fingerprints is capped; covers hits, misses, and rate-limited attempts."
+            "Fingerprint objects are capped for export. Compare enum_http_attempts (full attempts) "
+            "with enum_attempt_fingerprint_count (retained) and enum_attempt_fingerprints_exported."
         )
         payload["enum_validation_conclusion"] = str(getattr(stats, "enum_validation_conclusion", "") or "")
         # Never export full public client-key values in JSON

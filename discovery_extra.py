@@ -132,6 +132,16 @@ async def enumerate_subdomains(
                 exists = False
         async with lock:
             done += 1
+            if stats is not None and hasattr(stats, "record_request"):
+                try:
+                    stats.record_request(
+                        phase="subdomain",
+                        source="probe",
+                        url=test_url,
+                        outcome="hit" if exists else "miss",
+                    )
+                except Exception:
+                    pass
             if exists:
                 found.append(test_url)
                 if output_callback:

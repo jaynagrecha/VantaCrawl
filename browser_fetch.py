@@ -391,6 +391,7 @@ def _response_looks_challenged(
         "checking your browser",
         "cf-browser-verification",
         "challenge-platform",
+        "vercel security checkpoint",
     )
     return any(m in low for m in markers)
 

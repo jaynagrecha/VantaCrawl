@@ -513,6 +513,14 @@ def is_permission_or_storage_deny(
     """
     if status_code not in (401, 403, 405):
         return False
+    # Vercel Security Checkpoint (and similar) are edge blocks — not soft permission denials
+    try:
+        from edge_checkpoint import is_edge_checkpoint
+
+        if is_edge_checkpoint(status_code, body, headers):
+            return False
+    except Exception:
+        pass
     headers_l = _header_map(headers)
     server = (headers_l.get("server") or "").lower()
     body_l = (body or "").lower()[:8000]
@@ -532,6 +540,7 @@ def is_permission_or_storage_deny(
         "datadome",
         "perimeterx",
         "sucuri",
+        "vercel security checkpoint",
     )
     if any(tok in combined for tok in bot_tokens):
         return False
@@ -561,7 +570,16 @@ def detect_challenge(
     Bare HTTP 403 from static hosts (Netlify/Vercel/S3 permission denials, missing
     files) must NOT arm WAF backoff — that was parking enum scans with
     Protections=none and Blocks climbing on every 403.
+    Edge security checkpoints (Vercel Security Checkpoint) DO count as challenges.
     """
+    try:
+        from edge_checkpoint import is_edge_checkpoint
+
+        cp = is_edge_checkpoint(status_code, body, headers)
+        if cp:
+            return cp
+    except Exception:
+        pass
     body_l = (body or "").lower()[:8000]
     headers_l = _header_map(headers)
     header_blob = " ".join(f"{k}:{v}" for k, v in headers_l.items())

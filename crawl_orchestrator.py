@@ -439,6 +439,7 @@ async def run_full_crawl_async(
                 defense,
                 output_callback,
                 skip_static_probes=chrome_first,
+                stats=stats,
             )
             # When Akamai/Bot Manager is present, tighten probe shape immediately
             try:
@@ -665,6 +666,40 @@ async def run_full_crawl_async(
                         stats.note_url_kind(current_url, "crawl")
                 if body:
                     stats.bytes_downloaded += len(body)
+
+                # Edge checkpoint / challenge pages are not application content
+                try:
+                    from edge_checkpoint import is_edge_checkpoint
+
+                    cp_sig = is_edge_checkpoint(
+                        status_code_t,
+                        body_text or body or b"",
+                        resp_headers,
+                    )
+                except Exception:
+                    cp_sig = ""
+                if cp_sig:
+                    stats.edge_checkpoint_pages = int(getattr(stats, "edge_checkpoint_pages", 0) or 0) + 1
+                    stats.target_content_coverage = "failed"  # type: ignore[attr-defined]
+                    stats.assessment_inconclusive_reason = (  # type: ignore[attr-defined]
+                        f"edge security checkpoint ({cp_sig})"
+                    )
+                    output_callback(
+                        f"Edge checkpoint ({cp_sig}) — skipping extract/save/security for {current_url}"
+                    )
+                    try:
+                        stats.record_request(
+                            phase="crawl",
+                            source="edge_checkpoint",
+                            url=current_url,
+                            depth=current_depth,
+                            status=status_code_t,
+                            outcome="blocked_inconclusive",
+                            classification=cp_sig,
+                        )
+                    except Exception:
+                        pass
+                    return
 
                 if body:
                     _ingest_file_metadata(
@@ -1283,12 +1318,24 @@ async def _run_full_enum_suite(
         bucket_wl = config.subdomain_wordlist
     if config.s3_enum and await running():
         for url in await enumerate_s3_buckets(
-            domain, bucket_wl, client, running=running, output_callback=output_callback, concurrency=config.enum_concurrency
+            domain,
+            bucket_wl,
+            client,
+            running=running,
+            output_callback=output_callback,
+            concurrency=config.enum_concurrency,
+            stats=stats,
         ):
             stats.record_url("s3", url)
     if config.gcs_enum and await running():
         for url in await enumerate_gcs_buckets(
-            domain, bucket_wl, client, running=running, output_callback=output_callback, concurrency=config.enum_concurrency
+            domain,
+            bucket_wl,
+            client,
+            running=running,
+            output_callback=output_callback,
+            concurrency=config.enum_concurrency,
+            stats=stats,
         ):
             stats.record_url("gcs", url)
 
