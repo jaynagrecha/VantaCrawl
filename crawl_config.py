@@ -168,8 +168,13 @@ class CrawlConfig:
     active_probe_mode: str = "safe"
     # OOB SSRF/XXE callback base, e.g. https://callback.example (empty = skip OOB confirm)
     ssrf_callback_base: str = ""
+    # Optional poll URL for Interactsh / VantaCrawl callback service correlation
+    oob_callback_poll_url: str = ""
     redirect_proof_host: str = "redirect-proof.vantacrawl-lab.example"
-    # Owned lab only: target has /opt/vantacrawl-fixtures/VC_TRAVERSAL_* installed
+    # Traversal canary gate — both required to send/confirm canary probes
+    traversal_canary_path: str = ""
+    traversal_canary_expected_content: str = ""
+    # Legacy alias: if True and path/content empty, derive defaults from fixture root
     traversal_fixture_installed: bool = False
     active_probe_max_params: int = 8
     active_probe_max_forms: int = 3

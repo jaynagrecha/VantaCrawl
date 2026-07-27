@@ -225,6 +225,16 @@ class CrawlStats:
         similarity: float = 0.0,
         path_shape: str = "",
         classification: str = "",
+        # Active-probe ledger extensions (optional)
+        probe_class: str = "",
+        probe_name: str = "",
+        probe_mode: str = "",
+        probe_role: str = "",
+        parameter: str = "",
+        method: str = "",
+        payload_redacted: str = "",
+        result_state: str = "",
+        **extra: Any,
     ) -> None:
         """Append-only request ledger row (fetch-queue inventory stays separate).
 
@@ -266,6 +276,26 @@ class CrawlStats:
             row["path_shape"] = path_shape
         if classification:
             row["classification"] = classification
+        if probe_class:
+            row["probe_class"] = str(probe_class)[:120]
+        if probe_name:
+            row["probe_name"] = str(probe_name)[:120]
+        if probe_mode:
+            row["mode"] = str(probe_mode)[:32]
+        if probe_role:
+            row["probe_role"] = str(probe_role)[:64]
+        if parameter:
+            row["parameter"] = str(parameter)[:120]
+        if method:
+            row["method"] = str(method).upper()[:16]
+        if payload_redacted:
+            row["payload_redacted"] = str(payload_redacted)[:240]
+        if result_state:
+            row["result_state"] = str(result_state)[:80]
+        for key, value in (extra or {}).items():
+            if value is None or key in row:
+                continue
+            row[key] = value
         self.request_ledger.append(row)
         self.requests_retained = len(self.request_ledger)
 

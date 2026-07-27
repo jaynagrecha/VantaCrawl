@@ -308,14 +308,16 @@ def test_active_xss_encoded_negative():
 
 def test_active_xss_dom_node_medium():
     findings = _run("xss_breakout", "https://example.com/search?q=test")
-    xss = [f for f in findings if f[0] == "xss"]
-    assert any(f[1] == "medium" for f in xss)
-    assert any("dom" in f[2].lower() or "breakout" in f[2].lower() for f in xss)
+    html = [f for f in findings if f[0] == "html_injection"]
+    assert html
+    assert html[0][1] == "low"
+    assert html[0][4]["proof"]["validation_state"] == "html_injection"
+    assert "html injection" in html[0][2].lower()
 
 
 def test_active_xss_browser_confirm_optional():
-    async def _eval(url, expr):
-        return True
+    async def _eval(url, expr, **kwargs):
+        return {"executed": True, "final_url": url, "console_errors": [], "csp_blocked": []}
 
     findings = asyncio.run(
         run_active_vuln_probes(
@@ -329,6 +331,11 @@ def test_active_xss_browser_confirm_optional():
     )
     # Browser confirm may fire on event payloads if body still has token
     assert isinstance(findings, list)
+    assert any(
+        f[0] == "xss" and f[4]["proof"]["validation_state"] == "browser_execution_confirmed"
+        for f in findings
+        if len(f) > 4
+    )
 
 
 def test_safe_mode_skips_imds():
@@ -372,8 +379,17 @@ def test_ssrf_url_echo_without_callback_negative():
         probe_mode="safe",
         callback_base="https://cb.example",
     )
-    # No callback_received → must not confirm
-    assert not any(f[0] == "ssrf" for f in findings)
+    # No callback_received → must not confirm (may emit info unconfirmed probe)
+    assert not any(
+        f[0] == "ssrf" and f[4].get("validation") == "confirmed"
+        for f in findings
+        if len(f) > 4
+    )
+    assert not any(
+        f[0] == "ssrf" and f[4]["proof"]["validation_state"] == "oob_callback_confirmed"
+        for f in findings
+        if len(f) > 4
+    )
 
 
 def test_rce_reflection_negative():

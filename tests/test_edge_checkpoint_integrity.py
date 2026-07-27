@@ -35,6 +35,30 @@ def test_vercel_checkpoint_detected_not_permission_deny():
     assert detect_challenge(403, VERCEL_BODY, headers=headers) == "vercel_security_checkpoint"
 
 
+def test_status_200_prose_checkpoint_words_are_not_edge_walls():
+    """Blogs/docs mentioning checkpoint/cf-challenge must not trip on bare 200 text."""
+    assert is_edge_checkpoint(200, "cf-challenge cloudflare") == ""
+    assert is_edge_checkpoint(200, "we passed the security checkpoint today") == ""
+    prose_html = (
+        "<!DOCTYPE html><html><body>"
+        "Our blog post about the security checkpoint and cf-challenge headers."
+        "</body></html>"
+    )
+    assert is_edge_checkpoint(200, prose_html) == ""
+    assert detect_challenge(200, "cf-challenge cloudflare") == ""
+
+
+def test_status_200_real_cloudflare_interstitial_still_detected():
+    body = (
+        "<!DOCTYPE html><html><head><title>Just a moment...</title></head>"
+        "<body>Checking your browser before accessing example.com. "
+        "cf-browser-verification challenge-platform</body></html>"
+    )
+    headers = {"Server": "cloudflare", "cf-ray": "abc-DFW", "content-type": "text/html"}
+    assert is_edge_checkpoint(200, body, headers) == "cloudflare_challenge"
+    assert detect_challenge(200, body, headers=headers) == "cloudflare_challenge"
+
+
 def test_bare_vercel_403_without_checkpoint_still_permission():
     headers = {"Server": "Vercel"}
     body = "<html><body>Forbidden</body></html>"

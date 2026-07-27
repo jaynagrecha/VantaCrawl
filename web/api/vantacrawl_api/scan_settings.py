@@ -151,13 +151,25 @@ _HUMAN = {
         "SSRF/XXE callback base",
         "Controlled callback host for OOB SSRF/XXE confirm (e.g. https://cb.example). Empty skips OOB confirm.",
     ),
+    "oob_callback_poll_url": (
+        "OOB callback poll URL",
+        "Optional Interactsh / VantaCrawl callback poller endpoint for nonce correlation.",
+    ),
     "redirect_proof_host": (
         "Open-redirect proof host",
         "Controlled external host used to confirm open redirects.",
     ),
+    "traversal_canary_path": (
+        "Traversal canary path",
+        "Configured canary path for traversal confirmation. Empty skips canary probes.",
+    ),
+    "traversal_canary_expected_content": (
+        "Traversal canary content",
+        "Expected file content proving the canary was read. Required with canary path.",
+    ),
     "traversal_fixture_installed": (
-        "Traversal lab fixture installed",
-        "Lab only: target has VantaCrawl traversal canary files installed. Enables canary_file_confirmed.",
+        "Traversal lab fixture installed (legacy)",
+        "Legacy alias: derive default canary path/content from fixture root when path/content empty.",
     ),
     "secret_scan": ("Secret scan", "Hunt for API keys and credentials in content."),
     "secret_validate_live": (
@@ -540,7 +552,10 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "vuln_active_probe",
             "active_probe_mode",
             "ssrf_callback_base",
+            "oob_callback_poll_url",
             "redirect_proof_host",
+            "traversal_canary_path",
+            "traversal_canary_expected_content",
             "traversal_fixture_installed",
             "secret_scan",
             "secret_validate_live",

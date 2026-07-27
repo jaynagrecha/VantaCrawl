@@ -29,6 +29,67 @@ def test_keep_interesting_text_hits():
     assert not should_skip_enum_followup("https://x.netlify.app/admin", 200, word="admin")
 
 
+def test_validated_unique_gate_still_blocks_unverified_followups():
+    """Fixture updates must not weaken the #78 validated-unique follow-up gate."""
+    client = AsyncMock()
+    client.get = AsyncMock(side_effect=AssertionError("must not fetch"))
+    security = AsyncMock()
+    config = SimpleNamespace(
+        enum_auto_crawl_hits=True,
+        enum_auto_vuln_scan=True,
+        security_scan=False,
+        vuln_active_probe=False,
+    )
+    sched = EnumFollowupScheduler(
+        client=client,
+        config=config,
+        stats=SimpleNamespace(errors=0),
+        output_callback=lambda _m: None,
+        run_security=security,
+        extract_forms=lambda *_a, **_k: [],
+        concurrency=1,
+        timeout_s=1.0,
+    )
+
+    async def run():
+        # Not validated → inventory only
+        sched.schedule(
+            ProbeResult(
+                url="https://x.netlify.app/a.txt",
+                word="a.txt",
+                status=200,
+                content_length=1,
+                body_hash="h",
+                path_segments=[],
+                body=b"x",
+                content_type="text/plain",
+                validated=False,
+                classification="confirmed_unique_resource",
+            )
+        )
+        # Validated but not unique-resource → inventory only
+        sched.schedule(
+            ProbeResult(
+                url="https://x.netlify.app/b.txt",
+                word="b.txt",
+                status=200,
+                content_length=1,
+                body_hash="h",
+                path_segments=[],
+                body=b"x",
+                content_type="text/plain",
+                validated=True,
+                classification="already_known",
+            )
+        )
+        await sched.drain(timeout=2.0)
+
+    asyncio.run(run())
+    security.assert_not_awaited()
+    client.get.assert_not_called()
+    assert sched._scheduled == 0
+
+
 def test_reuse_probe_body_avoids_second_get():
     client = AsyncMock()
     client.get = AsyncMock(side_effect=AssertionError("must not re-GET when body present"))
@@ -59,6 +120,8 @@ def test_reuse_probe_body_avoids_second_get():
         path_segments=[],
         body=b"Company secrets API_KEY=test",
         content_type="text/plain",
+        validated=True,
+        classification="confirmed_unique_resource",
     )
 
     async def run():
@@ -110,6 +173,8 @@ def test_timeout_circuit_breaker_disables_followups():
                     body_hash="",
                     path_segments=[],
                     body=b"",  # force re-GET → timeout
+                    validated=True,
+                    classification="confirmed_unique_resource",
                 )
             )
         await sched.drain(timeout=10.0)
@@ -156,6 +221,8 @@ def test_schedule_is_non_blocking_for_caller():
             body_hash="",
             path_segments=[],
             body=b"",
+            validated=True,
+            classification="confirmed_unique_resource",
         )
         t0 = asyncio.get_event_loop().time()
         sched.schedule(probe)

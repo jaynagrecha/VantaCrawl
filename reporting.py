@@ -210,6 +210,9 @@ class ReportWriter:
             "attempt count; requests_retained/request_retention_cap/requests_omitted describe retention; "
             "requests_omitted_from_json_export is retained-minus-exported."
         )
+        payload["browser_confirmation"] = dict(getattr(stats, "browser_confirmation", None) or {})
+        payload["active_probe_coverage"] = dict(getattr(stats, "active_probe_coverage", None) or {})
+        payload["active_probe_breaker"] = dict(getattr(stats, "active_probe_breaker", None) or {})
         payload["discovered_urls"] = sorted(getattr(stats, "discovered_urls", set()))[:5000]
         payload["discovered_urls_note"] = (
             "discovered_urls list is capped at 5000 for export; discovered_url_count is the full total."
@@ -307,8 +310,29 @@ class ReportWriter:
             "CREATE TABLE IF NOT EXISTS request ("
             "phase TEXT, source TEXT, url TEXT, depth INTEGER, status TEXT, "
             "final_url TEXT, response_type TEXT, bytes INTEGER, hash TEXT, "
-            "duration_ms REAL, outcome TEXT, ts REAL)"
+            "duration_ms REAL, outcome TEXT, ts REAL, "
+            "probe_class TEXT, probe_name TEXT, mode TEXT, probe_role TEXT, "
+            "parameter TEXT, method TEXT, payload_redacted TEXT, "
+            "classification TEXT, result_state TEXT, normalized_hash TEXT)"
         )
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(request)").fetchall()}
+            for col, decl in (
+                ("probe_class", "TEXT"),
+                ("probe_name", "TEXT"),
+                ("mode", "TEXT"),
+                ("probe_role", "TEXT"),
+                ("parameter", "TEXT"),
+                ("method", "TEXT"),
+                ("payload_redacted", "TEXT"),
+                ("classification", "TEXT"),
+                ("result_state", "TEXT"),
+                ("normalized_hash", "TEXT"),
+            ):
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE request ADD COLUMN {col} {decl}")
+        except Exception:
+            pass
         conn.execute(
             "CREATE TABLE IF NOT EXISTS url (url TEXT PRIMARY KEY, kind TEXT)"
         )
@@ -371,7 +395,11 @@ class ReportWriter:
         )
         for row in list(getattr(stats, "request_ledger", []) or [])[:8000]:
             conn.execute(
-                "INSERT INTO request VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO request ("
+                "phase, source, url, depth, status, final_url, response_type, bytes, hash, "
+                "duration_ms, outcome, ts, probe_class, probe_name, mode, probe_role, "
+                "parameter, method, payload_redacted, classification, result_state, normalized_hash"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     row.get("phase"),
                     row.get("source"),
@@ -385,6 +413,16 @@ class ReportWriter:
                     float(row.get("duration_ms") or 0),
                     row.get("outcome"),
                     float(row.get("ts") or 0),
+                    row.get("probe_class") or "",
+                    row.get("probe_name") or "",
+                    row.get("mode") or "",
+                    row.get("probe_role") or "",
+                    row.get("parameter") or "",
+                    row.get("method") or "",
+                    row.get("payload_redacted") or "",
+                    row.get("classification") or "",
+                    row.get("result_state") or "",
+                    row.get("normalized_hash") or "",
                 ),
             )
         for u in list(getattr(stats, "discovered_urls", set()) or set())[:5000]:

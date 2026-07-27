@@ -91,13 +91,35 @@ def is_edge_checkpoint(
         if "cloudflare" in body_l or headers_l.get("cf-ray"):
             return "cloudflare_challenge"
 
+    htmlish = bool(_HTMLISH_RE.search(body_text[:500]))
+    titled = bool(_CHECKPOINT_TITLE_RE.search(title_text))
+    # Stronger platform evidence for 200 interstitials — avoid FP on blogs/docs that
+    # merely mention "checkpoint" / "cf-challenge" without an actual edge wall.
+    platform_200 = bool(
+        headers_l.get("cf-ray")
+        or "cloudflare" in server
+        or "vercel" in server
+        or "challenge-platform" in body_l
+        or "cf-browser-verification" in body_l
+        or "checking your browser before accessing" in body_l
+        or "attention required! | cloudflare" in body_l
+        or "vercel security checkpoint" in body_l
+        or "cdn.vercel-insights.com" in body_l
+        or "/_vercel/insights" in body_l
+        or titled
+    )
     for marker in _CHECKPOINT_BODY_MARKERS:
         if marker in body_l or marker in title_l:
+            status = int(status_code or 0)
+            if status == 200:
+                # Must be HTML/title interstitial AND platform evidence — not prose.
+                if not ((htmlish or titled) and platform_200):
+                    continue
             if "vercel" in marker or "vercel" in server or "vercel" in body_l:
                 return "vercel_security_checkpoint"
             if "cloudflare" in marker or "cf-" in marker or headers_l.get("cf-ray"):
                 return "cloudflare_challenge"
-            if int(status_code or 0) in (401, 403, 503) and _HTMLISH_RE.search(body_text[:500]):
+            if status in (401, 403, 503) and htmlish:
                 return "edge_security_checkpoint"
     return ""
 
