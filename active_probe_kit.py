@@ -54,7 +54,7 @@ KIND_TO_FAMILY: Dict[str, str] = {
     "traversal": "traversal",
     "traversal_diff": "traversal",
     "crlf": "crlf",
-    "redirect": "crlf",
+    "redirect": "redirect",
     "xxe": "xxe",
 }
 
@@ -2322,8 +2322,16 @@ async def run_active_probe_kit(
                         if str(hk).lower() == "location":
                             location = str(hv or "")
                             break
-                    blob = f"{location} {p_final}".lower()
-                    if host.lower() not in blob:
+                    # Confirm only from Location (and followed final URL). Never from the
+                    # request URL — it embeds the payload and would self-confirm controls.
+                    blob = (location or "").lower()
+                    if follow and p_final:
+                        # Only count final_url when it differs from the probe request URL.
+                        req_base = f"{urlparse(target).scheme}://{urlparse(target).netloc}{urlparse(target).path}"
+                        final_base = f"{urlparse(p_final).scheme}://{urlparse(p_final).netloc}{urlparse(p_final).path}"
+                        if final_base.rstrip("/") != req_base.rstrip("/"):
+                            blob = f"{blob} {p_final}".lower()
+                    if not host or host.lower() not in blob:
                         continue
                     hit = True
                     severity = "high"
@@ -2331,8 +2339,8 @@ async def run_active_probe_kit(
                     validation_state = STATE_SERVER_EXEC
                     confidence = "high"
                     verification = "confirmed"
-                    new_evidence = [f"Location/final→{host}"]
-                    evidence_line = f"redirect: {location or p_final}"
+                    new_evidence = [f"Location→{host}"]
+                    evidence_line = f"redirect: {location}"
 
                 elif spec.kind == "crlf":
                     hdr_name = str(local_meta.get("header") or "").lower()
@@ -2505,7 +2513,7 @@ async def run_active_probe_kit(
         # Prefer a concrete injectable URL (path + synthetic/query params).
         url = with_query_params(_path_only_url(url) if not pairs else url, dict(pairs))
 
-    probe_families = ("sqli", "rce", "ssti", "ssrf", "traversal", "crlf", "xss")
+    probe_families = ("sqli", "rce", "ssti", "ssrf", "traversal", "crlf", "redirect", "xss")
     selected_plan_paths: Dict[str, set] = {f: set() for f in probe_families}
 
     def _allowed_for_param(pname: str) -> Dict[str, Tuple[str, int]]:
@@ -2730,6 +2738,54 @@ async def run_active_probe_kit(
             elif ts_status == "partial":
                 if not getattr(stats, "active_validation_coverage", None):
                     stats.active_validation_coverage = "partial"  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    # Explicit coverage-gap records for Horizon / supported fixtures.
+    if stats is not None:
+        try:
+            from horizon_benchmark.evaluate import build_coverage_gaps
+            from horizon_benchmark.manifest import load_manifest
+
+            gaps = build_coverage_gaps(stats=stats, mode=mode, manifest=load_manifest())
+            prev_gaps = list(getattr(stats, "benchmark_coverage_gaps", None) or [])
+            # Merge by path+reason
+            seen_g = {(str(g.get("path")), str(g.get("reason"))) for g in prev_gaps if isinstance(g, dict)}
+            for g in gaps:
+                key = (str(g.get("path")), str(g.get("reason")))
+                if key in seen_g:
+                    continue
+                prev_gaps.append(g)
+                seen_g.add(key)
+            stats.benchmark_coverage_gaps = prev_gaps[:500]  # type: ignore[attr-defined]
+            # Unsupported discovered fixtures → informational finding (never silent)
+            emitted = getattr(stats, "_unsupported_fixture_gaps_emitted", None)
+            if not isinstance(emitted, set):
+                emitted = set()
+                stats._unsupported_fixture_gaps_emitted = emitted  # type: ignore[attr-defined]
+            for g in gaps:
+                if g.get("reason") != "family_unsupported":
+                    continue
+                path = str(g.get("path") or "")
+                if not path or path in emitted:
+                    continue
+                emitted.add(path)
+                add(
+                    "coverage_gap",
+                    "info",
+                    f"Fixture discovered but no compatible active detector exists: {path}",
+                    f"unsupported_fixture:{path}",
+                    {
+                        "verification": "informational",
+                        "confidence": "high",
+                        "confidence_reason": "benchmark_coverage_gap",
+                        "proof": {
+                            "validation_state": STATE_NOT_APPLICABLE,
+                            "coverage_gap": g,
+                        },
+                        "validation": "unverified",
+                    },
+                )
         except Exception:
             pass
 

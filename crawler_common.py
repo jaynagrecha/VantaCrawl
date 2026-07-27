@@ -869,6 +869,7 @@ ROBOTS_BYPASS_PROVENANCE = {
     "policy": "robots_exclusion_bypassed",
     "authority": "authorized_configuration",
     "setting": "ignore_robots=true",
+    "authorized_robots_bypass": True,
     "note": (
         "Path was listed under robots.txt Disallow (or equivalent exclusion) and was "
         "fetched because Ignore robots.txt was explicitly enabled for this authorized scan."

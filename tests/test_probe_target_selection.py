@@ -82,12 +82,14 @@ def test_build_probe_plan_prioritises_dedicated_fixtures():
         "https://horizon-catalog.onrender.com/crlf",
         "https://horizon-catalog.onrender.com/trav/download",
         "https://horizon-catalog.onrender.com/xss/browser",
+        "https://horizon-catalog.onrender.com/redirect",
+        "https://horizon-catalog.onrender.com/redirect/safe",
         "https://horizon-catalog.onrender.com/mass-assign/profile?name=a",
         "https://horizon-catalog.onrender.com/graphql?query=q",
     ]
     plan = build_probe_plan(
         surface_urls=surface,
-        families=("sqli", "rce", "ssti", "ssrf", "traversal", "crlf", "xss"),
+        families=("sqli", "rce", "ssti", "ssrf", "traversal", "crlf", "redirect", "xss"),
         max_generic_per_family=1,
         max_targets_per_family=8,
     )

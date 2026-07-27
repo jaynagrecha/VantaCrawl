@@ -984,6 +984,13 @@ def write_findings_snapshot(report_dir: str | Path, stats: CrawlStats) -> str:
         "robots_disallow_prefixes": list(
             getattr(stats, "robots_disallow_prefixes", None) or []
         )[:50],
+        "benchmark_coverage_gaps": list(
+            getattr(stats, "benchmark_coverage_gaps", None) or []
+        )[:500],
+        "authorized_robots_bypass": bool(
+            (getattr(stats, "robots_policy", None) or {}).get("ignore_robots")
+        )
+        and bool(getattr(stats, "robots_bypass_events", None)),
     }
     # Never overwrite a richer prior snapshot with a poorer empty one
     try:

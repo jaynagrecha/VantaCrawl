@@ -192,6 +192,27 @@ def scan_status_from_stats(stats: Any) -> Dict[str, Any]:
     else:
         assessment_status = "complete" if status == "final" else status
 
+    # Horizon acceptance gate: mandatory supported fixtures must be tested or
+    # explicitly gap-recorded (breaker / mode / unsupported) — never silent.
+    gaps = list(getattr(stats, "benchmark_coverage_gaps", None) or [])
+    mandatory_gaps = [
+        g
+        for g in gaps
+        if isinstance(g, dict)
+        and g.get("mandatory")
+        and g.get("reason")
+        not in ("mode_excluded", "family_unsupported", "browser_unavailable", "oob_unavailable")
+    ]
+    if status == "final" and mandatory_gaps:
+        assessment_status = "incomplete"
+        paths = ", ".join(sorted({str(g.get("path")) for g in mandatory_gaps})[:12])
+        inconclusive_reason = (
+            f"horizon_acceptance: mandatory fixtures untested ({paths})"
+        )
+        if target_selection_coverage in ("", "unknown", "n/a", "complete"):
+            target_selection_coverage = "insufficient"
+        active_cov = "partial"
+
     # Keep target_content_coverage as crawl-scoped wording (not overall vuln assessment).
     if not coverage:
         if status == "final" and pages > 0:

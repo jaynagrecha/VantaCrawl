@@ -26,7 +26,8 @@ ROUTE_FAMILY_INDICATORS: dict[str, tuple[str, ...]] = {
     "ssti": ("ssti", "template", "tmpl", "render", "preview"),
     "ssrf": ("ssrf", "fetch", "webhook", "callback", "remote"),
     "traversal": ("trav", "lfi", "path", "download", "include", "file", "nullbyte"),
-    "crlf": ("crlf", "redirect", "location"),
+    "crlf": ("crlf",),
+    "redirect": ("redirect", "location", "next", "return"),
     "xss": ("xss", "comment", "message", "html", "content"),
 }
 
@@ -37,7 +38,8 @@ PARAM_FAMILY_INDICATORS: dict[str, tuple[str, ...]] = {
     "ssti": ("name", "template", "tmpl", "render", "view", "preview", "expr"),
     "ssrf": ("url", "uri", "src", "dest", "target", "webhook", "callback", "image", "remote", "link", "fetch"),
     "traversal": ("path", "file", "filename", "filepath", "include", "page", "doc", "download", "template"),
-    "crlf": ("url", "redirect", "next", "return", "location", "header", "dest", "q"),
+    "crlf": ("q", "query", "search", "header", "name"),
+    "redirect": ("next", "url", "redirect", "return", "returnurl", "continue", "dest", "destination", "goto", "target"),
     "xss": ("q", "search", "query", "message", "comment", "html", "content", "name", "text", "body", "title"),
 }
 
@@ -48,11 +50,13 @@ ROUTE_SYNTHETIC_PARAMS: dict[str, dict[str, str]] = {
     "/sqli/search": {"q": "test"},
     "/sqli/blind": {"id": "1"},
     "/sqli/time": {"id": "1"},
+    "/sqli/safe": {"id": "1"},
     "/sqli/union": {"id": "1"},
     "/rce/arith": {"cmd": "1+1"},
     "/rce/reflect": {"cmd": "id"},
     "/cmdi/ping": {"host": "127.0.0.1"},
     "/ssti/eval": {"name": "guest"},
+    "/ssti/reflect": {"name": "guest"},
     "/tmpl/twig": {"name": "guest"},
     "/ssrf/fetch": {"url": "http://example.com"},
     "/ssrf/reflect": {"url": "http://example.com"},
@@ -62,10 +66,13 @@ ROUTE_SYNTHETIC_PARAMS: dict[str, dict[str, str]] = {
     "/lfi/include": {"page": "home"},
     "/nullbyte/download": {"file": "readme.txt"},
     "/xss/browser": {"q": "test"},
+    "/xss/reflected": {"q": "test"},
+    "/xss/encoded": {"q": "test"},
     "/xss/dom": {"q": "test"},
-    "/xss/reflect": {"q": "test"},
     "/xss/attr": {"q": "test"},
     "/xss/js-string": {"q": "test"},
+    "/redirect": {"next": "https://redirect-proof.vantacrawl-lab.example/x"},
+    "/redirect/safe": {"next": "/account"},
 }
 
 # Families that may use generic_fallback on "interesting" params when no
@@ -157,6 +164,7 @@ def _fixture_family_for_path(path: str) -> Optional[str]:
         ("/lfi/", "traversal"),
         ("/nullbyte/", "traversal"),
         ("/crlf", "crlf"),
+        ("/redirect", "redirect"),
         ("/xss/", "xss"),
     )
     for prefix, fam in mapping:
@@ -499,13 +507,14 @@ def _preferred_param(params: dict[str, str], family: str) -> str:
 def required_horizon_fixtures() -> dict[str, tuple[str, ...]]:
     """Canonical Horizon Catalog fixtures that must be selected when discovered."""
     return {
-        "sqli": ("/sqli/error", "/sqli/search"),
-        "rce": ("/rce/arith", "/cmdi/ping"),
-        "ssti": ("/ssti/eval",),
-        "ssrf": ("/ssrf/fetch",),
+        "sqli": ("/sqli/error", "/sqli/search", "/sqli/blind", "/sqli/safe"),
+        "rce": ("/rce/arith", "/cmdi/ping", "/rce/reflect"),
+        "ssti": ("/ssti/eval", "/ssti/reflect"),
+        "ssrf": ("/ssrf/fetch", "/ssrf/reflect"),
         "crlf": ("/crlf",),
-        "traversal": ("/trav/download",),
-        "xss": ("/xss/browser",),
+        "traversal": ("/trav/download", "/trav/view"),
+        "xss": ("/xss/browser", "/xss/reflected", "/xss/encoded"),
+        "redirect": ("/redirect", "/redirect/safe"),
     }
 
 
