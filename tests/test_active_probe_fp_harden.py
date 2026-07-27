@@ -314,7 +314,8 @@ def test_ssrf_callback_confirm():
     )
     assert any(f[0] == "ssrf" for f in findings)
     assert any(
-        f[4]["proof"]["validation_state"] == "out_of_band_callback_confirmed"
+        f[4]["proof"]["validation_state"]
+        in ("oob_callback_confirmed", "out_of_band_callback_confirmed")
         for f in findings
         if f[0] == "ssrf" and len(f) > 4
     )
@@ -404,3 +405,67 @@ def test_classify_xss_encoded_none():
 def test_passive_mode_sends_nothing():
     findings = _run("true_sqli", "https://x.com/item?id=1", probe_mode="passive")
     assert findings == []
+
+
+def test_safe_bans_sleep_union_imds_passwd_in_payload_bodies():
+    specs = build_payload_specs(ProbeModeSettings(mode="safe", callback_base="https://cb.example"), "a81f")
+    joined = " ".join(s.payload for s in specs).lower()
+    for banned in (
+        "169.254.169.254",
+        "/etc/passwd",
+        "sleep(",
+        "waitfor",
+        "union select",
+        "drop table",
+    ):
+        assert banned not in joined
+
+
+def test_extended_adds_encodings_and_rce_separators():
+    specs = build_payload_specs(
+        ProbeModeSettings(mode="extended", callback_base="https://cb.example"), "a81f"
+    )
+    classes = {s.payload_class for s in specs}
+    assert "sqli_bool_true_str_comment" in classes
+    assert "sqli_enc_quote" in classes
+    assert "xss_img_onerror_ctx" in classes
+    assert "xss_js_string_breakout" in classes
+    assert "rce_printf_backtick" in classes
+    assert "trav_canary_enc" in classes
+    assert "ssrf_imds_lab" not in classes
+    assert "trav_passwd_lab" not in classes
+
+
+def test_compare_response_pair_rejects_length_only_jitter():
+    from active_probe_kit import ResponseSnap, compare_response_pair
+
+    base = ResponseSnap(200, "<html><body>welcome alice balance 100</body></html>", "https://t/a")
+    true = ResponseSnap(200, "<html><body>welcome alice balance 100</body></html>", "https://t/a")
+    false = ResponseSnap(200, "<html><body>welcome alice balance 101</body></html>", "https://t/a")
+    # Tiny length-only churn must not confirm
+    cmp_ = compare_response_pair(true, false, baseline=base, repeated_false=false)
+    assert cmp_["verdict"] in ("negative", "inconclusive")
+    assert cmp_["verdict"] != "differential_signal"
+
+
+def test_compare_response_pair_accepts_strong_boolean_split():
+    from active_probe_kit import ResponseSnap, compare_response_pair
+
+    base = ResponseSnap(200, "RESULTS: default listing", "https://t/item")
+    true = ResponseSnap(200, "RESULTS: many rows here alpha beta gamma", "https://t/item")
+    false = ResponseSnap(200, "RESULTS: zero rows", "https://t/item")
+    cmp_ = compare_response_pair(true, false, baseline=base, repeated_false=false)
+    assert cmp_["verdict"] in ("differential_signal", "probable")
+    assert cmp_["normalized_hash_diff"] is True
+    assert "text_similarity" in cmp_
+    assert cmp_.get("reproducible") is True
+
+
+def test_active_sqli_boolean_includes_comparison_proof():
+    findings = _run("bool_sqli", "https://x.com/item?id=1")
+    sqli = [f for f in findings if f[0] == "sql_injection" and "boolean" in f[2].lower()]
+    assert sqli
+    proof = sqli[0][4]["proof"]
+    assert proof["validation_state"] in ("differential_signal", "probable")
+    assert "comparison" in proof
+    assert "score" in proof["comparison"]

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import re
 import secrets
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -20,9 +21,12 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 STATE_NEGATIVE = "negative"
 STATE_REFLECTED_ONLY = "reflected_only"
 STATE_DIFFERENTIAL = "differential_signal"
+STATE_PROBABLE = "probable"
 STATE_BROWSER_EXEC = "browser_execution_confirmed"
 STATE_SERVER_EXEC = "server_execution_confirmed"
-STATE_OOB_CALLBACK = "out_of_band_callback_confirmed"
+STATE_OOB_CALLBACK = "oob_callback_confirmed"
+# Back-compat alias used in earlier drafts
+STATE_OOB_CALLBACK_LEGACY = "out_of_band_callback_confirmed"
 STATE_BLOCKED_WAF = "blocked_by_waf"
 STATE_RATE_LIMITED = "rate_limited"
 STATE_BASELINE_FAILED = "baseline_failed"
@@ -172,73 +176,98 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
 
     specs: List[ProbeSpec] = []
 
-    # --- SQLi (safe): quotes + light booleans; no DROP/UNION/time ---
+    # --- SQLi families (safe): quotes / parens / comments / boolean pairs; no DROP/UNION/time ---
     for payload, pclass in (
         ("'", "sqli_quote"),
         ('"', "sqli_dquote"),
         ("')", "sqli_quote_paren"),
         ('"))', "sqli_dquote_paren"),
+        ("'--", "sqli_quote_comment"),
+        ("' #", "sqli_quote_hash_comment"),
     ):
         specs.append(
             ProbeSpec("sql_injection", payload, pclass, _sql_names, "high", "sqli_error")
         )
-    specs.append(
-        ProbeSpec(
-            "sql_injection",
-            "' AND '1'='1",
-            "sqli_bool_true_str",
-            _sql_names,
-            "high",
-            "sqli_boolean",
-            {"pair": "true", "mate_class": "sqli_bool_false_str"},
-        )
-    )
-    specs.append(
-        ProbeSpec(
-            "sql_injection",
-            "' AND '1'='2",
-            "sqli_bool_false_str",
-            _sql_names,
-            "high",
-            "sqli_boolean",
-            {"pair": "false", "mate_class": "sqli_bool_true_str"},
-        )
-    )
-    specs.append(
-        ProbeSpec(
-            "sql_injection",
-            "1 AND 1=1",
-            "sqli_bool_true_num",
-            _sql_names,
-            "high",
-            "sqli_boolean",
-            {"pair": "true", "mate_class": "sqli_bool_false_num", "replace": True},
-        )
-    )
-    specs.append(
-        ProbeSpec(
-            "sql_injection",
-            "1 AND 1=2",
-            "sqli_bool_false_num",
-            _sql_names,
-            "high",
-            "sqli_boolean",
-            {"pair": "false", "mate_class": "sqli_bool_true_num", "replace": True},
-        )
-    )
 
-    if mode == "lab":
-        # Deeper boolean / encoding variations — lab only
+    def _bool_pair(true_p: str, false_p: str, true_c: str, false_c: str, *, replace: bool = False):
+        specs.append(
+            ProbeSpec(
+                "sql_injection",
+                true_p,
+                true_c,
+                _sql_names,
+                "high",
+                "sqli_boolean",
+                {"pair": "true", "mate_class": false_c, "replace": replace},
+            )
+        )
+        specs.append(
+            ProbeSpec(
+                "sql_injection",
+                false_p,
+                false_c,
+                _sql_names,
+                "high",
+                "sqli_boolean",
+                {"pair": "false", "mate_class": true_c, "replace": replace},
+            )
+        )
+
+    _bool_pair("' AND '1'='1", "' AND '1'='2", "sqli_bool_true_str", "sqli_bool_false_str")
+    _bool_pair("1 AND 1=1", "1 AND 1=2", "sqli_bool_true_num", "sqli_bool_false_num", replace=True)
+
+    if mode in ("extended", "lab"):
+        _bool_pair(
+            "' AND '1'='1'-- ",
+            "' AND '1'='2'-- ",
+            "sqli_bool_true_str_comment",
+            "sqli_bool_false_str_comment",
+        )
+        _bool_pair(
+            "') AND ('1'='1",
+            "') AND ('1'='2",
+            "sqli_bool_true_paren",
+            "sqli_bool_false_paren",
+        )
         for payload, pclass in (
-            ("' OR '1'='1' -- ", "sqli_lab_or_true"),
-            ("' OR '1'='2' -- ", "sqli_lab_or_false"),
-            ("%27", "sqli_lab_enc_quote"),
-            ("1' AND '1'='1", "sqli_lab_mid_true"),
-            ("1' AND '1'='2", "sqli_lab_mid_false"),
+            ("%27", "sqli_enc_quote"),
+            ("%22", "sqli_enc_dquote"),
+            ("1%27", "sqli_enc_num_quote"),
         ):
             specs.append(
                 ProbeSpec("sql_injection", payload, pclass, _sql_names, "high", "sqli_error")
             )
+
+    if mode == "lab":
+        _bool_pair(
+            "' OR '1'='1' -- ",
+            "' OR '1'='2' -- ",
+            "sqli_lab_or_true",
+            "sqli_lab_or_false",
+        )
+        # Time-based (lab only) — confirm via elapsed, not body reflection
+        specs.append(
+            ProbeSpec(
+                "sql_injection",
+                "' AND SLEEP(2)-- ",
+                "sqli_lab_sleep_mysql",
+                _sql_names,
+                "high",
+                "sqli_time",
+                {"min_ms": 1500},
+            )
+        )
+        specs.append(
+            ProbeSpec(
+                "sql_injection",
+                "'; WAITFOR DELAY '0:0:2'-- ",
+                "sqli_lab_waitfor_mssql",
+                _sql_names,
+                "high",
+                "sqli_time",
+                {"min_ms": 1500},
+            )
+        )
 
     # --- XSS ---
     specs.append(
@@ -277,6 +306,40 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
             {"token": xss_tok, "needs_browser": True},
         )
     )
+    if mode in ("extended", "lab"):
+        specs.append(
+            ProbeSpec(
+                "xss",
+                f"'><img src=x id='{xss_tok}' onerror=1>",
+                "xss_img_onerror_ctx",
+                _xss_names,
+                "medium",
+                "xss",
+                {"token": xss_tok, "dom_id": xss_tok},
+            )
+        )
+        specs.append(
+            ProbeSpec(
+                "xss",
+                f"</textarea><b id=\"{xss_tok}\">{xss_tok}</b>",
+                "xss_textarea_breakout",
+                _xss_names,
+                "medium",
+                "xss",
+                {"token": xss_tok, "dom_id": xss_tok},
+            )
+        )
+        specs.append(
+            ProbeSpec(
+                "xss",
+                f"';var vc='{xss_tok}';//",
+                "xss_js_string_breakout",
+                _xss_names,
+                "medium",
+                "xss",
+                {"token": xss_tok},
+            )
+        )
 
     # --- RCE (harmless markers / arithmetic) ---
     for payload, pclass in (
@@ -298,6 +361,24 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
                 {"marker": rce_tok, "arith": _ARITH_SUM},
             )
         )
+    if mode in ("extended", "lab"):
+        for payload, pclass in (
+            (f"%0a printf {rce_tok}", "rce_printf_lf"),
+            (f"`printf {rce_tok}`", "rce_printf_backtick"),
+            (f"$(printf {rce_tok})", "rce_printf_subshell"),
+            (f"| echo {rce_tok}", "rce_echo_pipe_win"),
+        ):
+            specs.append(
+                ProbeSpec(
+                    "rce",
+                    payload,
+                    pclass,
+                    _cmd_names,
+                    "critical",
+                    "rce",
+                    {"marker": rce_tok, "arith": _ARITH_SUM},
+                )
+            )
 
     # --- SSTI ---
     for payload, pclass in (
@@ -342,8 +423,6 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
                 {"nonce": nonce, "callback": True},
             )
         )
-    if mode in ("extended", "lab") or (mode == "lab"):
-        pass
     if mode == "lab":
         # Lab-only: cloud metadata (authorized lab fixtures)
         specs.append(
@@ -455,6 +534,18 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
             )
         )
 
+    # Assert Safe Active never ships risky classes
+    if mode == "safe":
+        banned = {"ssrf_imds_lab", "trav_passwd_lab", "xxe_oob", "sqli_lab_sleep_mysql", "sqli_lab_waitfor_mssql"}
+        specs = [s for s in specs if s.payload_class not in banned]
+        for s in specs:
+            assert "169.254.169.254" not in s.payload
+            assert "/etc/passwd" not in s.payload
+            assert "SLEEP(" not in s.payload.upper()
+            assert "WAITFOR" not in s.payload.upper()
+            assert "UNION SELECT" not in s.payload.upper()
+            assert "DROP " not in s.payload.upper()
+
     return specs
 
 
@@ -492,6 +583,122 @@ def bodies_differ(a: str, b: str, *, ignore: Sequence[str] = ()) -> bool:
         a = _strip_literals(a, *ignore)
         b = _strip_literals(b, *ignore)
     return normalize_probe_text(a) != normalize_probe_text(b)
+
+
+@dataclass
+class ResponseSnap:
+    status: int = 0
+    body: str = ""
+    final_url: str = ""
+    elapsed_ms: float = 0.0
+
+    @property
+    def norm_hash(self) -> str:
+        return probe_hash(self.body)
+
+    @property
+    def length(self) -> int:
+        return len(self.body or "")
+
+    def dom_fingerprint(self) -> str:
+        """Cheap DOM-structure signal: tag-name multiset (ignores text/attrs noise)."""
+        tags = re.findall(r"(?is)</?([a-z0-9]+)\b", self.body or "")
+        counts: Dict[str, int] = {}
+        for t in tags[:400]:
+            key = t.lower()
+            counts[key] = counts.get(key, 0) + 1
+        return ",".join(f"{k}:{counts[k]}" for k in sorted(counts)[:80])
+
+
+def text_similarity(a: str, b: str) -> float:
+    """0..1 SequenceMatcher ratio on normalized text."""
+    from difflib import SequenceMatcher
+
+    na = normalize_probe_text(a)
+    nb = normalize_probe_text(b)
+    if not na and not nb:
+        return 1.0
+    return SequenceMatcher(None, na, nb).ratio()
+
+
+def compare_response_pair(
+    true_snap: ResponseSnap,
+    false_snap: ResponseSnap,
+    *,
+    baseline: Optional[ResponseSnap] = None,
+    ignore: Sequence[str] = (),
+    repeated_false: Optional[ResponseSnap] = None,
+) -> Dict[str, Any]:
+    """Multi-signal true/false comparison — a one-off length delta is not enough.
+
+    Returns dict with signals + verdict in {negative, differential_signal, probable, inconclusive}.
+    """
+    tb = _strip_literals(true_snap.body, *ignore) if ignore else true_snap.body
+    fb = _strip_literals(false_snap.body, *ignore) if ignore else false_snap.body
+    th = probe_hash(tb)
+    fh = probe_hash(fb)
+    sim = text_similarity(tb, fb)
+    len_delta = abs(len(tb) - len(fb))
+    status_diff = int(true_snap.status or 0) != int(false_snap.status or 0)
+    url_diff = (true_snap.final_url or "").split("?")[0] != (false_snap.final_url or "").split("?")[0]
+    hash_diff = th != fh
+    dom_diff = true_snap.dom_fingerprint() != false_snap.dom_fingerprint()
+    # Meaningful content divergence (not tiny length jitter alone)
+    content_diff = hash_diff and (sim < 0.97 or len_delta >= 32 or dom_diff)
+
+    signals = {
+        "status_diff": status_diff,
+        "final_url_diff": url_diff,
+        "normalized_hash_diff": hash_diff,
+        "text_similarity": round(sim, 4),
+        "content_length_delta": len_delta,
+        "dom_structure_diff": dom_diff,
+        "true_hash": th,
+        "false_hash": fh,
+    }
+
+    # Baseline gate: at least one side must differ from baseline
+    vs_base = True
+    if baseline is not None:
+        bh = probe_hash(_strip_literals(baseline.body, *ignore) if ignore else baseline.body)
+        vs_base = th != bh or fh != bh
+        signals["differs_from_baseline"] = vs_base
+    if not vs_base:
+        return {**signals, "verdict": STATE_NEGATIVE, "score": 0}
+
+    # Length-only / status-only one-shot → not enough
+    score = 0
+    if content_diff:
+        score += 2
+    if status_diff:
+        score += 1
+    if url_diff:
+        score += 1
+    if dom_diff and hash_diff:
+        score += 1
+    if sim < 0.90 and hash_diff:
+        score += 1
+
+    reproducible = False
+    if repeated_false is not None:
+        rb = _strip_literals(repeated_false.body, *ignore) if ignore else repeated_false.body
+        rh = probe_hash(rb)
+        # Replay of false should still differ from true and align with false
+        reproducible = rh == fh and rh != th
+        signals["reproducible"] = reproducible
+        if reproducible:
+            score += 2
+
+    if score >= 4 and content_diff and (reproducible or (status_diff and hash_diff)):
+        verdict = STATE_DIFFERENTIAL
+    elif score >= 3 and content_diff:
+        verdict = STATE_PROBABLE
+    elif score >= 2 and content_diff and reproducible:
+        verdict = STATE_PROBABLE
+    else:
+        verdict = STATE_NEGATIVE if score < 2 else STATE_INCONCLUSIVE
+
+    return {**signals, "verdict": verdict, "score": score}
 
 
 def classify_response(status_code: int, body: str = "", headers: Optional[Dict[str, Any]] = None) -> str:
@@ -735,13 +942,21 @@ async def run_active_probe_kit(
         except Exception:
             ctrl_body = baseline_body
 
-        # Cache boolean pair bodies for true/false compare
-        bool_bodies: Dict[str, str] = {}
+        # Cache boolean pair snapshots for true/false multi-signal compare
+        bool_snaps: Dict[str, ResponseSnap] = {}
 
         for spec in specs:
             if not spec.param_ok(field):
                 continue
-            if spec.kind in ("sqli_error", "sqli_boolean", "ssrf", "rce", "traversal", "ssti") and not baseline_ok:
+            if spec.kind in (
+                "sqli_error",
+                "sqli_boolean",
+                "sqli_time",
+                "ssrf",
+                "rce",
+                "traversal",
+                "ssti",
+            ) and not baseline_ok:
                 continue
 
             trial = dict(values)
@@ -756,7 +971,9 @@ async def run_active_probe_kit(
 
             try:
                 follow = spec.kind != "redirect"
+                t0 = time.monotonic()
                 resp = await _send(method, target, trial, follow=follow)
+                elapsed_ms = (time.monotonic() - t0) * 1000.0
                 # CRLF: also try without following; headers matter
                 p_status, p_body, p_hdrs, p_final = _meta(resp)
                 resp_class = classify_response(p_status, p_body, p_hdrs)
@@ -771,6 +988,7 @@ async def run_active_probe_kit(
                 detail_bit = "differential signal"
                 new_evidence: List[str] = []
                 evidence_line = ""
+                compare_meta: Dict[str, Any] = {}
 
                 if spec.kind == "sqli_error":
                     if not _SQL_ERROR_RE.search(p_body or ""):
@@ -792,44 +1010,91 @@ async def run_active_probe_kit(
                     validation_state = STATE_DIFFERENTIAL
 
                 elif spec.kind == "sqli_boolean":
-                    bool_bodies[spec.payload_class] = p_body
+                    snap = ResponseSnap(
+                        status=p_status, body=p_body, final_url=p_final, elapsed_ms=elapsed_ms
+                    )
+                    bool_snaps[spec.payload_class] = snap
                     mate = spec.meta.get("mate_class") or ""
-                    if mate not in bool_bodies:
+                    if mate not in bool_snaps:
                         continue
-                    # Emit once when both sides cached (on the false leg)
                     if spec.meta.get("pair") != "false":
                         continue
                     true_class = mate
                     false_class = spec.payload_class
-                    true_body = bool_bodies.get(true_class, "")
-                    false_body = bool_bodies.get(false_class, "")
-                    # Resolve payloads for stripping reflected probe text
+                    true_snap = bool_snaps[true_class]
+                    false_snap = bool_snaps[false_class]
                     true_payload = next(
                         (s.payload for s in specs if s.payload_class == true_class), ""
                     )
                     false_payload = spec.payload
-                    # Strip probe payloads only — never the base field value (e.g. "1")
                     ignore = tuple(p for p in (true_payload, false_payload) if len(p) >= 3)
-                    if not bodies_differ(true_body, false_body, ignore=ignore):
-                        continue
-                    if not bodies_differ(true_body, baseline_body, ignore=ignore) and not bodies_differ(
-                        false_body, baseline_body, ignore=ignore
-                    ):
-                        continue
-                    # Stable: repeat false
+                    # Repeat false for reproducibility
+                    t1 = time.monotonic()
                     resp2 = await _send(method, target, trial, follow=True)
-                    _, body2, _, _ = _meta(resp2)
-                    if not bodies_differ(true_body, body2, ignore=ignore):
+                    elapsed2 = (time.monotonic() - t1) * 1000.0
+                    s2, b2, _, f2 = _meta(resp2)
+                    repeated = ResponseSnap(status=s2, body=b2, final_url=f2, elapsed_ms=elapsed2)
+                    baseline_snap = ResponseSnap(
+                        status=baseline_status, body=baseline_body, final_url=baseline_final
+                    )
+                    cmp_ = compare_response_pair(
+                        true_snap,
+                        false_snap,
+                        baseline=baseline_snap,
+                        ignore=ignore,
+                        repeated_false=repeated,
+                    )
+                    compare_meta = cmp_
+                    verdict = cmp_.get("verdict") or STATE_NEGATIVE
+                    if verdict in (STATE_NEGATIVE, STATE_INCONCLUSIVE):
                         continue
-                    # Require false replay still aligns with false (normalized), else inconclusive
-                    if bodies_differ(false_body, body2, ignore=ignore):
+                    hit = True
+                    severity = "high" if verdict == STATE_DIFFERENTIAL else "medium"
+                    validation_state = verdict
+                    detail_bit = (
+                        f"{verdict} (boolean true/false multi-signal compare, score={cmp_.get('score')})"
+                    )
+                    new_evidence = [
+                        f"hash_diff={cmp_.get('normalized_hash_diff')}",
+                        f"sim={cmp_.get('text_similarity')}",
+                        f"repro={cmp_.get('reproducible')}",
+                    ]
+                    evidence_line = f"sqli_boolean:{verdict}"
+                    confidence = "high" if verdict == STATE_DIFFERENTIAL else "medium"
+                    verification = "verified" if verdict == STATE_DIFFERENTIAL else "detected"
+
+                elif spec.kind == "sqli_time":
+                    min_ms = float(spec.meta.get("min_ms") or 1500)
+                    # Control: same param with short benign value should be faster
+                    ctrl_vals = dict(values)
+                    ctrl_vals[field] = str(values.get(field) or "1")
+                    tc0 = time.monotonic()
+                    try:
+                        await _send(method, target, ctrl_vals, follow=True)
+                    except Exception:
+                        pass
+                    ctrl_ms = (time.monotonic() - tc0) * 1000.0
+                    if elapsed_ms < min_ms:
+                        continue
+                    if elapsed_ms < ctrl_ms + 1200:
+                        continue
+                    # Reproduce once
+                    t2 = time.monotonic()
+                    await _send(method, target, trial, follow=True)
+                    elapsed2 = (time.monotonic() - t2) * 1000.0
+                    if elapsed2 < min_ms:
                         continue
                     hit = True
                     severity = "high"
-                    detail_bit = "differential signal (stable boolean true/false response split)"
-                    validation_state = STATE_DIFFERENTIAL
-                    new_evidence = ["boolean true/false body divergence"]
-                    evidence_line = "sqli_boolean: true/false normalized bodies differ"
+                    validation_state = STATE_PROBABLE
+                    detail_bit = (
+                        f"probable time-based SQLi (probe {elapsed_ms:.0f}ms / "
+                        f"replay {elapsed2:.0f}ms vs control {ctrl_ms:.0f}ms)"
+                    )
+                    new_evidence = [f"elapsed_ms={elapsed_ms:.0f}", f"control_ms={ctrl_ms:.0f}"]
+                    evidence_line = "sqli_time:delay"
+                    confidence = "medium"
+                    verification = "detected"
 
                 elif spec.kind == "xss":
                     token = str(spec.meta.get("token") or "")
@@ -1068,6 +1333,8 @@ async def run_active_probe_kit(
                     validation_state=validation_state,
                     evidence_line=evidence_line,
                 )
+                if compare_meta:
+                    proof["comparison"] = compare_meta
                 add(
                     spec.category,
                     severity,
