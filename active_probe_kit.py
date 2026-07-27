@@ -261,6 +261,13 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
     cb = (settings.callback_base or "").rstrip("/")
     redirect_dest = f"https://{settings.redirect_proof_host}/{nonce}"
     canary_path, canary_content = resolve_traversal_canary(settings, nonce)
+    # High-entropy OOB nonce (never reuse short XSS markers for callbacks)
+    try:
+        from oob_callback import new_oob_nonce
+
+        oob_nonce = new_oob_nonce()
+    except Exception:
+        oob_nonce = secrets.token_hex(16)
 
     specs: List[ProbeSpec] = []
 
@@ -492,23 +499,33 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
         specs.append(
             ProbeSpec(
                 "ssrf",
-                f"{cb}/{nonce}/ping",
+                f"{cb}/{oob_nonce}/ping",
                 "ssrf_callback_ping",
                 _ssrf_names,
                 "high",
                 "ssrf",
-                {"nonce": nonce, "callback": True},
+                {
+                    "nonce": oob_nonce,
+                    "callback": True,
+                    "expected_path": f"/{oob_nonce}/ping",
+                    "callback_url": f"{cb}/{oob_nonce}/ping",
+                },
             )
         )
         specs.append(
             ProbeSpec(
                 "ssrf",
-                f"{cb}/{nonce}/redirect",
+                f"{cb}/{oob_nonce}/redirect",
                 "ssrf_callback_redirect",
                 _ssrf_names,
                 "high",
                 "ssrf",
-                {"nonce": nonce, "callback": True},
+                {
+                    "nonce": oob_nonce,
+                    "callback": True,
+                    "expected_path": f"/{oob_nonce}/redirect",
+                    "callback_url": f"{cb}/{oob_nonce}/redirect",
+                },
             )
         )
     if mode == "lab":
@@ -645,7 +662,7 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
     if mode == "lab" and cb:
         xxe = (
             '<?xml version="1.0"?>'
-            f'<!DOCTYPE r [<!ENTITY xxe SYSTEM "{cb}/{nonce}/xxe">]>'
+            f'<!DOCTYPE r [<!ENTITY xxe SYSTEM "{cb}/{oob_nonce}/xxe">]>'
             "<r>&xxe;</r>"
         )
         specs.append(
@@ -656,7 +673,12 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
                 lambda n: bool(re.match(r"(?i)^(xml|body|data|payload|content)$", n)),
                 "high",
                 "xxe",
-                {"nonce": nonce, "callback": True},
+                {
+                    "nonce": oob_nonce,
+                    "callback": True,
+                    "expected_path": f"/{oob_nonce}/xxe",
+                    "callback_url": f"{cb}/{oob_nonce}/xxe",
+                },
             )
         )
 
@@ -1081,12 +1103,66 @@ async def run_active_probe_kit(
     seen: set = set()
     stats = settings.stats
     oob = settings.oob
+    from active_probe_breaker import ActiveProbeBreaker, stop_active_probes
+
+    breaker = ActiveProbeBreaker()
+    if stats is not None and bool(getattr(stats, "vuln_active_probe_paused", False)):
+        settings.coverage_notes = {
+            "active_probe": "paused",
+            "reason": "vuln_active_probe_paused",
+            "xss_browser": "skipped",
+            "oob_callback": "skipped",
+        }
+        return []
+
+    browser_cap = {}
+    if stats is not None and isinstance(getattr(stats, "browser_confirmation", None), dict):
+        browser_cap = dict(stats.browser_confirmation or {})
+    browser_avail = bool(settings.browser_evaluate) and (
+        browser_cap.get("browser_confirmation", "available" if settings.browser_evaluate else "unavailable")
+        == "available"
+        or settings.browser_evaluate is not None
+    )
+    # Prefer explicit capability flag when present
+    if browser_cap:
+        browser_avail = browser_cap.get("browser_confirmation") == "available" and bool(
+            settings.browser_evaluate
+        )
+
+    oob_status = {
+        "callback_configured": False,
+        "probe_url_generated": False,
+        "polling_active": False,
+        "callback_received": False,
+        "confirmation_unavailable": True,
+        "reason": "no callback receiver configured",
+    }
+    if oob is not None and hasattr(oob, "status_snapshot"):
+        oob_status = oob.status_snapshot(probe_url_generated=False).as_dict()
+    elif settings.callback_received or settings.callback_base:
+        oob_status = {
+            "callback_configured": bool(settings.callback_base or settings.callback_received),
+            "probe_url_generated": False,
+            "polling_active": bool(settings.callback_received),
+            "callback_received": False,
+            "confirmation_unavailable": True,
+            "reason": "callback service configured; awaiting probe/correlation",
+        }
 
     coverage = {
         "traversal_canary": "configured" if (canary_path and canary_content) else "skipped",
         "reason": ("" if (canary_path and canary_content) else "no controlled canary configured"),
-        "xss_browser": "wired" if settings.browser_evaluate else "unavailable",
-        "oob_callback": "wired" if settings.callback_received else "unavailable",
+        "xss_browser": "available" if browser_avail else "unavailable",
+        "browser_confirmation": dict(browser_cap)
+        or {
+            "browser_confirmation": "available" if browser_avail else "unavailable",
+            "message": (
+                "Browser confirmation: available"
+                if browser_avail
+                else "Browser confirmation: unavailable — XSS findings limited to unverified evidence"
+            ),
+        },
+        "oob_callback": dict(oob_status),
         "message": (
             "Traversal active confirmation: skipped"
             if not (canary_path and canary_content)
@@ -1095,10 +1171,14 @@ async def run_active_probe_kit(
     }
     if not (canary_path and canary_content):
         coverage["detail"] = "Reason: no controlled canary configured"
-    if not settings.browser_evaluate:
-        coverage["xss_note"] = "XSS execution confirmation unavailable in this scan configuration."
-    if not settings.callback_received:
-        coverage["oob_note"] = "SSRF/XXE callback confirmation unavailable (probe generation only)."
+    if not browser_avail:
+        coverage["xss_note"] = (
+            "Browser confirmation: unavailable — XSS findings limited to unverified evidence"
+        )
+    if oob_status.get("confirmation_unavailable", True):
+        coverage["oob_note"] = oob_status.get("reason") or (
+            "SSRF/XXE confirmation unavailable"
+        )
     settings.coverage_notes = coverage
     if stats is not None:
         try:
@@ -1222,6 +1302,9 @@ async def run_active_probe_kit(
         headers = dict(getattr(resp, "headers", None) or {})
         final = str(getattr(resp, "url", "") or "")
         resp_class = classify_response(status, body, headers)
+        if role in ("probe", "replay", "control", "baseline"):
+            if breaker.note(resp_class):
+                stop_active_probes(stats, reason=breaker.reason, remaining="inconclusive")
         _ledger(
             role=role,
             method=method,
@@ -1236,7 +1319,7 @@ async def run_active_probe_kit(
             parameter=parameter,
             payload=payload,
             resp_class=resp_class,
-            result_state=result_state,
+            result_state=result_state or (breaker.reason if breaker.tripped else ""),
             values=values,
         )
         try:
@@ -1307,6 +1390,8 @@ async def run_active_probe_kit(
         bool_snaps: Dict[str, ResponseSnap] = {}
 
         for spec in specs:
+            if breaker.tripped:
+                break
             if not spec.param_ok(field):
                 continue
             if spec.kind in (
@@ -1339,7 +1424,13 @@ async def run_active_probe_kit(
                         endpoint=target,
                         parameter=field,
                         category=spec.category,
+                        expected_path=str(spec.meta.get("expected_path") or ""),
+                        callback_url=str(spec.meta.get("callback_url") or spec.payload),
                     )
+                    if hasattr(oob, "status_snapshot"):
+                        coverage["oob_callback"] = oob.status_snapshot(
+                            probe_url_generated=True
+                        ).as_dict()
                 except Exception:
                     pass
 
@@ -1554,15 +1645,21 @@ async def run_active_probe_kit(
                                 f"document.body.dataset.vc === '{token}'",
                                 method=method,
                                 post_data=trial if (method or "GET").upper() == "POST" else None,
+                                expected_token=token,
+                                fragment="",
                             )
                             executed = False
+                            reproduced = False
                             if isinstance(eval_result, dict):
-                                executed = bool(eval_result.get("executed"))
+                                executed = eval_result.get("executed") is True
+                                reproduced = bool(eval_result.get("reproduced", True))
                                 browser_meta = dict(eval_result)
                             else:
-                                executed = bool(eval_result)
-                                browser_meta = {"executed": executed}
-                            if executed:
+                                # Legacy bool callback — treat True as executed only
+                                executed = eval_result is True
+                                reproduced = executed
+                                browser_meta = {"executed": executed, "reproduced": reproduced}
+                            if executed and reproduced:
                                 hit = True
                                 finding_category = "xss"
                                 severity = "high"
@@ -1728,6 +1825,7 @@ async def run_active_probe_kit(
                                 )
                             except Exception:
                                 confirmed = False
+                        oob_nonce = str(spec.meta.get("nonce") or nonce)
                         if confirmed:
                             hit = True
                             severity = "high"
@@ -1735,8 +1833,21 @@ async def run_active_probe_kit(
                             validation_state = STATE_OOB_CALLBACK
                             confidence = "high"
                             verification = "confirmed"
-                            new_evidence = [f"callback_nonce={nonce}"]
-                            evidence_line = f"ssrf_callback: {nonce}"
+                            new_evidence = [f"callback_nonce={oob_nonce[:12]}…"]
+                            evidence_line = "ssrf_callback:correlated"
+                            compare_meta["oob"] = (
+                                oob.status_snapshot(
+                                    probe_url_generated=True, callback_received=True
+                                ).as_dict()
+                                if oob is not None and hasattr(oob, "status_snapshot")
+                                else {
+                                    "callback_configured": True,
+                                    "probe_url_generated": True,
+                                    "polling_active": True,
+                                    "callback_received": True,
+                                    "confirmation_unavailable": False,
+                                }
+                            )
                         else:
                             # Never confirm from URL reflection — report unconfirmed probe
                             hit = True
@@ -1750,6 +1861,18 @@ async def run_active_probe_kit(
                             verification = "detected"
                             new_evidence = [f"callback_url_redacted={redact_payload(spec.payload)}"]
                             evidence_line = "ssrf_probe_sent_unconfirmed"
+                            compare_meta["oob"] = (
+                                oob.status_snapshot(probe_url_generated=True).as_dict()
+                                if oob is not None and hasattr(oob, "status_snapshot")
+                                else {
+                                    "callback_configured": bool(settings.callback_base),
+                                    "probe_url_generated": True,
+                                    "polling_active": bool(settings.callback_received),
+                                    "callback_received": False,
+                                    "confirmation_unavailable": True,
+                                    "reason": "no correlated callback",
+                                }
+                            )
                     elif spec.meta.get("imds"):
                         if not _imds_proof(p_body, baseline_body):
                             continue
@@ -1958,7 +2081,10 @@ async def run_active_probe_kit(
                     evidence_line=evidence_line,
                 )
                 if compare_meta:
-                    proof["comparison"] = compare_meta
+                    if "oob" in compare_meta:
+                        proof["oob"] = compare_meta.pop("oob")
+                    if compare_meta:
+                        proof["comparison"] = compare_meta
                 if browser_meta:
                     proof["browser"] = {
                         "final_url": browser_meta.get("final_url"),
@@ -2086,4 +2212,26 @@ async def run_active_probe_kit(
                     baseline_final,
                 )
 
+    if breaker.tripped:
+        add(
+            "active_probe_coverage",
+            "info",
+            f"Active probes paused — {breaker.reason} (remaining inconclusive)",
+            "active_probe_circuit_breaker",
+            {
+                "verification": "informational",
+                "confidence": "high",
+                "confidence_reason": "circuit_breaker",
+                "proof": {
+                    "validation_state": STATE_INCONCLUSIVE,
+                    "breaker": breaker.snapshot(),
+                },
+                "validation": "unverified",
+            },
+        )
+        if stats is not None:
+            try:
+                stats.active_probe_breaker = breaker.snapshot()
+            except Exception:
+                pass
     return findings

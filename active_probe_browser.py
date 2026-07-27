@@ -2,6 +2,7 @@
 
 Uses the shared Selenium Chrome driver from browser_fetch when available.
 Confirms only when ``document.body.dataset.vc === '<token>'`` evaluates true.
+Never silently pretends browser validation ran when Chrome is unavailable.
 """
 
 from __future__ import annotations
@@ -10,10 +11,6 @@ import asyncio
 import time
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlencode, urlparse, urlunparse
-
-
-def _build_get_url(page_url: str) -> str:
-    return str(page_url or "")
 
 
 def chrome_evaluator_available() -> bool:
@@ -25,20 +22,102 @@ def chrome_evaluator_available() -> bool:
         return False
 
 
+def report_browser_capability(config=None) -> Dict[str, Any]:
+    """Scan-start capability report for browser XSS confirmation."""
+    detail = {
+        "browser_confirmation": "unavailable",
+        "browser": "",
+        "driver": "missing",
+        "message": "Browser confirmation: unavailable — XSS findings limited to unverified evidence",
+    }
+    try:
+        from browser_fetch import chrome_available, probe_chrome
+
+        ok, path = probe_chrome()
+        if not ok or not chrome_available():
+            return detail
+        # Best-effort version string from binary path name
+        browser_name = "Chromium/Chrome"
+        low = (path or "").lower()
+        if "chromium" in low:
+            browser_name = "Chromium"
+        elif "chrome" in low:
+            browser_name = "Chrome"
+        detail = {
+            "browser_confirmation": "available",
+            "browser": browser_name,
+            "browser_path": path,
+            "driver": "compatible",
+            "message": f"Browser confirmation: available — Browser: {browser_name} — Driver: compatible",
+        }
+        # Optional: verify driver can start (expensive) — skip by default
+        if config is not None and bool(getattr(config, "browser_probe_driver", False)):
+            try:
+                from browser_fetch import get_selenium_driver, quit_selenium_driver
+
+                proxy = str(getattr(config, "proxy_url", "") or "")
+                driver = get_selenium_driver(proxy, user_agent="")
+                ver = ""
+                try:
+                    ver = str((driver.capabilities or {}).get("browserVersion") or "")
+                except Exception:
+                    ver = ""
+                if ver:
+                    detail["browser"] = f"{browser_name} {ver}"
+                    detail["message"] = (
+                        f"Browser confirmation: available — Browser: {browser_name} {ver} — Driver: compatible"
+                    )
+                quit_selenium_driver()
+            except Exception as exc:
+                return {
+                    "browser_confirmation": "unavailable",
+                    "browser": browser_name,
+                    "driver": "incompatible",
+                    "message": (
+                        "Browser confirmation: unavailable — driver/sandbox failed "
+                        f"({str(exc)[:120]}) — XSS findings limited to unverified evidence"
+                    ),
+                }
+        return detail
+    except Exception as exc:
+        detail["message"] = (
+            "Browser confirmation: unavailable — "
+            f"{str(exc)[:120]} — XSS findings limited to unverified evidence"
+        )
+        return detail
+
+
 def make_browser_evaluate(
     config=None,
     *,
     output_callback: Optional[Callable[[str], Any]] = None,
     stats=None,
     wait_seconds: float = 1.25,
+    capability: Optional[Dict[str, Any]] = None,
 ) -> Optional[Callable[..., Any]]:
-    """Return async browser_evaluate(page_url, js_expr, **kwargs) or None if Chrome missing."""
+    """Return async browser_evaluate(...) or None if Chrome missing.
+
+    When None is returned, callers must report confirmation unavailable — never
+    emit browser_execution_confirmed.
+    """
+    cap = capability or report_browser_capability(config)
+    if cap.get("browser_confirmation") != "available":
+        if output_callback:
+            try:
+                output_callback(cap.get("message") or "Browser confirmation: unavailable")
+            except Exception:
+                pass
+        if stats is not None:
+            try:
+                stats.browser_confirmation = dict(cap)
+            except Exception:
+                pass
+        return None
+
     try:
-        from browser_fetch import chrome_available, get_selenium_driver
+        from browser_fetch import get_selenium_driver
         from evasion_layer import pick_user_agent_for_selenium
     except Exception:
-        return None
-    if not chrome_available():
         return None
 
     proxy = str(getattr(config, "proxy_url", "") or "") if config is not None else ""
@@ -47,13 +126,39 @@ def make_browser_evaluate(
     except Exception:
         ua = ""
 
+    if stats is not None:
+        try:
+            stats.browser_confirmation = dict(cap)
+        except Exception:
+            pass
+    if output_callback:
+        try:
+            output_callback(cap.get("message") or "Browser confirmation: available")
+        except Exception:
+            pass
+
+    def _clear_marker(driver) -> None:
+        try:
+            driver.execute_script(
+                "try{"
+                "if(document.body){delete document.body.dataset.vc; "
+                "document.body.removeAttribute('data-vc');}"
+                "window.__vc_probe_token=null;"
+                "}catch(e){}"
+            )
+        except Exception:
+            pass
+
     def _sync_evaluate(
         page_url: str,
         js_expr: str,
         *,
         method: str = "GET",
         post_data: Optional[Dict[str, Any]] = None,
+        fragment: str = "",
+        expected_token: str = "",
     ) -> Dict[str, Any]:
+        from html import escape
         from selenium.webdriver.support.ui import WebDriverWait
 
         driver = get_selenium_driver(proxy, user_agent=ua or "")
@@ -61,58 +166,86 @@ def make_browser_evaluate(
         csp_blocked: list = []
         final_url = page_url
         executed = False
+        reproduced = False
         value = None
         t0 = time.monotonic()
         try:
-            # Best-effort CSP / console capture via CDP
             try:
                 driver.execute_cdp_cmd("Network.enable", {})
                 driver.execute_cdp_cmd("Log.enable", {})
             except Exception:
                 pass
 
-            method_u = (method or "GET").upper()
-            if method_u == "POST" and post_data:
-                # Reproduce safe POST via data URL form submit (same-origin relative action)
-                from html import escape
+            # Isolate prior probe markers
+            try:
+                driver.get("about:blank")
+            except Exception:
+                pass
+            _clear_marker(driver)
 
-                fields = "".join(
-                    f'<input type="hidden" name="{escape(str(k))}" value="{escape(str(v))}"/>'
-                    for k, v in dict(post_data).items()
+            method_u = (method or "GET").upper()
+            target = str(page_url or "")
+            if fragment:
+                # DOM/hash XSS — open base then set location.hash
+                base = target.split("#", 1)[0]
+                driver.get(base or "about:blank")
+                driver.execute_script("window.location.hash = arguments[0];", fragment)
+                reproduced = True
+            elif method_u == "POST" and post_data:
+                # Reproduce POST form fields via about:blank form submit to absolute action
+                fields_js = []
+                for k, v in dict(post_data).items():
+                    fields_js.append((str(k), str(v)))
+                driver.get("about:blank")
+                driver.execute_script(
+                    """
+                    const action = arguments[0];
+                    const pairs = arguments[1];
+                    const f = document.createElement('form');
+                    f.method = 'POST';
+                    f.action = action;
+                    f.style.display = 'none';
+                    for (const [k, v] of pairs) {
+                      const inp = document.createElement('input');
+                      inp.type = 'hidden';
+                      inp.name = k;
+                      inp.value = v;
+                      f.appendChild(inp);
+                    }
+                    document.body.appendChild(f);
+                    f.submit();
+                    """,
+                    target,
+                    fields_js,
                 )
-                html = (
-                    "<html><body>"
-                    f'<form id="vc" method="POST" action="{escape(page_url)}">{fields}</form>'
-                    "<script>document.getElementById('vc').submit()</script>"
-                    "</body></html>"
-                )
-                driver.get("data:text/html;charset=utf-8," + html)
+                reproduced = True
             else:
-                driver.get(_build_get_url(page_url))
+                driver.get(target)
+                reproduced = True
 
             try:
-                WebDriverWait(driver, max(2.0, float(wait_seconds) + 1.0)).until(
+                WebDriverWait(driver, max(2.0, float(wait_seconds) + 1.5)).until(
                     lambda d: d.execute_script("return document.readyState") == "complete"
                 )
             except Exception:
                 pass
-            time.sleep(max(0.2, float(wait_seconds or 0)))
+            time.sleep(max(0.25, float(wait_seconds or 0)))
 
             final_url = str(getattr(driver, "current_url", None) or page_url)
+            # Clear-then-evaluate: only true if THIS probe set the marker
             try:
                 value = driver.execute_script(f"return ({js_expr});")
-                executed = bool(value) is True or value is True
-                if value is True:
-                    executed = True
-                elif isinstance(value, str) and value.lower() in ("true", "1"):
-                    executed = True
-                else:
-                    executed = bool(value) and value is not False
+                executed = value is True
+                if not executed and expected_token:
+                    got = driver.execute_script(
+                        "return (document.body && document.body.dataset) "
+                        "? (document.body.dataset.vc || '') : '';"
+                    )
+                    executed = str(got or "") == str(expected_token)
             except Exception as exc:
                 console_errors.append(str(exc)[:300])
                 executed = False
 
-            # Pull recent browser log / CDP issues when available
             try:
                 for entry in driver.get_log("browser") or []:
                     msg = str((entry or {}).get("message") or "")[:400]
@@ -128,17 +261,22 @@ def make_browser_evaluate(
         except Exception as exc:
             console_errors.append(str(exc)[:300])
             executed = False
+            reproduced = False
+        finally:
+            _clear_marker(driver)
 
         duration_ms = (time.monotonic() - t0) * 1000.0
         result = {
             "executed": bool(executed),
+            "reproduced": bool(reproduced),
             "value": value,
             "final_url": final_url,
             "console_errors": console_errors[:12],
             "csp_blocked": csp_blocked[:12],
             "duration_ms": duration_ms,
             "browser_request_id": f"selenium:{int(time.time() * 1000)}",
-            "evidence": f"dataset_eval={'true' if executed else 'false'}",
+            "evidence": f"dataset_eval={'true' if executed else 'false'};reproduced={reproduced}",
+            "browser_confirmation": "available",
         }
         if stats is not None and hasattr(stats, "record_request"):
             try:
@@ -153,6 +291,7 @@ def make_browser_evaluate(
                     classification="browser_evaluate",
                     probe_role="browser_confirmation",
                     result_state="browser_execution_confirmed" if executed else "negative",
+                    payload_redacted="[browser_eval]",
                 )
             except Exception:
                 pass
@@ -167,19 +306,16 @@ def make_browser_evaluate(
                 js_expr,
                 method=str(kwargs.get("method") or "GET"),
                 post_data=kwargs.get("post_data"),
+                fragment=str(kwargs.get("fragment") or ""),
+                expected_token=str(kwargs.get("expected_token") or ""),
             ),
         )
 
-    if output_callback:
-        try:
-            output_callback("Active-probe browser XSS evaluator wired (Chrome/Selenium).")
-        except Exception:
-            pass
     return browser_evaluate
 
 
 def build_probe_page_url(endpoint: str, method: str, values: Dict[str, Any]) -> str:
-    """Build a navigable URL for GET XSS confirmation."""
+    """Build a navigable URL for GET XSS confirmation (query params)."""
     if (method or "GET").upper() != "GET":
         return endpoint
     parsed = urlparse(endpoint)

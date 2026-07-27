@@ -287,13 +287,64 @@ def test_waf_checkpoint_responses_remain_excluded():
 
 
 def test_oob_supports_dns_and_http_events():
+    from oob_callback import new_oob_nonce
+
     oob = OobCallbackCorrelator(scan_id="s", callback_base="https://cb.example")
-    oob.register_probe("abcd", probe_id="p1", endpoint="https://t/x", parameter="url")
-    oob.record_event("abcd", callback_type="dns", source_ip="1.2.3.4")
-    assert oob.has_event("abcd")
-    assert oob.get_event("abcd").callback_type == "dns"
-    oob.record_event("ef01", callback_type="http", request_path="/ping/ef01")
-    assert asyncio.run(oob.received("ef01")) is True
+    n1 = new_oob_nonce()
+    n2 = new_oob_nonce()
+    oob.register_probe(n1, probe_id="p1", endpoint="https://t/x", parameter="url", expected_path=f"/{n1}/ping")
+    ev = oob.record_event(n1, callback_type="dns", source_ip="1.2.3.4", request_path=f"/{n1}/ping")
+    assert ev and ev.confirmed
+    assert oob.has_event(n1)
+    assert oob.get_event(n1).callback_type == "dns"
+    oob.register_probe(n2, probe_id="p2", endpoint="https://t/x", parameter="url", expected_path=f"/{n2}/ping")
+    oob.record_event(n2, callback_type="http", request_path=f"/{n2}/ping")
+    assert asyncio.run(oob.received(n2)) is True
+
+
+def test_oob_rejects_short_nonce_wrong_scan_and_stale():
+    from oob_callback import new_oob_nonce
+    import time
+
+    oob = OobCallbackCorrelator(scan_id="scan-a", callback_base="https://cb.example", expiry_seconds=60)
+    assert oob.register_probe("short", probe_id="p") is None or True
+    # short nonce not registered
+    assert "short" not in oob._probes
+    n = new_oob_nonce()
+    oob.register_probe(n, probe_id="p1", endpoint="https://t", parameter="url", expected_path=f"/{n}/ping")
+    # wrong scan
+    ev = oob.record_event(n, scan_id="other", request_path=f"/{n}/ping")
+    assert ev is None or ev.confirmed is False
+    # stale
+    oob._probes[n]["sent_at"] = time.time() - 10
+    oob._probes[n]["expires_at"] = time.time() - 1
+    ev2 = oob.record_event(n, scan_id="scan-a", request_path=f"/{n}/ping")
+    assert not (ev2 and ev2.confirmed)
+
+
+def test_browser_capability_report_never_silent():
+    from active_probe_browser import report_browser_capability
+
+    cap = report_browser_capability()
+    assert "browser_confirmation" in cap
+    assert cap["browser_confirmation"] in ("available", "unavailable")
+    assert "message" in cap
+    if cap["browser_confirmation"] == "unavailable":
+        assert "unverified" in cap["message"].lower() or "unavailable" in cap["message"].lower()
+
+
+def test_active_probe_circuit_breaker_trips_on_uniform_waf():
+    from active_probe_breaker import ActiveProbeBreaker, stop_active_probes
+    from crawl_stats import CrawlStats
+
+    br = ActiveProbeBreaker(window_size=10, min_samples=8, block_ratio_threshold=0.8)
+    for _ in range(9):
+        br.note("generic_waf_deny")
+    assert br.tripped
+    assert "waf" in br.reason or "uniform" in br.reason
+    stats = CrawlStats()
+    stop_active_probes(stats, reason=br.reason)
+    assert stats.vuln_active_probe_paused is True
 
 
 def test_canary_payloads_require_both_path_and_content():
