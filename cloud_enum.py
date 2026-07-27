@@ -74,13 +74,13 @@ async def _probe_bucket(
     provider: str,
     stats=None,
 ) -> tuple[bool, str, int]:
-    """HEAD then GET — only public/listable buckets count as hits."""
+    """GET probe to classify real buckets vs NoSuchBucket (avoid Akamai HEAD bot rule)."""
     try:
-        response = await client.head(url, timeout=8, follow_redirects=True)
+        response = await client.get(url, timeout=8, follow_redirects=True)
     except httpx.HTTPError:
         return False, "request failed", 0
     status = response.status_code
-    body = b""
+    body = getattr(response, "content", b"") or b""
     if status == 403:
         # 403 = denied/inaccessible — never a public bucket hit from wordlist guessing
         if stats is not None and hasattr(stats, "record_request"):
@@ -96,21 +96,6 @@ async def _probe_bucket(
                 pass
         return False, f"{provider} HTTP 403 denied (not a public hit)", status
     if status in (200, 204, 301, 302, 307, 308):
-        if status in (301, 302, 307, 308):
-            # Redirects alone are weak — fetch body when possible
-            try:
-                get_resp = await client.get(url, timeout=8, follow_redirects=True)
-                status = get_resp.status_code
-                body = get_resp.content or b""
-            except httpx.HTTPError:
-                body = b""
-        elif status in (200, 204):
-            try:
-                get_resp = await client.get(url, timeout=8, follow_redirects=True)
-                status = get_resp.status_code
-                body = get_resp.content or b""
-            except httpx.HTTPError:
-                body = b""
         if stats is not None and hasattr(stats, "record_request"):
             try:
                 stats.record_request(
