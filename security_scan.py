@@ -1680,7 +1680,8 @@ def scan_open_redirect(url: str) -> List[Finding]:
                     sev,
                     (
                         f"Passive candidate — Parameter '{name}' points off-site to {target_host} "
-                        f"({note}). Validation: unverified. Active testing: not performed."
+                        f"({note}; precise passive open redirect). "
+                        "Validation: unverified. Active testing: not performed."
                     ),
                     _text_evidence(f"{name}={decoded}", label="redirect_target"),
                     {

@@ -99,27 +99,26 @@ def _build_config(mode: str, run_dir: Path) -> CrawlConfig:
     return cfg
 
 
-def _copy_reports(mode: str, run_dir: Path) -> Dict[str, str]:
+def _copy_reports(mode: str, run_dir: Path, *, since: float) -> Dict[str, str]:
     reports_src = ROOT / "Reports"
     dest = run_dir / "reports"
     dest.mkdir(parents=True, exist_ok=True)
     copied: Dict[str, str] = {}
     if not reports_src.exists():
         return copied
-    # Copy newest files that mention acceptance-{mode} or were modified in last window
-    cutoff = time.time() - 3600
+    # Only copy artifacts produced for this mode during this run window.
     for path in reports_src.rglob("*"):
         if not path.is_file():
             continue
         name = path.name.lower()
-        if f"acceptance-{mode}" in name or path.stat().st_mtime >= cutoff:
-            # Avoid copying unrelated older scans: require mode tag when present
-            if "acceptance-" in name and f"acceptance-{mode}" not in name:
-                continue
-            target = dest / path.relative_to(reports_src)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, target)
-            copied[str(path.relative_to(reports_src))] = str(target)
+        if f"acceptance-{mode}" not in name:
+            continue
+        if path.stat().st_mtime < since - 2:
+            continue
+        target = dest / path.relative_to(reports_src)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+        copied[str(path.relative_to(reports_src))] = str(target)
     return copied
 
 
@@ -301,11 +300,17 @@ async def _run_one(mode: str, run_dir: Path) -> Dict[str, Any]:
 
     result_meta["duration_s"] = round(time.time() - t0, 2)
     log_path.write_text("\n".join(logs), encoding="utf-8")
-    copied = _copy_reports(mode, run_dir)
+    copied = _copy_reports(mode, run_dir, since=t0)
     result_meta["copied_reports"] = copied
 
     payloads = _load_json_reports(run_dir)
-    findings = _extract_findings(payloads)
+    # Prefer the primary scan JSON (exclude zap/defense side-cars for finding counts)
+    primary = [
+        p
+        for p in payloads
+        if not str(p.get("_path") or "").endswith(("_zap.json", "_defense.json"))
+    ]
+    findings = _extract_findings(primary or payloads)
     # Normalize category key
     for f in findings:
         if "category" not in f and "type" in f:

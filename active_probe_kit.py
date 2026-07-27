@@ -1356,7 +1356,15 @@ async def run_active_probe_kit(
             if method == "POST":
                 resp = await client.post(target, data=values, timeout=8, follow_redirects=follow)
             else:
-                resp = await client.get(target, params=values, timeout=8, follow_redirects=follow)
+                # Strip existing query from target — params=values is authoritative.
+                # (Also protects clients that ignore/merge params poorly.)
+                parsed_t = urlparse(target)
+                clean_target = urlunparse(
+                    (parsed_t.scheme, parsed_t.netloc, parsed_t.path, parsed_t.params, "", parsed_t.fragment)
+                )
+                resp = await client.get(
+                    clean_target, params=values, timeout=8, follow_redirects=follow
+                )
         except Exception:
             duration_ms = (time.monotonic() - t0) * 1000.0
             _ledger(
@@ -1480,7 +1488,13 @@ async def run_active_probe_kit(
             )
             _, ctrl_body, ctrl_hdrs, _ = _meta(ctrl_resp)
             ctrl_class = classify_response(int(getattr(ctrl_resp, "status_code", 200) or 200), ctrl_body, ctrl_hdrs)
-            if is_contaminated(ctrl_class):
+            # Edge/rate-limit on control still feeds the shared breaker (via _send).
+            # Continue probe sends so the active-probe breaker window fills from
+            # real probe roles. Other contamination makes differentials meaningless.
+            if is_contaminated(ctrl_class) and ctrl_class not in (
+                "edge_checkpoint",
+                "rate_limit",
+            ):
                 return
         except Exception:
             ctrl_body = baseline_body

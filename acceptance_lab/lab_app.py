@@ -159,6 +159,7 @@ class LabHandler(BaseHTTPRequestHandler):
             "/checkpoint": self._checkpoint,
             "/rate-limit": self._rate_limit,
             "/breaker-zone": self._breaker_zone,
+            "/active-breaker": self._active_breaker,
             "/secret-admin-panel": self._hidden,
             "/robots.txt": self._robots,
         }
@@ -420,15 +421,56 @@ class LabHandler(BaseHTTPRequestHandler):
     def _breaker_zone(self, params: Dict[str, str], head_only: bool = False) -> None:
         body = _page(
             "Breaker zone",
-            "<p>Dedicated edge/rate-limit exercise pages:</p><ul>"
-            '<li><a href="/checkpoint">checkpoint</a></li>'
-            '<li><a href="/checkpoint?n=1">checkpoint-1</a></li>'
-            '<li><a href="/checkpoint?n=2">checkpoint-2</a></li>'
-            '<li><a href="/checkpoint?n=3">checkpoint-3</a></li>'
-            '<li><a href="/rate-limit">rate-limit</a></li>'
-            '<li><a href="/rate-limit?n=1">rate-limit-1</a></li>'
-            '<li><a href="/rate-limit?n=2">rate-limit-2</a></li>'
-            "</ul>",
+            "<p>Dedicated active-probe breaker exercise (checkpoint only on probe payloads):</p><ul>"
+            '<li><a href="/active-breaker?id=1&amp;q=test&amp;cmd=id&amp;url=http://example.com&amp;name=a&amp;file=b">active-breaker</a></li>'
+            '<li><a href="/active-breaker?id=2&amp;q=test&amp;cmd=id">active-breaker-2</a></li>'
+            '<li><a href="/active-breaker?id=3&amp;q=search">active-breaker-3</a></li>'
+            '<li><a href="/rate-limit?id=1&amp;q=test">rate-limit-params</a></li>'
+            '<li><a href="/rate-limit?id=2&amp;q=test">rate-limit-2</a></li>'
+            "</ul>"
+            "<p>Raw edge pages (crawl skips security — not used for active-probe breaker proof): "
+            '<a href="/checkpoint">/checkpoint</a></p>',
+        )
+        if head_only:
+            body = b""
+        _send(self, 200, body)
+
+    def _active_breaker(self, params: Dict[str, str], head_only: bool = False) -> None:
+        """Application page that returns edge checkpoint only for active-probe payloads.
+
+        Crawl/baseline stay application_response so security + active probes run.
+        Probe mutations (quotes, XSS markers, callback URLs, …) return checkpoint.
+        """
+        joined = " ".join(str(v) for v in params.values())
+        active = any(
+            tok in joined
+            for tok in (
+                "VCXSS_",
+                "VC_RCE_",
+                "' AND ",
+                "1 AND 1",
+                "printf ",
+                "echo ",
+                "expr ",
+                "{{",
+                "${",
+                "\r\nX-VantaCrawl",
+                "169.254",
+                "/oob/",
+                "redirect-proof.vantacrawl",
+            )
+        ) or (joined.strip() in ("'", '"', "')", "'--", "' #")) or any(
+            str(v).strip() in ("'", '"', "')", "'--", "' #") for v in params.values()
+        )
+        # Appended quote on numeric id: value like "1'" 
+        if any("'" in str(v) or '"' in str(v) for v in params.values()):
+            active = True
+        if active:
+            return self._checkpoint(params, head_only=head_only)
+        body = _page(
+            "Active breaker",
+            "<p>ok application surface for breaker exercise</p>"
+            f"<pre>id={html.escape(params.get('id',''))} q={html.escape(params.get('q',''))}</pre>",
         )
         if head_only:
             body = b""

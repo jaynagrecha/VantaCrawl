@@ -43,6 +43,15 @@ class CompatResponse:
     def text(self) -> str:
         return self.content.decode("utf-8", errors="replace")
 
+    def raise_for_status(self) -> None:
+        code = int(self.status_code or 0)
+        if 400 <= code:
+            raise httpx.HTTPStatusError(
+                f"Client error {code}" if code < 500 else f"Server error {code}",
+                request=httpx.Request("GET", str(self.url)),
+                response=self,  # type: ignore[arg-type]
+            )
+
 
 class StealthAsyncClient:
     """httpx-shaped async client backed by curl_cffi Chrome impersonation."""
@@ -98,6 +107,7 @@ class StealthAsyncClient:
         data: Any = None,
         json: Any = None,
         content: Any = None,
+        params: Any = None,
         **kwargs,
     ) -> CompatResponse:
         merged = dict(self.headers)
@@ -108,9 +118,43 @@ class StealthAsyncClient:
         # HEAD/OPTIONS/API probes must not claim document navigation — Akamai flags that.
         accept_l = (merged.get("Accept") or "").lower()
         is_navigation = method_u == "GET" and "application/json" not in accept_l
+
+        # Merge query params into the URL (httpx-compatible). curl_cffi does not
+        # accept a separate params= kw the way httpx does — dropping them made
+        # every active probe replay the baseline query string.
+        request_url = str(url)
+        if params is not None:
+            try:
+                from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+                parsed = urlparse(request_url)
+                q = dict(parse_qsl(parsed.query, keep_blank_values=True))
+                if isinstance(params, Mapping):
+                    for k, v in params.items():
+                        if isinstance(v, (list, tuple)):
+                            q[str(k)] = "" if not v else str(v[-1])
+                        else:
+                            q[str(k)] = "" if v is None else str(v)
+                elif isinstance(params, (list, tuple)):
+                    for item in params:
+                        if isinstance(item, (list, tuple)) and len(item) >= 2:
+                            q[str(item[0])] = str(item[1])
+                request_url = urlunparse(
+                    (
+                        parsed.scheme,
+                        parsed.netloc,
+                        parsed.path,
+                        parsed.params,
+                        urlencode(q, doseq=True),
+                        parsed.fragment,
+                    )
+                )
+            except Exception:
+                log.debug("chrome_http params merge failed", exc_info=True)
+
         if self.evasion is not None and getattr(self.evasion.config, "enabled", True):
             try:
-                built = await self.evasion.before_request(str(url), is_navigation=is_navigation)
+                built = await self.evasion.before_request(request_url, is_navigation=is_navigation)
                 # Prefer per-request stealth headers; keep explicit caller overrides
                 for key, value in built.items():
                     if not headers or key not in headers:
@@ -127,21 +171,25 @@ class StealthAsyncClient:
         try:
             raw = await self._session.request(
                 method.upper(),
-                str(url),
+                request_url,
                 headers=merged,
                 timeout=timeout_s,
                 allow_redirects=bool(redirects),
                 data=data if content is None else content,
                 json=json,
                 impersonate=self.impersonate,
-                **{k: v for k, v in kwargs.items() if k in ("proxy", "auth", "cookies", "verify")},
+                **{
+                    k: v
+                    for k, v in kwargs.items()
+                    if k in ("proxy", "auth", "cookies", "verify")
+                },
             )
         except CurlRequestException as exc:
-            raise httpx.RequestError(str(exc), request=httpx.Request(method, str(url))) from exc
+            raise httpx.RequestError(str(exc), request=httpx.Request(method, request_url)) from exc
         except Exception as exc:
-            raise httpx.RequestError(str(exc), request=httpx.Request(method, str(url))) from exc
+            raise httpx.RequestError(str(exc), request=httpx.Request(method, request_url)) from exc
 
-        final_url = str(getattr(raw, "url", url) or url)
+        final_url = str(getattr(raw, "url", request_url) or request_url)
         body = raw.content if isinstance(getattr(raw, "content", None), (bytes, bytearray)) else (raw.content or b"")
         header_map = {str(k): str(v) for k, v in dict(getattr(raw, "headers", {}) or {}).items()}
         response = CompatResponse(int(raw.status_code), header_map, bytes(body), final_url)
