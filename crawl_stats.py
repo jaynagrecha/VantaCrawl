@@ -438,6 +438,22 @@ class CrawlStats:
             except Exception:
                 upath = url
             dedupe_key = f"file_upload|{host}|{upath}"
+        elif category == "csrf" and sev_l == "info":
+            # Aggregate unauthenticated CSRF hardening observations by normalized form action.
+            # Strip URL fragment and query string so the same form action across product pages
+            # (e.g. https://example.com/cart#fragment?x=1) collapses to one finding.
+            # Use case-insensitive match because evidence_key is already lowercased.
+            _csrf_action_m = re.search(r"(?i)(get|post|put|patch|delete)\s+(\S+)", evidence_key)
+            if _csrf_action_m:
+                try:
+                    from urllib.parse import urlparse as _up, urlunparse as _uu
+                    _p = _up(_csrf_action_m.group(2))
+                    _norm = _uu(_p._replace(fragment="", query=""))
+                except Exception:
+                    _norm = _csrf_action_m.group(2).split("?")[0].split("#")[0]
+                dedupe_key = f"csrf_hardening|{host}|{_csrf_action_m.group(1)}|{_norm}"
+            else:
+                dedupe_key = f"csrf_hardening|{host}|{evidence_key[:80]}"
         elif category in ("xss", "csrf") and evidence_key:
             # Same XSS sink / CSRF evidence across pages → one finding per host
             dedupe_key = f"{category}|{host}|{evidence_key}"
@@ -767,6 +783,15 @@ class CrawlStats:
             "requests_exported": min(len(self.request_ledger), 2000),
             "requests_omitted": int(self.requests_omitted or 0),
             "request_retention_cap": int(getattr(self, "_request_ledger_cap", 8000) or 8000),
+            "request_accounting_note": (
+                "total_requests_observed = every HTTP attempt by the crawler (crawl + enum + active probes). "
+                "requests_retained = rows kept in the capped ledger. "
+                "requests_omitted = attempts beyond the retention cap (not lost — counted in total). "
+                "requests_exported = ledger rows written to JSON (capped separately). "
+                "Browser subresource fetches (images, fonts, scripts loaded by the headless browser) "
+                "are NOT counted in total_requests_observed — they are browser-internal and not "
+                "tracked per-request. Do not compare these counters as though they represent the same set."
+            ),
             "enum_attempt_fingerprint_count": len(getattr(self, "enum_attempt_fingerprints", []) or []),
             "enum_attempt_fingerprints_exported": min(
                 len(getattr(self, "enum_attempt_fingerprints", []) or []), 2000

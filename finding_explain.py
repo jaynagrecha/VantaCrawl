@@ -769,6 +769,26 @@ def _host_of(url: str) -> str:
         return url
 
 
+def _normalize_csrf_group_key(evidence: str) -> str:
+    """Extract normalized form action from CSRF evidence for group-level aggregation.
+
+    Strips URL fragment and query string so forms at the same action endpoint
+    (e.g. /cart/add#frag?variant=123) are collapsed into one group per action path.
+    """
+    m = re.search(r"(GET|POST|PUT|PATCH|DELETE)\s+(\S+)", evidence or "")
+    if not m:
+        return (evidence or "")[:80]
+    method = m.group(1)
+    action = m.group(2)
+    from urllib.parse import urlparse, urlunparse
+    try:
+        parts = urlparse(action)
+        normalized = urlunparse(parts._replace(fragment="", query=""))
+    except Exception:
+        normalized = action.split("?")[0].split("#")[0]
+    return f"{method}|{normalized}"
+
+
 def group_findings_for_report(findings: List[Dict[str, Any]], *, max_groups: int = 40) -> List[Dict[str, Any]]:
     """Collapse duplicate header/path noise into explained issue groups."""
     from finding_kind import apply_hardening_context
@@ -789,6 +809,13 @@ def group_findings_for_report(findings: List[Dict[str, Any]], *, max_groups: int
             # One group per secret fingerprint (ignore product-label drift)
             key = (severity, category, evidence.lower())
             url_cap = 80
+        elif category == "csrf" and severity == "info":
+            # Aggregate unauthenticated CSRF hardening observations by normalized action path.
+            # Strips fragment/query so the same form appearing on many product pages collapses
+            # into one group per distinct form endpoint.
+            norm_key = _normalize_csrf_group_key(evidence)
+            key = (severity, category, norm_key)
+            url_cap = 120
         elif category in ("xss", "csrf", "mixed_content") and evidence:
             # Evidence-hash grouping: same sink / same CSRF token issue → one issue, many URLs
             import hashlib

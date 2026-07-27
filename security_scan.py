@@ -1355,10 +1355,16 @@ def scan_xss(url: str, body_text: str, forms: Optional[List[dict]] = None) -> Li
             if not sink:
                 continue
             sink_ev = _match_evidence(sink, block, label="xss_sink")
+            # Check if a reflected parameter value appears in the executable context near the sink.
+            # "Near the sink" = within 400 chars before the sink call.  A value elsewhere in the
+            # same script block (e.g. in an analytics JSON object far from innerHTML) does NOT
+            # establish a source-to-sink flow.
+            sink_pos = sink.start()
+            sink_context = block[max(0, sink_pos - 400): sink_pos + 120]
             reflected_name = ""
             for name, values in params.items():
                 for v in values:
-                    if v and len(v) >= 3 and v in block:
+                    if v and len(v) >= 3 and v in sink_context:
                         reflected_name = name
                         break
                 if reflected_name:
@@ -1371,19 +1377,36 @@ def scan_xss(url: str, body_text: str, forms: Optional[List[dict]] = None) -> Li
                     (
                         "xss",
                         "high",
-                        "Inline script with executable sink and reflected parameter (precise passive XSS)",
+                        "Inline script with executable sink and reflected parameter in sink context (precise passive XSS)",
                         f"{sink_ev} | reflected_param: {reflected_name}",
                     )
                 )
             elif not analytics:
-                findings.append(
-                    (
-                        "xss",
-                        "info",
-                        "Potential DOM execution sink — source-to-sink flow not established",
-                        sink_ev,
-                    )
+                # Reflected value exists in the block but not near the sink — not a confirmed flow
+                in_block_only = any(
+                    v and len(v) >= 3 and v in block
+                    for values in params.values()
+                    for v in values
                 )
+                if in_block_only:
+                    findings.append(
+                        (
+                            "xss",
+                            "info",
+                            "Executable sink and reflected parameter in same script block — "
+                            "source-to-sink flow not established (parameter not in sink context)",
+                            sink_ev,
+                        )
+                    )
+                else:
+                    findings.append(
+                        (
+                            "xss",
+                            "info",
+                            "Potential DOM execution sink — source-to-sink flow not established",
+                            sink_ev,
+                        )
+                    )
             break
     for name, values in params.items():
         for value in values:
