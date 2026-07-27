@@ -143,6 +143,18 @@ _HUMAN = {
     "security_scan": ("Security scan", "Enable the security assessment suite."),
     "vuln_scan": ("Vulnerability checks", "Look for common web issues."),
     "vuln_active_probe": ("Active probes", "Send safe injection probes (authorized only)."),
+    "active_probe_mode": (
+        "Active probe mode",
+        "passive | safe | extended | lab. Safe = crawl-safe mini payloads. Lab = deeper sequences (opt-in only).",
+    ),
+    "ssrf_callback_base": (
+        "SSRF/XXE callback base",
+        "Controlled callback host for OOB SSRF/XXE confirm (e.g. https://cb.example). Empty skips OOB confirm.",
+    ),
+    "redirect_proof_host": (
+        "Open-redirect proof host",
+        "Controlled external host used to confirm open redirects.",
+    ),
     "secret_scan": ("Secret scan", "Hunt for API keys and credentials in content."),
     "secret_validate_live": (
         "Live secret validation",
@@ -522,6 +534,9 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "security_scan",
             "vuln_scan",
             "vuln_active_probe",
+            "active_probe_mode",
+            "ssrf_callback_base",
+            "redirect_proof_host",
             "secret_scan",
             "secret_validate_live",
             "secret_validate_max",

@@ -1867,6 +1867,7 @@ async def _run_security_checks(
                 confidence_reason=meta.get("confidence_reason"),
             )
         if config.vuln_active_probe:
+            probe_mode = str(getattr(config, "active_probe_mode", "safe") or "safe")
             for item in await run_active_vuln_probes(
                 client,
                 url,
@@ -1874,6 +1875,12 @@ async def _run_security_checks(
                 max_params=config.active_probe_max_params,
                 max_forms=config.active_probe_max_forms,
                 body_text=body_text or "",
+                mode=probe_mode,
+                callback_base=str(getattr(config, "ssrf_callback_base", "") or ""),
+                redirect_proof_host=str(
+                    getattr(config, "redirect_proof_host", "")
+                    or "redirect-proof.vantacrawl-lab.example"
+                ),
             ):
                 category, severity, detail, evidence, meta = _unpack_finding(item)
                 await emit(
