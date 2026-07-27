@@ -2238,358 +2238,62 @@ async def run_active_vuln_probes(
     max_params: int = 8,
     max_forms: int = 3,
     body_text: str = "",
+    mode: str = "safe",
+    callback_base: str = "",
+    redirect_proof_host: str = "redirect-proof.vantacrawl-lab.example",
+    traversal_fixture_installed: bool = False,
+    browser_evaluate=None,
+    callback_received=None,
 ) -> List[Finding]:
-    """Send minimal safe payloads on GET params and forms (authorized testing only).
+    """Safe / Extended / Lab active probes (authorized targets only).
 
-    Hits require differential evidence vs a successful per-endpoint baseline, reject
-    WAF/checkpoint contamination, and attach a structured proof bundle. XSS uses an
-    evidence ladder (encoded → reject; plain reflection → info candidate; breakout →
-    medium candidate; browser execution not claimed without confirmation).
+    Default mode is Safe Active — crawl-safe mini payloads with differential /
+    marker / callback proof. Lab mode adds deeper boolean SQLi, encodings,
+    IMDS/passwd canaries and must be opted in explicitly.
     """
-    from urllib.parse import parse_qsl, urlparse as _urlparse
+    from active_probe_kit import ProbeModeSettings, normalize_mode, run_active_probe_kit
 
-    findings: List[Any] = []
-    seen: set = set()
-    xss_marker = _XSS_MARKER
-    rce_marker = _RCE_MARKER
-
-    def add(
-        category: str,
-        severity: str,
-        detail: str,
-        evidence: Optional[str] = None,
-        *,
-        meta: Optional[Dict[str, Any]] = None,
-    ):
-        key = (category, detail, evidence or "", str((meta or {}).get("proof", {}).get("validation_state") or ""))
-        if key not in seen:
-            seen.add(key)
-            if meta:
-                findings.append((category, severity, detail, evidence, meta))
-            else:
-                findings.append((category, severity, detail, evidence))
-
-    sql_names = re.compile(r"(?i)^(id|uid|user_id|cat|category|item|pid|order|sort|query|q|search|filter|name)$")
-    xss_names = re.compile(
-        r"(?i)^(q|query|search|s|keyword|term|name|title|message|comment|text|content|input)$"
-    )
-
-    # (category, payload, default_severity, name_ok, payload_class)
-    probe_defs = (
-        ("sql_injection", "'", "high", lambda name: bool(sql_names.match(name)), "sqli_quote"),
-        ("xss", xss_marker, "info", lambda name: bool(xss_names.match(name)), "xss_marker"),
-        (
-            "xss",
-            _XSS_BREAKOUT_PAYLOAD,
-            "medium",
-            lambda name: bool(xss_names.match(name)),
-            "xss_attr_breakout",
-        ),
-        (
-            "directory_traversal",
-            "../../../../etc/passwd",
-            "critical",
-            lambda name: bool(re.match(r"(?i)^(file|path|folder|dir|document|template|include|doc)$", name)),
-            "path_traversal",
-        ),
-        (
-            "rce",
-            f";echo {rce_marker}",
-            "critical",
-            lambda name: bool(re.match(r"(?i)^(cmd|command|exec|execute|run|shell)$", name)),
-            "rce_echo",
-        ),
-        (
-            "ssrf",
-            "http://169.254.169.254/latest/meta-data/",
-            "high",
-            lambda name: bool(SSRF_PARAM_RE.match(name)),
-            "ssrf_imds",
-        ),
-    )
-
-    redirect_probe = "https://crawler-open-redirect-probe.invalid/confirm"
-
-    async def _send_get(target: str, params: dict):
-        return await client.get(target, params=params, timeout=8, follow_redirects=True)
-
-    async def _send_post(target: str, data: dict):
-        return await client.post(target, data=data, timeout=8, follow_redirects=True)
-
-    def _resp_meta(response) -> Tuple[int, str, Dict[str, Any], str]:
-        # Default 200 when clients omit status_code (test fakes / thin wrappers)
-        status = int(getattr(response, "status_code", 200) or 200)
-        body = getattr(response, "text", None) or ""
-        headers = dict(getattr(response, "headers", None) or {})
-        final_url = str(getattr(response, "url", "") or "")
-        return status, body, headers, final_url
-
-    async def _run_probes_on_field(
-        method: str,
-        target: str,
-        field_name: str,
-        values: dict,
-        source: str,
-        baseline_body: str,
-        *,
-        baseline_ok: bool,
-        baseline_status: int = 0,
-        baseline_final_url: str = "",
-    ):
-        for category, payload, severity, name_ok, payload_class in probe_defs:
-            if not name_ok(field_name):
-                continue
-            if category in ("sql_injection", "ssrf", "rce", "directory_traversal") and not baseline_ok:
-                continue
-            trial = dict(values)
-            if category == "xss" and payload == _XSS_BREAKOUT_PAYLOAD:
-                trial[field_name] = payload
-            else:
-                trial[field_name] = str(trial.get(field_name) or "1") + payload
-            try:
-                if method == "POST":
-                    response = await _send_post(target, trial)
-                else:
-                    response = await _send_get(target, trial)
-                probe_status, body, headers, probe_final = _resp_meta(response)
-                resp_class = _classify_active_response(probe_status, body, headers)
-                if _is_contaminated_response(resp_class):
-                    continue
-
-                # Redirect-only differences are interesting but not SQLi/XSS proof
-                redirect_changed = bool(
-                    baseline_final_url
-                    and probe_final
-                    and str(baseline_final_url).split("?")[0] != str(probe_final).split("?")[0]
-                )
-
-                hit = False
-                out_severity = severity
-                validation_state = "differential_signal"
-                confidence = "medium"
-                verification = "verified"
-                detail_bit = "differential signal"
-                new_evidence: List[str] = []
-                xss_disp: Optional[Dict[str, str]] = None
-
-                if category == "sql_injection":
-                    # Require new SQL error; nonce-only churn is not enough
-                    if not _sql_error_new_vs_baseline(body, baseline_body):
-                        continue
-                    if not _bodies_meaningfully_differ(baseline_body, body) and not SQL_ERROR_RE.search(body or ""):
-                        continue
-                    hit = True
-                    new_evidence = _sql_new_evidence_labels(body)
-                    detail_bit = "differential signal (new database error vs baseline)"
-                    validation_state = "differential_signal"
-                    if redirect_changed:
-                        detail_bit += "; redirect also changed (not alone SQLi proof)"
-                elif category == "xss":
-                    xss_disp = _classify_xss_probe(
-                        body, xss_marker, baseline_body, payload=payload
-                    )
-                    if not xss_disp:
-                        continue
-                    hit = True
-                    out_severity = xss_disp["severity"]
-                    detail_bit = xss_disp["detail_bit"]
-                    validation_state = xss_disp["validation_state"]
-                    confidence = xss_disp["confidence"]
-                    verification = xss_disp["verification"]
-                    new_evidence = [detail_bit]
-                elif category == "directory_traversal":
-                    if not _bodies_meaningfully_differ(baseline_body, body):
-                        continue
-                    hit = _traversal_proof_new(body, baseline_body)
-                    detail_bit = "confirmed server-side behavior (passwd/shell marker)"
-                    validation_state = "confirmed_server_side_behavior"
-                    confidence = "high"
-                    verification = "confirmed"
-                    new_evidence = ["passwd/shell content newly introduced"]
-                elif category == "rce":
-                    if not _bodies_meaningfully_differ(baseline_body, body) and rce_marker not in body:
-                        continue
-                    hit = _rce_executed_not_reflected(body, rce_marker, payload, baseline_body)
-                    detail_bit = "confirmed server-side behavior (unique echo output)"
-                    validation_state = "confirmed_server_side_behavior"
-                    confidence = "high"
-                    verification = "confirmed"
-                    new_evidence = [f"executed marker {rce_marker}"]
-                elif category == "ssrf":
-                    hit = _ssrf_metadata_proof_new(body, baseline_body)
-                    detail_bit = "confirmed server-side behavior (metadata proof token)"
-                    validation_state = "confirmed_server_side_behavior"
-                    confidence = "high"
-                    verification = "confirmed"
-                    new_evidence = ["cloud metadata proof token"]
-
-                if hit:
-                    marker = (
-                        rce_marker
-                        if category == "rce"
-                        else (xss_marker if category == "xss" else payload)
-                    )
-                    evidence = _active_match_evidence(
-                        category, body, payload, marker, baseline_body
-                    )
-                    proof = _build_active_proof(
-                        endpoint=target,
-                        method=method,
-                        parameter=field_name,
-                        baseline_status=baseline_status,
-                        probe_status=probe_status,
-                        baseline_body=baseline_body,
-                        probe_body=body,
-                        payload_class=payload_class,
-                        new_evidence=new_evidence,
-                        response_classification=resp_class,
-                        confidence=confidence,
-                        validation_state=validation_state,
-                        evidence_line=evidence or "",
-                    )
-                    if redirect_changed:
-                        proof["redirect_changed"] = True
-                        proof["baseline_final_url"] = str(baseline_final_url)[:300]
-                        proof["probe_final_url"] = str(probe_final)[:300]
-                    add(
-                        category,
-                        out_severity,
-                        f"Active {category} {detail_bit} on {source} '{field_name}' at {target}",
-                        evidence,
-                        meta={
-                            "verification": verification,
-                            "confidence": confidence,
-                            "confidence_reason": validation_state,
-                            "proof": proof,
-                            "validation": (
-                                "confirmed"
-                                if validation_state == "confirmed_server_side_behavior"
-                                else "unverified"
-                            ),
-                        },
-                    )
-            except Exception:
-                continue
-
-    parsed = _urlparse(url)
-    pairs = parse_qsl(parsed.query, keep_blank_values=True)
-    if pairs:
-        values = {name: value for name, value in pairs}
-        # Per-endpoint baseline (this URL + method + param set)
-        baseline_ok = False
-        baseline_body = ""
-        baseline_status = 0
-        baseline_final = ""
-        try:
-            baseline_resp = await _send_get(url, values)
-            baseline_status, baseline_body, base_headers, baseline_final = _resp_meta(baseline_resp)
-            base_class = _classify_active_response(baseline_status, baseline_body, base_headers)
-            baseline_ok = not _is_contaminated_response(base_class)
-        except Exception:
-            baseline_body = ""
-            baseline_ok = False
-        ordered = sorted(
-            pairs,
-            key=lambda item: (
-                0
-                if sql_names.match(item[0])
-                or SSRF_PARAM_RE.match(item[0])
-                or OPEN_REDIRECT_PARAM_RE.match(item[0])
-                or re.match(r"(?i)^(file|path|cmd|q|search)$", item[0])
-                else 1
-            ),
+    mode_n = normalize_mode(mode)
+    if mode_n == "passive":
+        findings: List[Any] = []
+    else:
+        settings = ProbeModeSettings(
+            mode=mode_n,
+            callback_base=callback_base or "",
+            redirect_proof_host=redirect_proof_host or "redirect-proof.vantacrawl-lab.example",
+            traversal_fixture_installed=bool(traversal_fixture_installed),
+            max_params=max_params,
+            max_forms=max_forms,
+            browser_evaluate=browser_evaluate,
+            callback_received=callback_received,
         )
-        for name, _value in ordered[:max_params]:
-            await _run_probes_on_field(
-                "GET",
-                url,
-                name,
-                values,
-                "query param",
-                baseline_body,
-                baseline_ok=baseline_ok,
-                baseline_status=baseline_status,
-                baseline_final_url=baseline_final,
+        findings = list(
+            await run_active_probe_kit(
+                client, url, forms=forms, settings=settings, body_text=body_text or ""
             )
-            if OPEN_REDIRECT_PARAM_RE.match(name):
-                trial = dict(values)
-                trial[name] = redirect_probe
-                try:
-                    response = await client.get(
-                        url.split("?", 1)[0],
-                        params=trial,
-                        timeout=8,
-                        follow_redirects=False,
-                    )
-                    location = (getattr(response, "headers", None) or {}).get("location") or ""
-                    if "crawler-open-redirect-probe.invalid" in location.lower():
-                        add(
-                            "open_redirect",
-                            "high",
-                            f"Active open redirect confirmed via Location on param '{name}' at {url.split('?', 1)[0]}",
-                            _text_evidence(f"Location: {location}", label="redirect_location"),
-                        )
-                except Exception:
-                    pass
+        )
 
-    if forms:
-        for form in forms[:max_forms]:
-            action = form.get("action") or url
-            method = (form.get("method") or "GET").upper()
-            if _mutation_form_blocked(action, method):
-                continue
-            fields = [field for field in form.get("fields", []) if field][:max_params]
-            if not fields:
-                continue
-            values = {field: "test" for field in form.get("fields", []) if field}
-            baseline_ok = False
-            baseline_body = ""
-            baseline_status = 0
-            baseline_final = ""
-            try:
-                if method == "POST":
-                    baseline_resp = await _send_post(action, values)
-                else:
-                    baseline_resp = await _send_get(action, values)
-                baseline_status, baseline_body, base_headers, baseline_final = _resp_meta(baseline_resp)
-                base_class = _classify_active_response(baseline_status, baseline_body, base_headers)
-                baseline_ok = not _is_contaminated_response(base_class)
-            except Exception:
-                baseline_body = ""
-                baseline_ok = False
-            for field in fields:
-                await _run_probes_on_field(
-                    method,
-                    action,
-                    field,
-                    values,
-                    "form field",
-                    baseline_body,
-                    baseline_ok=baseline_ok,
-                    baseline_status=baseline_status,
-                    baseline_final_url=baseline_final,
-                )
+    # Shared follow-on confirmations (all active modes except passive)
+    if mode_n != "passive":
+        findings.extend(await confirm_graphql_introspection(client, url))
+        try:
+            from exploit_probes import probe_idor
 
-    # GraphQL introspection confirmation (POST)
-    findings.extend(await confirm_graphql_introspection(client, url))
-    try:
-        from exploit_probes import probe_idor
+            findings.extend(await probe_idor(client, url, max_params=min(4, max_params)))
+        except Exception:
+            pass
+        try:
+            from exploit_probes import probe_csrf
 
-        findings.extend(await probe_idor(client, url, max_params=min(4, max_params)))
-    except Exception:
-        pass
-    try:
-        from exploit_probes import probe_csrf
+            findings.extend(await probe_csrf(client, url, forms, max_forms=min(3, max_forms)))
+        except Exception:
+            pass
+        try:
+            from tier_security import run_tier_active
 
-        findings.extend(await probe_csrf(client, url, forms, max_forms=min(3, max_forms)))
-    except Exception:
-        pass
-    try:
-        from tier_security import run_tier_active
-
-        findings.extend(await run_tier_active(client, url, body_text=body_text or ""))
-    except Exception:
-        pass
+            findings.extend(await run_tier_active(client, url, body_text=body_text or ""))
+        except Exception:
+            pass
     return findings
 
 

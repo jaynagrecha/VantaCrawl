@@ -164,6 +164,13 @@ class CrawlConfig:
     cors_check: bool = True
     vuln_scan: bool = True
     vuln_active_probe: bool = True  # safer baseline-compared probes; authorized targets only
+    # passive | safe | extended | lab — lab never auto for public targets
+    active_probe_mode: str = "safe"
+    # OOB SSRF/XXE callback base, e.g. https://callback.example (empty = skip OOB confirm)
+    ssrf_callback_base: str = ""
+    redirect_proof_host: str = "redirect-proof.vantacrawl-lab.example"
+    # Owned lab only: target has /opt/vantacrawl-fixtures/VC_TRAVERSAL_* installed
+    traversal_fixture_installed: bool = False
     active_probe_max_params: int = 8
     active_probe_max_forms: int = 3
 

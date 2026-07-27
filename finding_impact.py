@@ -1315,7 +1315,20 @@ async def assess_finding(
         return assess_mixed_content(detail, severity)
     if cat == "open_redirect":
         return assess_open_redirect(detail, severity)
-    if cat in ("sql_injection", "xss", "ssrf", "directory_traversal", "path_traversal", "rce", "form_probe", "idor"):
+    if cat in (
+        "sql_injection",
+        "xss",
+        "ssrf",
+        "directory_traversal",
+        "path_traversal",
+        "rce",
+        "ssti",
+        "header_injection",
+        "xxe",
+        "open_redirect",
+        "form_probe",
+        "idor",
+    ):
         return assess_active_vuln(cat, detail, severity)
     if cat == "csrf":
         return assess_csrf(detail, severity)

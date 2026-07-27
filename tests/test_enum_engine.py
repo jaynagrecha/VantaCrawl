@@ -230,13 +230,19 @@ def test_active_probe_detects_reflected_xss():
     class FakeResponse:
         def __init__(self, text):
             self.text = text
+            self.status_code = 200
+            self.headers = {}
+            self.url = ""
 
     class FakeClient:
         async def get(self, url, params=None, timeout=8, follow_redirects=True):
             params = params or {}
             joined = " ".join(str(v) for v in params.values())
-            if "<crawler-xss-probe>" in joined:
-                return FakeResponse("hello <crawler-xss-probe> world")
+            import re
+
+            m = re.search(r"VCXSS_[0-9a-f]+", joined)
+            if m and "<b" not in joined and "svg" not in joined:
+                return FakeResponse(f"hello {m.group(0)} world")
             return FakeResponse("hello world")
 
         async def post(self, url, data=None, timeout=8, follow_redirects=True):
@@ -246,8 +252,9 @@ def test_active_probe_detects_reflected_xss():
         run_active_vuln_probes(
             FakeClient(),
             "https://example.com/search?q=test",
-            max_params=1,
+            max_params=2,
             max_forms=0,
+            mode="safe",
         )
     )
     # Plain body reflection is info/low unverified candidate — not Medium vuln
