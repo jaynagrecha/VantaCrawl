@@ -111,7 +111,7 @@ services:
   - type: web
     name: horizon-catalog
     runtime: python
-    plan: free
+    plan: starter
     region: oregon
     healthCheckPath: /healthz
     buildCommand: "pip install -r vuln_playground/requirements.txt"
