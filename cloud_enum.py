@@ -162,13 +162,18 @@ async def enumerate_s3_buckets(
                     client, url, provider="s3", stats=stats
                 )
             if ok:
-                # Soft preference: note when name is unrelated
                 if not _bucket_related_to_target(bucket, root):
+                    # Uncorrelated global cloud-name probes — inventory only, not target findings
                     output_callback(
-                        f"S3 public listing (ownership unverified vs {root}): {url} [{status}] {note}"
+                        f"S3 probe excluded (uncorrelated vs {root}): {url} [{status}] {note}"
                     )
-                else:
-                    output_callback(f"S3 bucket: {url} [{status}] {note}")
+                    if stats is not None and hasattr(stats, "record_url"):
+                        try:
+                            stats.record_url("cloud_probe_uncorrelated", url)
+                        except Exception:
+                            pass
+                    return
+                output_callback(f"S3 bucket: {url} [{status}] {note}")
                 found.append(url)
                 return
 
@@ -208,10 +213,15 @@ async def enumerate_gcs_buckets(
         if ok:
             if not _bucket_related_to_target(bucket, root):
                 output_callback(
-                    f"GCS public listing (ownership unverified vs {root}): {url} [{status}] {note}"
+                    f"GCS probe excluded (uncorrelated vs {root}): {url} [{status}] {note}"
                 )
-            else:
-                output_callback(f"GCS bucket: {url} [{status}] {note}")
+                if stats is not None and hasattr(stats, "record_url"):
+                    try:
+                        stats.record_url("cloud_probe_uncorrelated", url)
+                    except Exception:
+                        pass
+                return
+            output_callback(f"GCS bucket: {url} [{status}] {note}")
             found.append(url)
 
     output_callback(f"GCS scan: {len(words)} bucket names (public listings only; 403≠hit)")

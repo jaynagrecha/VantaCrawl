@@ -266,10 +266,38 @@ def render_search_report_html(
         for f in (model.get("form_rows") or [])[:25]
     ) or "<li class='muted'>(none)</li>"
 
-    broken_html = url_table_html(
-        [f"{item.get('url', '')}  [{item.get('status', '?')}]" for item in (model.get("broken") or [])],
-        limit=30,
-    )
+    broken_rows = list(model.get("broken") or [])
+    broken_true = [
+        item
+        for item in broken_rows
+        if str(item.get("class") or "") in ("not_found", "temporary_unavailable")
+        or str(item.get("status") or "") in ("404", "500", "502", "503", "504")
+    ]
+    broken_denied = [
+        item
+        for item in broken_rows
+        if str(item.get("class") or "") == "access_denied"
+        or str(item.get("status") or "") in ("401", "403", "405")
+    ]
+    broken_html = ""
+    if broken_true:
+        broken_html += "<p><strong>Broken (404/5xx)</strong></p>" + url_table_html(
+            [f"{item.get('url', '')}  [{item.get('status', '?')}]" for item in broken_true],
+            limit=30,
+        )
+    if broken_denied:
+        broken_html += (
+            "<p><strong>Access denied (401/403) — not counted as broken</strong></p>"
+            + url_table_html(
+                [f"{item.get('url', '')}  [{item.get('status', '?')}]" for item in broken_denied],
+                limit=20,
+            )
+        )
+    if not broken_html:
+        broken_html = url_table_html(
+            [f"{item.get('url', '')}  [{item.get('status', '?')}]" for item in broken_rows],
+            limit=30,
+        )
 
     cookies = model.get("cookies") or []
     cookie_rows = kv_table_html(
@@ -750,7 +778,7 @@ footer.meta {{ color: var(--muted); font-size: .85rem; margin-top: 1.5rem; }}
   </section>
 
   <section class="card section" id="b9" data-section="b9">
-    <div class="section-head"><h2>B9. Broken links</h2><span class="chev">▾</span></div>
+    <div class="section-head"><h2>B9. Broken links / access-denied</h2><span class="chev">▾</span></div>
     <div class="section-body">{broken_html}</div>
   </section>
 

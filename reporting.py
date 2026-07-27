@@ -199,11 +199,16 @@ class ReportWriter:
             getattr(stats, "requests_retained", 0) or len(getattr(stats, "request_ledger", []) or [])
         )
         payload["request_retention_cap"] = int(getattr(stats, "_request_ledger_cap", 8000) or 8000)
-        payload["requests_exported"] = min(len(getattr(stats, "request_ledger", []) or []), 2000)
+        retained_n = int(payload["requests_retained"] or 0)
+        exported_n = min(retained_n, 2000)
+        payload["requests_exported"] = exported_n
+        # Retention drops (cap) vs JSON export truncation — report both honestly
         payload["requests_omitted"] = int(getattr(stats, "requests_omitted", 0) or 0)
+        payload["requests_omitted_from_json_export"] = max(0, retained_n - exported_n)
         payload["request_ledger_note"] = (
             "request_ledger rows are capped for export. Use total_requests_observed for the full "
-            "attempt count; requests_retained/request_retention_cap/requests_omitted describe retention."
+            "attempt count; requests_retained/request_retention_cap/requests_omitted describe retention; "
+            "requests_omitted_from_json_export is retained-minus-exported."
         )
         payload["discovered_urls"] = sorted(getattr(stats, "discovered_urls", set()))[:5000]
         payload["discovered_urls_note"] = (
@@ -549,8 +554,8 @@ td,th{{border:1px solid #ccc;padding:6px;text-align:left}}</style></head>
 <li>Links found: {snap['links_found']}</li>
 <li>Enum hits: {snap['enum_hits']}</li>
 <li>Findings: {snap['findings_count']}</li>
-<li>Broken links: {snap.get('broken_links_summary', {}).get('unique_urls', snap['broken_links_count'])} unique
- ({snap['broken_links_count']} row(s))</li>
+<li>Broken links (404/5xx): {snap.get('broken_links_summary', {}).get('headline_broken', snap.get('broken_links_summary', {}).get('unique_404', 0))} unique
+ ({snap.get('broken_links_summary', {}).get('unique_access_denied', 0)} access-denied not counted as broken; {snap['broken_links_count']} raw row(s))</li>
 <li>Duration: {snap['elapsed_seconds']}s</li>
 </ul><h2>Technologies</h2><p>{escape(tech or 'None detected')}</p>
 <h2>Security Findings</h2><table><tr><th>Severity</th><th>Category</th><th>URL</th><th>Detail</th></tr>{rows or '<tr><td colspan=4>None</td></tr>'}</table>

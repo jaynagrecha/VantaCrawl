@@ -174,12 +174,27 @@ def build_assessment_document(
             "Treat coverage limits below as part of residual risk."
         )
 
-    # Scan completeness is separate from risk — never use "Partial" as a risk rating.
+    # Scan completeness / edge interference overrides risk rating
     scan_status = str(status_meta.get("scan_status") or "")
-    if scan_status in ("partial", "stopped"):
+    inconclusive_reason = str(getattr(stats, "assessment_inconclusive_reason", "") or "")
+    coverage_failed = str(getattr(stats, "target_content_coverage", "") or "").lower() == "failed"
+    edge_blocked = bool(getattr(stats, "enum_edge_blocked", False))
+    if coverage_failed or edge_blocked or "checkpoint" in inconclusive_reason.lower():
+        risk_level = "Not assigned"
+        reason = inconclusive_reason or (
+            "Edge security checkpoint prevented sufficient application and enumeration coverage."
+        )
+        exec_headline = (
+            f"Overall assessment: Inconclusive. Risk rating: Not assigned. "
+            f"Reason: {reason} Confirmed vulnerabilities: "
+            f"{critical + high + medium}."
+        )
+    elif scan_status in ("partial", "stopped"):
         incomplete = partial_executive_summary(
             host=host, phase=str(status_meta.get("phase") or "crawl")
         )
+        # Completeness is separate from risk — annotate, do not invent High/Critical.
+        # Only checkpoint/coverage-failed paths above force Not assigned.
         exec_headline = f"{incomplete} {exec_headline}"
 
     top_exec = [

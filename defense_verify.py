@@ -717,36 +717,32 @@ class DefenseTracker:
             )
         catch = self.catch_rate_pct()
         caveat = (
-            " Observational only: ordinary crawl/asset GETs are not a controlled "
-            "bot-vs-browser cohort — do not treat this as a true WAF catch-rate."
+            " Observational only over mixed scanner traffic (crawl + probes) — "
+            "not a controlled bot-vs-browser cohort. Do not treat percentages as a "
+            "true WAF catch-rate or protection verdict."
         )
         if self.origin_failure_count:
             caveat += (
                 f" Excluded {self.origin_failure_count} origin/DNS/connect failure(s) "
                 "from catch counts."
             )
+        # Never claim STRONG/PARTIAL protection posture from probe-heavy mixes
         if catch >= 70 and self.protections_seen:
             return (
-                "STRONG OBSERVED CHALLENGE RATE — protections often stop scanner traffic",
+                "OBSERVATIONAL — high challenge rate in scored traffic (not a WAF grade)",
                 f"{catch}% of scored requests showed a block, challenge, or rate-limit signal. "
                 f"Still review the {self.unchallenged_count} unchallenged request(s).{caveat}",
             )
         if catch >= 30:
             return (
-                "PARTIAL OBSERVED COVERAGE — some traffic is stopped, gaps remain",
-                f"Only {catch}% of scored requests were challenged/blocked. "
+                "OBSERVATIONAL — mixed challenge signals (not a protection verdict)",
+                f"{catch}% of scored requests were challenged/blocked among scanner traffic. "
                 f"{self.unchallenged_count} completed without a detected bot wall.{caveat}",
             )
-        if self.protections_seen:
-            return (
-                "WEAK OBSERVED CHALLENGE RATE — protections detected but rarely triggered",
-                f"Signals of {', '.join(sorted(self.protections_seen))} were seen, but only {catch}% of "
-                f"requests were actually challenged/blocked.{caveat}",
-            )
         return (
-            "FEW PROTECTIONS OBSERVED — high risk if this host goes public",
+            "OBSERVATIONAL — low challenge signals in scored scanner traffic",
             f"{self.unchallenged_count} request(s) completed without challenge signals and little/no "
-            f"bot-management fingerprint was detected.{caveat}",
+            f"block fingerprint among {total} scored attempt(s).{caveat}",
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1183,29 +1179,30 @@ def build_bot_management_findings(
         }
     ]
 
-    # Meaningful sample + BM present + substantial unchallenged traffic
+    # Meaningful sample + BM present + substantial unchallenged traffic.
+    # Keep severity informational: mixed crawl+probe gap rates must not drive a
+    # protection-grade / risk verdict.
     if scored >= 8 and gap >= 35.0:
-        sev = "medium" if gap < 70 else "medium"
         findings.append(
             {
                 "category": "bot_management",
-                "severity": sev,
+                "severity": "info",
                 "url": start or f"https://{host}/",
                 "detail": (
                     f"Akamai Bot Manager is present, but {gap}% of scored scanner requests "
                     f"completed without a challenge/block signal (catch rate {catch}%, "
                     f"unchallenged={tracker.unchallenged_count}, caught={tracker.caught_count}). "
-                    "Network-side gap: review Bot Manager bot categories, challenge actions, "
-                    "and JA4/TLS/header anomaly rules so automation cannot reach origin unchallenged."
+                    "Observational only over mixed crawl+probe traffic — not a WAF strength grade. "
+                    "Owners may still review Bot Manager categories/challenge actions."
                 ),
                 "evidence": f"gap_rate={gap}%; samples: {gap_evidence}",
                 "role": "hardening",
-                "impact": "possible",
+                "impact": "informational",
                 "validation": "confirmed",
                 "impact_summary": (
-                    "BM cookies/headers prove the control exists, but high unchallenged rate means "
-                    "rules are not stopping this class of traffic. Tighten BM policy on the edge — "
-                    "do not treat this as proof of a client-side cookie forge."
+                    "BM cookies/headers prove the control exists; high unchallenged rate among "
+                    "scanner traffic is an observational signal only — do not treat percentages "
+                    "as a protection verdict or client-side cookie forge."
                 ),
             }
         )

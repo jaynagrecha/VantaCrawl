@@ -51,12 +51,13 @@ def test_presence_finding_when_bm_cookies():
     assert len(findings) == 2
     assert findings[0]["severity"] == "info"
     assert "Bot Manager" in findings[0]["detail"]
-    assert findings[1]["severity"] == "medium"
+    assert findings[1]["severity"] == "info"
     assert "gap" in findings[1]["detail"].lower() or "without a challenge" in findings[1]["detail"].lower()
+    assert "observational" in findings[1]["detail"].lower()
     assert classify_finding_kind(
         category="bot_management",
         role="hardening",
-        severity="medium",
+        severity="info",
         detail=findings[1]["detail"],
     ) == "hardening"
 
@@ -87,8 +88,8 @@ def test_assess_bot_management_impact():
     assert present.severity == "info"
     gap = assess_bot_management(
         "Akamai Bot Manager is present, but 50% completed without a challenge",
-        "medium",
+        "info",
         "gap_rate=50%",
     )
-    assert gap.severity == "medium"
+    assert gap.severity == "info"
     assert gap.validation == "confirmed"

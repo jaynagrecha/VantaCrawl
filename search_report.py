@@ -20,7 +20,7 @@ def _risk_verdict(findings: List[dict], *, scan_status: str = "", phase: str = "
     medium = int(demo.get("medium", 0)) or int(counts.get("medium", 0))
 
     suffix = ""
-    if scan_status == "partial":
+    if scan_status in ("partial", "stopped"):
         from report_status import partial_executive_summary
 
         suffix = " " + partial_executive_summary(phase=phase or "crawl")
@@ -47,17 +47,19 @@ def _risk_verdict(findings: List[dict], *, scan_status: str = "", phase: str = "
             "These are common on real sites and usually quick to fix — details and fixes are listed in Part B."
             + suffix,
         )
+    if scan_status in ("partial", "stopped"):
+        return (
+            "INCONCLUSIVE — risk not assigned",
+            "Scan coverage was incomplete or interrupted. "
+            "'No vulnerabilities observed' under incomplete visibility does not equal Low risk."
+            + suffix,
+        )
     if findings:
         return (
             "LOW — informational findings only",
             f"{len(findings)} informational / candidate item(s) were recorded. No urgent exploit path is indicated, "
             "but skim Part B so nothing important was mis-labeled."
             + suffix,
-        )
-    if scan_status == "partial":
-        return (
-            "INCOMPLETE — no findings yet",
-            (suffix.strip() or "Scan was still in progress when this report was generated."),
         )
     return (
         "CLEAR — no security findings in this run",
@@ -80,11 +82,28 @@ def build_search_conclusion(
     from report_status import scan_status_from_stats
 
     status_meta = scan_status_from_stats(stats)
-    verdict_title, verdict_body = _risk_verdict(
-        stats.findings,
-        scan_status=str(status_meta.get("scan_status") or ""),
-        phase=str(status_meta.get("phase") or ""),
-    )
+    scan_status = str(status_meta.get("scan_status") or "")
+    if (
+        str(getattr(stats, "target_content_coverage", "") or "").lower() == "failed"
+        or bool(getattr(stats, "enum_edge_blocked", False))
+        or "checkpoint" in str(getattr(stats, "assessment_inconclusive_reason", "") or "").lower()
+    ):
+        # Force inconclusive posture regardless of informational findings
+        scan_status = "stopped"
+        reason = str(getattr(stats, "assessment_inconclusive_reason", "") or "") or (
+            "Edge security checkpoint prevented sufficient application and enumeration coverage."
+        )
+        verdict_title = "INCONCLUSIVE — risk not assigned"
+        verdict_body = (
+            f"Overall assessment: Inconclusive. Risk rating: Not assigned. "
+            f"Reason: {reason} Confirmed vulnerabilities: none observed under blocked coverage."
+        )
+    else:
+        verdict_title, verdict_body = _risk_verdict(
+            stats.findings,
+            scan_status=scan_status,
+            phase=str(status_meta.get("phase") or ""),
+        )
     meta = dict(config_meta or {})
     meta.setdefault("profile", profile)
     meta.setdefault("download_files", download_enabled)

@@ -322,6 +322,9 @@ class CrawlStats:
                 + class_counts.get("dns_failure", 0)
                 + class_counts.get("connection_failure", 0)
             ),
+            # Headline "broken" = 404/5xx only — access-denied is not broken
+            "headline_broken": int(class_counts.get("not_found", 0))
+            + int(class_counts.get("temporary_unavailable", 0)),
         }
 
     def record_finding(
@@ -501,7 +504,17 @@ class CrawlStats:
     def enum_elapsed_seconds(self) -> float:
         if self.enum_started_at is None:
             return 0.0
+        end = getattr(self, "enum_finished_at", None)
+        if end is not None:
+            return max(float(end) - float(self.enum_started_at), 0.0)
         return max(time.time() - self.enum_started_at, 0.0)
+
+    def mark_enum_finished(self) -> None:
+        """Freeze enum wall-clock so later phases do not inflate enum_elapsed_seconds."""
+        if self.enum_started_at is None:
+            return
+        if getattr(self, "enum_finished_at", None) is None:
+            self.enum_finished_at = time.time()  # type: ignore[attr-defined]
 
     def enum_eta_seconds(self) -> Optional[int]:
         """Blend phase-clock + recent-window rate; hide until warm-up."""
@@ -731,6 +744,14 @@ class CrawlStats:
             "enum_http_attempts": int(getattr(self, "enum_http_attempts", 0) or 0),
             "enum_blocked_checkpoint": int(getattr(self, "enum_blocked_checkpoint", 0) or 0),
             "enum_edge_blocked": bool(getattr(self, "enum_edge_blocked", False)),
+            "enum_state": str(getattr(self, "enum_state", "") or ""),
+            "enum_coverage_complete": bool(getattr(self, "enum_coverage_complete", False)),
+            "enum_resume_allowed": bool(getattr(self, "enum_resume_allowed", False)),
+            "enum_remaining_base_words": int(getattr(self, "enum_remaining_base_words", 0) or 0),
+            "enum_finished_at": getattr(self, "enum_finished_at", None),
+            "edge_circuit_breaker": bool(getattr(self, "edge_circuit_breaker", False)),
+            "hsts_observed": bool(getattr(self, "hsts_observed", False)),
+            "hsts_inconsistent": bool(getattr(self, "hsts_inconsistent", False)),
             "target_content_coverage": getattr(self, "target_content_coverage", "") or "",
             "assessment_inconclusive_reason": getattr(self, "assessment_inconclusive_reason", "") or "",
             "technologies": dict(self.technologies.most_common(20)),

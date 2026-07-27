@@ -792,14 +792,48 @@ def assess_active_vuln(category: str, detail: str, severity: str) -> ImpactResul
             summary="Object-id parameter is an IDOR candidate — not confirmed until mutation proof.",
             validation="unverified",
         )
-    # Marker reflection without executable sink is possible XSS, not confirmed exploit
-    if role == "xss" and "reflection (not proven" in d:
+    # XSS evidence ladder — plain reflection is never Medium confirmed exploitability
+    if role == "xss":
+        if "browser-confirmed" in d or "confirmed browser" in d:
+            return ImpactResult(
+                role="xss",
+                impact="confirmed",
+                severity=severity if severity in ("medium", "high", "critical") else "high",
+                summary="Browser-confirmed XSS execution.",
+                validation="confirmed",
+            )
+        if "breakout" in d or "sink-context" in d or "sink_context" in d:
+            return ImpactResult(
+                role="xss",
+                impact="possible",
+                severity="medium",
+                summary="XSS attribute/sink-context candidate — not browser-confirmed execution.",
+                validation="unverified",
+            )
+        if "reflection" in d or "unverified" in d or "candidate" in d:
+            return ImpactResult(
+                role="xss",
+                impact="informational",
+                severity="info",
+                summary="Unverified XSS reflection candidate — not proven executable / browser-confirmed.",
+                validation="unverified",
+            )
+    # Differential signal ≠ confirmed exploitability
+    if "differential signal" in d:
         return ImpactResult(
-            role="xss",
+            role=role,
             impact="possible",
-            severity=severity if severity in ("medium", "high") else "medium",
-            summary="Active XSS marker reflected — not proven as an executable sink.",
+            severity=severity or "high",
+            summary=f"{category} differential signal vs baseline — not confirmed exploitability.",
             validation="unverified",
+        )
+    if "confirmed server-side" in d:
+        return ImpactResult(
+            role=role,
+            impact="confirmed",
+            severity=severity or "high",
+            summary=f"{category} confirmed server-side behavior (not necessarily full exploitability).",
+            validation="confirmed",
         )
     if _is_active_confirmed(detail) or (role == "idor" and "active idor" in d):
         return ImpactResult(
