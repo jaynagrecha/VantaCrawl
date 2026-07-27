@@ -1314,6 +1314,32 @@ async def run_pro_directory_enum(
                         }
                     )
                 if hasattr(stats, "record_request"):
+                    robots_extra = {}
+                    try:
+                        from crawler_common import robots_bypass_provenance_for_url
+                        from urllib.parse import urlparse as _up_robots
+
+                        path_l = (_up_robots(test_url).path or "").lower()
+                        if path_l.rstrip("/").endswith("robots.txt") and body:
+                            text = body.decode("utf-8", errors="replace") if isinstance(body, (bytes, bytearray)) else str(body)
+                            if hasattr(stats, "note_robots_txt"):
+                                stats.note_robots_txt(
+                                    text,
+                                    ignore_robots=bool(getattr(config, "ignore_robots", True)),
+                                )
+                        prov = robots_bypass_provenance_for_url(
+                            test_url,
+                            ignore_robots=bool(getattr(config, "ignore_robots", True)),
+                            disallow_prefixes=list(
+                                getattr(stats, "robots_disallow_prefixes", None) or []
+                            ),
+                        )
+                        if prov:
+                            if hasattr(stats, "note_robots_bypass"):
+                                stats.note_robots_bypass(test_url, prov)
+                            robots_extra["robots_exclusion_bypass"] = prov
+                    except Exception:
+                        robots_extra = {}
                     stats.record_request(
                         phase="enumeration",
                         source="directory_enum",
@@ -1332,6 +1358,7 @@ async def run_pro_directory_enum(
                         normalized_hash=attempt_fp.normalized_hash,
                         path_shape=path_shape,
                         classification=CLASS_INCONCLUSIVE_429 if status == 429 else "",
+                        **robots_extra,
                     )
                 if status != 429:
                     concurrency_state["clean_streak"] += 1

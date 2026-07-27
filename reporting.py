@@ -947,11 +947,43 @@ def write_findings_snapshot(report_dir: str | Path, stats: CrawlStats) -> str:
         "remaining_jobs": int(status_meta.get("remaining_jobs") or queue_size),
         "is_final": bool(status_meta.get("is_final")),
         "target_content_coverage": str(
-            getattr(stats, "target_content_coverage", "") or ""
+            getattr(stats, "target_content_coverage", "")
+            or status_meta.get("target_content_coverage")
+            or ""
+        ),
+        "assessment_status": str(
+            status_meta.get("assessment_status")
+            or getattr(stats, "assessment_status", "")
+            or ""
         ),
         "assessment_inconclusive_reason": str(
-            getattr(stats, "assessment_inconclusive_reason", "") or ""
+            getattr(stats, "assessment_inconclusive_reason", "")
+            or status_meta.get("assessment_inconclusive_reason")
+            or ""
         ),
+        "crawl_coverage": str(status_meta.get("crawl_coverage") or ""),
+        "enum_coverage": str(status_meta.get("enum_coverage") or ""),
+        "api_coverage": str(status_meta.get("api_coverage") or ""),
+        "target_selection_coverage": (
+            getattr(stats, "target_selection_coverage", None)
+            or status_meta.get("target_selection_coverage")
+            or ""
+        ),
+        "active_validation_coverage": str(
+            getattr(stats, "active_validation_coverage", "")
+            or status_meta.get("active_validation_coverage")
+            or ""
+        ),
+        "vulnerability_assessment_coverage": str(
+            status_meta.get("vulnerability_assessment_coverage")
+            or status_meta.get("assessment_status")
+            or ""
+        ),
+        "robots_policy": dict(getattr(stats, "robots_policy", None) or {}),
+        "robots_bypass_events": list(getattr(stats, "robots_bypass_events", None) or [])[:100],
+        "robots_disallow_prefixes": list(
+            getattr(stats, "robots_disallow_prefixes", None) or []
+        )[:50],
     }
     # Never overwrite a richer prior snapshot with a poorer empty one
     try:

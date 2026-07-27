@@ -69,7 +69,25 @@ def _detail_l(detail: str) -> str:
 
 def _is_active_confirmed(detail: str) -> bool:
     d = _detail_l(detail)
-    return d.startswith("active ") or " confirmed" in d or "actively confirmed" in d
+    # Unverified / candidate ladders are never "confirmed" impact.
+    if "not browser-confirmed" in d:
+        return False
+    if "not proven executable" in d:
+        return False
+    if "confirmation unavailable" in d:
+        return False
+    if "unverified" in d:
+        return False
+    if "candidate" in d and "browser execution confirmed" not in d:
+        return False
+    if "browser execution confirmed" in d or "confirmed server-side" in d:
+        return True
+    if "actively confirmed" in d:
+        return True
+    # Legacy: "… confirmed …" but not "not confirmed"
+    if " confirmed" in d and "not confirmed" not in d:
+        return True
+    return False
 
 
 def assess_header_audit(detail: str, severity: str) -> ImpactResult:
@@ -794,7 +812,9 @@ def assess_active_vuln(category: str, detail: str, severity: str) -> ImpactResul
         )
     # XSS evidence ladder — plain reflection is never Medium confirmed exploitability
     if role == "xss":
-        if "browser-confirmed" in d or "confirmed browser" in d:
+        if "not browser-confirmed" not in d and (
+            "browser execution confirmed" in d or "browser-confirmed" in d
+        ):
             return ImpactResult(
                 role="xss",
                 impact="confirmed",
@@ -802,7 +822,16 @@ def assess_active_vuln(category: str, detail: str, severity: str) -> ImpactResul
                 summary="Browser-confirmed XSS execution.",
                 validation="confirmed",
             )
-        if "breakout" in d or "sink-context" in d or "sink_context" in d:
+        if (
+            "not browser-confirmed" in d
+            or "attribute/event" in d
+            or "attribute_breakout" in d
+            or "breakout" in d
+            or "sink-context" in d
+            or "sink context" in d
+            or "sink_context" in d
+            or "medium-confidence xss candidate" in d
+        ):
             return ImpactResult(
                 role="xss",
                 impact="possible",

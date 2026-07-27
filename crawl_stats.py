@@ -83,6 +83,10 @@ class CrawlStats:
     page_content_by_hash: Dict[str, str] = field(default_factory=dict)
     # url → provenance kind (seed|crawl|enum|…) for report URL table
     url_kinds: Dict[str, str] = field(default_factory=dict)
+    # robots.txt Disallow inventory + authorized bypass provenance
+    robots_disallow_prefixes: List[str] = field(default_factory=list)
+    robots_bypass_events: List[Dict[str, Any]] = field(default_factory=list)
+    robots_policy: Dict[str, Any] = field(default_factory=dict)
     etag_cache: Dict[str, str] = field(default_factory=dict)
     last_modified_cache: Dict[str, str] = field(default_factory=dict)
     queue_size: int = 0
@@ -190,6 +194,37 @@ class CrawlStats:
         if not url or not kind:
             return
         self.url_kinds.setdefault(url, str(kind))
+
+    def note_robots_txt(self, body_text: str, *, ignore_robots: bool = True) -> None:
+        """Parse Disallow prefixes from robots.txt and record policy for reports."""
+        try:
+            from crawler_common import parse_robots_disallow_prefixes
+        except Exception:
+            return
+        prefixes = parse_robots_disallow_prefixes(body_text or "")
+        if prefixes:
+            merged = list(dict.fromkeys(list(self.robots_disallow_prefixes or []) + prefixes))
+            self.robots_disallow_prefixes = merged[:200]
+        self.robots_policy = {
+            "ignore_robots": bool(ignore_robots),
+            "disallow_prefixes": list(self.robots_disallow_prefixes or [])[:50],
+            "bypass_authority": "authorized_configuration" if ignore_robots else "honored",
+        }
+
+    def note_robots_bypass(self, url: str, provenance: Dict[str, Any]) -> None:
+        """Record that a robots exclusion was deliberately bypassed by config."""
+        if not url or not provenance:
+            return
+        row = {"url": url, **dict(provenance)}
+        bucket = self.robots_bypass_events
+        if not isinstance(bucket, list):
+            self.robots_bypass_events = []
+            bucket = self.robots_bypass_events
+        paths = {str(r.get("url") or "") for r in bucket if isinstance(r, dict)}
+        if url in paths:
+            return
+        if len(bucket) < 200:
+            bucket.append(row)
 
     def note_page_content(self, url: str, normalized_hash: str) -> None:
         """Seed content-equivalence map from a crawled page body."""
@@ -476,6 +511,30 @@ class CrawlStats:
                     dedupe_key = f"csrf_hardening|{host}|{_csrf_action_m2.group(1)}|{_norm}"
                 else:
                     dedupe_key = f"csrf_hardening|{host}|{evidence_key[:80]}"
+        elif category == "api_leak":
+            # Aggregate client-bundle route references by route + source asset
+            # (not once per crawled page that embedded the same bundle).
+            route_m = re.search(
+                r"(?i)(?:route reference:|referenced in client bundle:|path confirmed:)\s*([^\s]+)",
+                detail or "",
+            )
+            route = (route_m.group(1) if route_m else detail_key[:80]).rstrip(".,)")
+            source_asset = ""
+            src_m = re.search(r"(?i)source(?:_asset)?[=:]\s*`?([^\s`]+)", evidence_key or "")
+            if src_m:
+                source_asset = src_m.group(1)[:160]
+            elif evidence_label in ("js_route", "js_route_graphql", "js_route_ref"):
+                # Fall back to evidence body after label; else the finding URL host path of the asset
+                source_asset = (evidence_key.split(":", 1)[-1].strip().strip("`")[:160] if evidence_key else "")
+            if not source_asset:
+                # Last resort: treat the page URL path as weak source key (still collapses dupes per host+route)
+                try:
+                    from urllib.parse import urlparse as _up
+
+                    source_asset = (_up(url).path or "/").rstrip("/") or "/"
+                except Exception:
+                    source_asset = url
+            dedupe_key = f"api_leak|{host}|{route}|{source_asset}"
         elif category in ("xss", "csrf") and evidence_key:
             # Same XSS sink / CSRF evidence across pages → one finding per host
             dedupe_key = f"{category}|{host}|{evidence_key}"
