@@ -632,7 +632,21 @@ def render_detailed_text(model: Dict[str, Any]) -> str:
     for label, value in model["scan_setup"]["rows"]:
         lines.append(f"  • {label}: {value}")
 
-    lines += _hrule("C8. Limitations")
+    lines += _hrule("C8. Request accounting reconciliation")
+    total_obs = int(snap.get("total_requests_observed") or 0)
+    retained = int(snap.get("requests_retained") or 0)
+    exported = int(snap.get("requests_exported") or min(retained, 2000))
+    omitted = int(snap.get("requests_omitted") or 0)
+    cap = int(snap.get("request_retention_cap") or snap.get("request_ledger_cap") or 8000)
+    lines.append(f"  total_requests_observed  = {total_obs:,}  (every HTTP attempt by the scanner)")
+    lines.append(f"  requests_retained        = {retained:,}  (kept in capped ledger, cap={cap:,})")
+    lines.append(f"  requests_omitted         = {omitted:,}  (beyond cap; still counted in total)")
+    lines.append(f"  requests_exported        = {exported:,}  (written to JSON export)")
+    lines.append("  Note: browser subresource fetches (images/fonts/scripts loaded by headless")
+    lines.append("  browser) are NOT in total_requests_observed — they are browser-internal.")
+    lines.append("  Do not add or compare these counters as equivalent request sets.")
+
+    lines += _hrule("C9. Limitations")
     lines.append("  • Automated assessment aid — not a full manual penetration test.")
     lines.append("  • False positives/negatives possible; verify before production changes.")
     lines.append("  • Stopping a large directory scan early reduces hidden-path coverage.")

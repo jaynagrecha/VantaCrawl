@@ -43,8 +43,16 @@ def test_assessment_document_dual_audience(tmp_path):
     assert "For decision makers" in html
     assert "For security engineers" in html
     assert "Remediation roadmap" in html
-    assert "Vulnerabilities" in html
-    assert "Hardening issues" in html
+    assert (
+        "Confirmed vulnerabilities" in html
+        or "Vulnerabilities" in html
+        or "Unverified vulnerability candidates" in html
+    )
+    assert (
+        "Passive security observations" in html
+        or "Hardening issues" in html
+        or "Attack-surface inventory" in html
+    )
 
     writer = ReportWriter(str(tmp_path), "https://lab.example/", title="RepoTrace")
     paths = writer.write_all(

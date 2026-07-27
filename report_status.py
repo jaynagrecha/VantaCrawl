@@ -143,7 +143,7 @@ def scan_status_from_stats(stats: Any) -> Dict[str, Any]:
         "enum_complete": enum_complete if enum_configured else True,
         "enum_skip_reason": enum_skip_reason,
         "enum_edge_blocked": edge_blocked,
-        "target_content_coverage": coverage or ("ok" if status == "final" and pages > 0 else ""),
+        "target_content_coverage": coverage or ("crawl_only" if status == "final" and pages > 0 else ""),
         "assessment_status": assessment_status,
         "assessment_inconclusive_reason": inconclusive_reason,
         # Legacy aliases for older report templates
@@ -175,9 +175,26 @@ def assessment_state_for_finding(
 
     if val in ("invalid", "skipped") or imp in ("no_impact", "invalid") or "false positive" in detail_l:
         return "False positive / invalidated"
-    if cat in ("file_upload", "rate_limit", "well_known", "cloud_url", "js_intel", "websocket"):
+    # These categories are attack-surface inventory, not vulnerability findings
+    if cat in (
+        "file_upload",
+        "rate_limit",
+        "well_known",
+        "cloud_url",
+        "js_intel",
+        "websocket",
+        "oauth",
+        "business_logic",
+        "graphql",
+        "api_leak",
+    ):
         return "Attack-surface observation"
     if "deep-link flow" in detail_l or "password-reset deep-link" in detail_l:
+        return "Attack-surface observation"
+    if "graphql" in detail_l and cat in ("api_leak", "info_leak", "information_disclosure"):
+        return "Attack-surface observation"
+    # SSO/OAuth surface signals without confirmed exploit
+    if cat == "oauth" or (cat == "authentication" and "sso" in detail_l):
         return "Attack-surface observation"
     if "source-to-sink flow not established" in detail_l or "potential dom execution sink" in detail_l:
         return "Needs manual validation"

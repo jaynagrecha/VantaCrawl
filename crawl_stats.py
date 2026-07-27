@@ -438,6 +438,44 @@ class CrawlStats:
             except Exception:
                 upath = url
             dedupe_key = f"file_upload|{host}|{upath}"
+        elif category == "csrf" and sev_l == "info":
+            # Aggregate unauthenticated CSRF hardening observations.
+            # Group by method + canonical field signature so the same form type appearing on
+            # many pages (e.g. comment forms on every blog post) collapses to one finding.
+            # evidence_key is already lowercased so match is case-insensitive by nature.
+            _csrf_m = re.search(
+                r"(?i)(get|post|put|patch|delete)\s+(\S+)\s+fields=([^\`]*)", evidence_key
+            )
+            if _csrf_m:
+                _method_n = _csrf_m.group(1).upper()
+                _fields_raw = _csrf_m.group(3).strip()
+                _field_list = sorted(
+                    f.strip() for f in _fields_raw.split(",")
+                    if f.strip() and f.strip() not in ("utf8", "form_type", "section-id", "section_id")
+                )
+                _field_sig = "|".join(re.sub(r"\d+$", "", f)[:40] for f in _field_list[:8])
+                if _field_sig:
+                    dedupe_key = f"csrf_hardening|{host}|{_method_n}|fields:{_field_sig}"
+                else:
+                    try:
+                        from urllib.parse import urlparse as _up, urlunparse as _uu
+                        _p = _up(_csrf_m.group(2))
+                        _norm = _uu(_p._replace(fragment="", query=""))
+                    except Exception:
+                        _norm = _csrf_m.group(2).split("?")[0].split("#")[0]
+                    dedupe_key = f"csrf_hardening|{host}|{_method_n}|{_norm}"
+            else:
+                _csrf_action_m2 = re.search(r"(?i)(get|post|put|patch|delete)\s+(\S+)", evidence_key)
+                if _csrf_action_m2:
+                    try:
+                        from urllib.parse import urlparse as _up, urlunparse as _uu
+                        _p = _up(_csrf_action_m2.group(2))
+                        _norm = _uu(_p._replace(fragment="", query=""))
+                    except Exception:
+                        _norm = _csrf_action_m2.group(2).split("?")[0].split("#")[0]
+                    dedupe_key = f"csrf_hardening|{host}|{_csrf_action_m2.group(1)}|{_norm}"
+                else:
+                    dedupe_key = f"csrf_hardening|{host}|{evidence_key[:80]}"
         elif category in ("xss", "csrf") and evidence_key:
             # Same XSS sink / CSRF evidence across pages → one finding per host
             dedupe_key = f"{category}|{host}|{evidence_key}"
@@ -767,6 +805,15 @@ class CrawlStats:
             "requests_exported": min(len(self.request_ledger), 2000),
             "requests_omitted": int(self.requests_omitted or 0),
             "request_retention_cap": int(getattr(self, "_request_ledger_cap", 8000) or 8000),
+            "request_accounting_note": (
+                "total_requests_observed = every HTTP attempt by the crawler (crawl + enum + active probes). "
+                "requests_retained = rows kept in the capped ledger. "
+                "requests_omitted = attempts beyond the retention cap (not lost — counted in total). "
+                "requests_exported = ledger rows written to JSON (capped separately). "
+                "Browser subresource fetches (images, fonts, scripts loaded by the headless browser) "
+                "are NOT counted in total_requests_observed — they are browser-internal and not "
+                "tracked per-request. Do not compare these counters as though they represent the same set."
+            ),
             "enum_attempt_fingerprint_count": len(getattr(self, "enum_attempt_fingerprints", []) or []),
             "enum_attempt_fingerprints_exported": min(
                 len(getattr(self, "enum_attempt_fingerprints", []) or []), 2000

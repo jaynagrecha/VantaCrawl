@@ -118,25 +118,42 @@ def build_assessment_document(
             detail=str(f.get("detail") or ""),
         )
 
+    # Exclude suppressed / invalidated findings from severity totals and executive items
+    from report_status import is_suppressed_or_invalidated as _is_suppressed
+
+    def _is_attack_surface(f: Dict[str, Any]) -> bool:
+        return str(f.get("assessment_state") or "") == "Attack-surface observation"
+
+    active_vulnerabilities = [
+        f for f in vulnerabilities if not _is_suppressed(f) and not _is_attack_surface(f)
+    ]
+    active_hardening = [
+        f for f in hardening_issues if not _is_suppressed(f) and not _is_attack_surface(f)
+    ]
+    # Attack-surface items are inventoried separately — never in severity totals
+    attack_surface_only = [
+        f for f in findings_dual if _is_attack_surface(f) and not _is_suppressed(f)
+    ]
+
     # Overall risk ignores hardening noise — only demonstrated vulnerabilities drive Medium+
-    vuln_sev = Counter(str(f.get("severity") or "info") for f in vulnerabilities)
-    hard_sev = Counter(str(f.get("severity") or "info") for f in hardening_issues)
+    vuln_sev = Counter(str(f.get("severity") or "info") for f in active_vulnerabilities)
+    hard_sev = Counter(str(f.get("severity") or "info") for f in active_hardening)
     # Do not let unverified / attack-surface high findings drive overall High Risk
     critical = sum(
         1
-        for f in vulnerabilities
+        for f in active_vulnerabilities
         if str(f.get("severity") or "").lower() == "critical"
         and str(f.get("assessment_state") or "") == "Confirmed vulnerability"
     )
     high = sum(
         1
-        for f in vulnerabilities
+        for f in active_vulnerabilities
         if str(f.get("severity") or "").lower() == "high"
         and str(f.get("assessment_state") or "") == "Confirmed vulnerability"
     )
     medium = sum(
         1
-        for f in vulnerabilities
+        for f in active_vulnerabilities
         if str(f.get("severity") or "").lower() == "medium"
         and str(f.get("assessment_state") or "")
         in ("Confirmed vulnerability", "Likely vulnerability")
@@ -160,12 +177,12 @@ def build_assessment_document(
             f"This assessment found demonstrated medium-severity vulnerabilities on {host}; "
             "plan fixes in the next cycle."
         )
-    elif vulnerabilities or hardening_issues:
+    elif active_vulnerabilities or active_hardening:
         risk_level = "Low"
         exec_headline = (
             f"No demonstrated medium+ vulnerabilities on {host}. "
             f"Remaining items are hardening / informational / candidates "
-            f"({len(hardening_issues)} hardening observation(s))."
+            f"({len(active_hardening)} hardening observation(s))."
         )
     else:
         risk_level = "Clear"
@@ -199,17 +216,18 @@ def build_assessment_document(
 
     top_exec = [
         f"{f['id']} [{f['severity'].upper()}] {f['executive']}"
-        for f in vulnerabilities
+        for f in active_vulnerabilities
         if f["severity"] in ("critical", "high", "medium")
     ][:6]
-    if not top_exec and vulnerabilities:
+    if not top_exec and active_vulnerabilities:
         top_exec = [
-            f"{f['id']} [{f['severity'].upper()}] {f['executive']}" for f in vulnerabilities[:4]
+            f"{f['id']} [{f['severity'].upper()}] {f['executive']}"
+            for f in active_vulnerabilities[:4]
         ]
-    if not top_exec and hardening_issues:
+    if not top_exec and active_hardening:
         top_exec = [
-            f"Hardening only: {hardening_issues[0]['id']} [{hardening_issues[0]['severity'].upper()}] "
-            f"{hardening_issues[0]['title']} — not a demonstrated vulnerability."
+            f"Hardening only: {active_hardening[0]['id']} [{active_hardening[0]['severity'].upper()}] "
+            f"{active_hardening[0]['title']} — not a demonstrated vulnerability."
         ]
     if not top_exec:
         top_exec = ["No prioritized findings in this run."]
@@ -231,7 +249,7 @@ def build_assessment_document(
                     "reason": "Invalidated / false-positive / skipped observation",
                 }
             )
-    for f in vulnerabilities:
+    for f in active_vulnerabilities:
         if not include_in_remediation(f):
             continue
         if f["severity"] in ("critical", "high"):
@@ -240,7 +258,7 @@ def build_assessment_document(
             roadmap.append({"priority": "P2 — Next sprint", "item": f"{f['id']}: {f['title']}", "fix": f["fix"]})
         elif f["severity"] == "low":
             roadmap.append({"priority": "P3 — Backlog", "item": f"{f['id']}: {f['title']}", "fix": f["fix"]})
-    for f in hardening_issues[:8]:
+    for f in active_hardening[:8]:
         if not include_in_remediation(f):
             continue
         roadmap.append(
@@ -284,6 +302,47 @@ def build_assessment_document(
         "Grouped findings with plain-language and technical explanations for remediation.",
     ]
 
+    # Build structured finding sections for clear separation in reports
+    confirmed_vulns = [
+        f for f in active_vulnerabilities
+        if str(f.get("assessment_state") or "") == "Confirmed vulnerability"
+    ]
+    unverified_candidates = [
+        f for f in active_vulnerabilities
+        if str(f.get("assessment_state") or "") in (
+            "Likely vulnerability", "Needs manual validation"
+        )
+    ]
+    passive_observations = [
+        f for f in active_vulnerabilities + active_hardening
+        if str(f.get("assessment_state") or "") == "Informational technology finding"
+    ]
+    attack_surface_inventory = list(attack_surface_only)
+    # Coverage gaps section: note what phases did/didn't run
+    active_probe_coverage = dict(getattr(stats, "active_probe_coverage", None) or {})
+    content_coverage = str(getattr(stats, "target_content_coverage", "") or "").lower()
+    coverage_gaps: List[str] = []
+    if content_coverage == "crawl_only":
+        coverage_gaps.append(
+            "Coverage is crawl-only: passive heuristics applied but no active injection probes "
+            "were run. 'target_content_coverage=crawl_only' does NOT mean a comprehensive security "
+            "assessment was performed."
+        )
+    elif content_coverage == "failed":
+        coverage_gaps.append(
+            "Crawl coverage failed — edge security checkpoint prevented sufficient application access."
+        )
+    if not active_probe_coverage:
+        coverage_gaps.append(
+            "Active security probes (injection, XSS, CSRF canary) did not run or produced no data."
+        )
+    if not int(snap.get("enum_http_attempts") or 0):
+        coverage_gaps.append("Directory/path enumeration did not run — hidden endpoint coverage is absent.")
+    if not int(snap.get("subdomain_probes_done") or 0):
+        coverage_gaps.append("Subdomain enumeration did not run.")
+    if not int(snap.get("api_recon_probes_done") or 0):
+        coverage_gaps.append("Active API recon probes did not run.")
+
     return {
         "product": "VantaCrawl",
         "document_title": "Security Assessment Report",
@@ -304,6 +363,14 @@ def build_assessment_document(
             "medium": medium,
             "low": low,
             "info": info,
+        },
+        "finding_sections": {
+            "confirmed_vulnerabilities": confirmed_vulns,
+            "unverified_candidates": unverified_candidates,
+            "passive_observations": passive_observations,
+            "attack_surface_inventory": attack_surface_inventory,
+            "suppressed_false_positives": suppressed_appendix[:40],
+            "coverage_gaps": coverage_gaps,
         },
         "metrics": {
             "pages_crawled": int(snap.get("pages_crawled") or 0),
@@ -335,9 +402,10 @@ def build_assessment_document(
         "scan_status_meta": status_meta,
         "directory_enum_message": status_meta.get("directory_enum_message"),
         "methodology": methodology,
-        "findings": findings_dual,
-        "vulnerabilities": vulnerabilities,
-        "hardening_issues": hardening_issues,
+        # Executive / severity-facing lists exclude suppressed + attack-surface inventory
+        "findings": active_vulnerabilities + active_hardening,
+        "vulnerabilities": active_vulnerabilities,
+        "hardening_issues": active_hardening,
         "recommendations": recommendations,
         "roadmap": roadmap,
         "suppressed_observations": suppressed_appendix[:40],

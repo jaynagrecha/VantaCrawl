@@ -189,21 +189,66 @@ def render_assessment_html(doc: Dict[str, Any], *, technical_report_name: str = 
 
     vulns = list(doc.get("vulnerabilities") or [])
     hardening = list(doc.get("hardening_issues") or [])
-    if not vulns and not hardening:
-        # Backward compatible: classify from flat findings list
-        for f in findings:
-            if str(f.get("finding_kind") or "") == "hardening":
-                hardening.append(f)
-            else:
-                vulns.append(f)
+    sections = doc.get("finding_sections") or {}
+    if sections:
+        def _section_html(items: list, empty: str) -> str:
+            return "\n".join(_render_finding(f) for f in items) or f"<p class='empty'>{escape(empty)}</p>"
 
-    vuln_html = "\n".join(_render_finding(f) for f in vulns) or (
-        "<p class='empty'>No demonstrated vulnerabilities in this run.</p>"
-    )
-    hard_html = "\n".join(_render_finding(f) for f in hardening) or (
-        "<p class='empty'>No hardening / misconfiguration observations in this run.</p>"
-    )
-    findings_html = f"""
+        confirmed_html = _section_html(
+            list(sections.get("confirmed_vulnerabilities") or []),
+            "No confirmed vulnerabilities in this run.",
+        )
+        unverified_html = _section_html(
+            list(sections.get("unverified_candidates") or []),
+            "No unverified vulnerability candidates.",
+        )
+        passive_html = _section_html(
+            list(sections.get("passive_observations") or []),
+            "No passive security observations.",
+        )
+        inventory_html = _section_html(
+            list(sections.get("attack_surface_inventory") or []),
+            "No attack-surface inventory items.",
+        )
+        gaps = list(sections.get("coverage_gaps") or [])
+        gaps_html = (
+            "<ul>" + "".join(f"<li>{escape(str(g))}</li>" for g in gaps) + "</ul>"
+            if gaps
+            else "<p class='empty'>No coverage gaps recorded.</p>"
+        )
+        findings_html = f"""
+    <h3>4a. Confirmed vulnerabilities</h3>
+    <p class="muted">Exploited or strongly confirmed findings that drive overall risk.</p>
+    {confirmed_html}
+    <h3>4b. Unverified vulnerability candidates</h3>
+    <p class="muted">Signals that need manual validation before treating as demonstrated vulns.</p>
+    {unverified_html}
+    <h3>4c. Passive security observations</h3>
+    <p class="muted">Hardening / hygiene signals (for example CSRF token absence without session cookie).</p>
+    {passive_html}
+    <h3>4d. Attack-surface inventory</h3>
+    <p class="muted">OAuth, GraphQL, file-upload, coupon/business-logic surfaces — not vulnerability totals.</p>
+    {inventory_html}
+    <h3>4e. Coverage gaps</h3>
+    <p class="muted">What did not run or was incomplete in this assessment.</p>
+    {gaps_html}
+    """
+    else:
+        if not vulns and not hardening:
+            # Backward compatible: classify from flat findings list
+            for f in findings:
+                if str(f.get("finding_kind") or "") == "hardening":
+                    hardening.append(f)
+                else:
+                    vulns.append(f)
+
+        vuln_html = "\n".join(_render_finding(f) for f in vulns) or (
+            "<p class='empty'>No demonstrated vulnerabilities in this run.</p>"
+        )
+        hard_html = "\n".join(_render_finding(f) for f in hardening) or (
+            "<p class='empty'>No hardening / misconfiguration observations in this run.</p>"
+        )
+        findings_html = f"""
     <h3>4a. Vulnerabilities</h3>
     <p class="muted">Demonstrated or high-confidence attack classes (XSS, injection, auth issues, proven secret abuse, …).</p>
     {vuln_html}
@@ -492,8 +537,8 @@ footer {{ margin-top: 2rem; color: var(--muted); font-size: .8rem; }}
   </section>
 
   <section class="section" id="suppressed">
-    <h2>6b. Suppressed and invalidated scanner observations</h2>
-    <p class="muted">These items were recorded by heuristics but invalidated or skipped — they do not generate remediation instructions.</p>
+    <h2>6b. Suppressed false positives</h2>
+    <p class="muted">Optional suppression audit — invalidated / false-positive / skipped observations. These are excluded from executive findings and severity totals.</p>
     <table>
       <thead><tr><th>ID</th><th>Title</th><th>State</th><th>Detail</th></tr></thead>
       <tbody>{suppressed_rows}</tbody>

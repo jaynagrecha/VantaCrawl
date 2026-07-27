@@ -769,6 +769,53 @@ def _host_of(url: str) -> str:
         return url
 
 
+def _normalize_csrf_group_key(evidence: str) -> str:
+    """Build a group key for CSRF info-level hardening observations.
+
+    Groups first by form purpose (method + canonical field signature), then by
+    normalized action path (fragment and query stripped). This ensures:
+    - Blog comment forms on 100 different posts (same fields, different paths) → 1 group
+    - Contact form variants with the same core fields → 1 group
+    - Structurally distinct forms (cart vs newsletter vs delete) → separate groups
+    """
+    m = re.search(r"(?i)(get|post|put|patch|delete)\s+(\S+)\s+fields=([^\`]*)", evidence or "")
+    if not m:
+        return (evidence or "")[:80]
+    method = m.group(1).upper()
+    action = m.group(2)
+    fields_raw = m.group(3).strip()
+
+    # Normalize field signature: sort field names, strip numeric suffixes and IDs
+    # to capture "same form type, different instance" (e.g. product-id-1 vs product-id-2)
+    field_list = [f.strip() for f in fields_raw.split(",") if f.strip() and f.strip() not in ("utf8",)]
+    # Canonical key fields that identify form purpose — strip ephemeral IDs
+    canonical_fields: list = []
+    for f in sorted(field_list):
+        # Normalise field: remove trailing digits (contact[body]1 → contact[body])
+        f_norm = re.sub(r"\d+$", "", f)
+        # Treat shopify internal fields as noise for grouping
+        if f_norm in ("form_type", "section-id", "section_id"):
+            continue
+        canonical_fields.append(f_norm[:40])
+    field_sig = "|".join(canonical_fields[:8])
+
+    # If the field signature uniquely identifies the form purpose, use it as primary key
+    # with the path as secondary (so identical forms across different pages collapse)
+    from urllib.parse import urlparse, urlunparse
+    try:
+        parts = urlparse(action)
+        # Strip fragment and query; keep scheme + host + path for uniqueness within the site
+        norm_path = urlunparse(parts._replace(fragment="", query=""))
+    except Exception:
+        norm_path = action.split("?")[0].split("#")[0]
+
+    # Primary grouping: method + field_sig (collapses same form type across all pages)
+    # This is the key change: blog comment forms on N pages → 1 group
+    if field_sig:
+        return f"{method}|fields:{field_sig}"
+    return f"{method}|{norm_path}"
+
+
 def group_findings_for_report(findings: List[Dict[str, Any]], *, max_groups: int = 40) -> List[Dict[str, Any]]:
     """Collapse duplicate header/path noise into explained issue groups."""
     from finding_kind import apply_hardening_context
@@ -789,6 +836,13 @@ def group_findings_for_report(findings: List[Dict[str, Any]], *, max_groups: int
             # One group per secret fingerprint (ignore product-label drift)
             key = (severity, category, evidence.lower())
             url_cap = 80
+        elif category == "csrf" and severity == "info":
+            # Aggregate unauthenticated CSRF hardening observations by normalized action path.
+            # Strips fragment/query so the same form appearing on many product pages collapses
+            # into one group per distinct form endpoint.
+            norm_key = _normalize_csrf_group_key(evidence)
+            key = (severity, category, norm_key)
+            url_cap = 120
         elif category in ("xss", "csrf", "mixed_content") and evidence:
             # Evidence-hash grouping: same sink / same CSRF token issue → one issue, many URLs
             import hashlib

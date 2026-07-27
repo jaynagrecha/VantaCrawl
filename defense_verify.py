@@ -354,6 +354,11 @@ class DefenseTracker:
     protections_seen: Set[str] = field(default_factory=set)
     security_headers_present: Set[str] = field(default_factory=set)
     security_headers_missing: Set[str] = field(default_factory=set)
+    # Headers seen on at least one response (cumulative)
+    _security_headers_ever_seen: Set[str] = field(default_factory=set)
+    # Headers seen on every response observed so far (intersection)
+    _security_headers_always_present: Set[str] = field(default_factory=set)
+    _security_headers_response_count: int = 0
     signal_counts: Counter = field(default_factory=Counter)
     block_status_counts: Counter = field(default_factory=Counter)
     protection_block_counts: Counter = field(default_factory=Counter)
@@ -431,8 +436,23 @@ class DefenseTracker:
             if h in header_keys:
                 present.add(h)
         self.security_headers_present.update(present)
-        if not self.security_headers_missing and headers:
-            self.security_headers_missing = set(SECURITY_HEADER_CHECKS) - present
+        # Track which security headers were ever observed across ALL responses
+        if not hasattr(self, "_security_headers_ever_seen") or self._security_headers_ever_seen is None:
+            self._security_headers_ever_seen = set()
+        if not hasattr(self, "_security_headers_always_present") or self._security_headers_always_present is None:
+            self._security_headers_always_present = set(SECURITY_HEADER_CHECKS)
+        if not hasattr(self, "_security_headers_response_count"):
+            self._security_headers_response_count = 0
+        self._security_headers_ever_seen.update(present)
+        if self._security_headers_response_count == 0:
+            # First response: initialize always_present to what we see now
+            self._security_headers_always_present = set(present)
+        else:
+            # Subsequent responses: keep only headers present on every response
+            self._security_headers_always_present.intersection_update(present)
+        self._security_headers_response_count += 1
+        # "Missing" = never seen in any response
+        self.security_headers_missing = set(SECURITY_HEADER_CHECKS) - self._security_headers_ever_seen
 
         server = (headers or {}).get("server") or (headers or {}).get("Server") or ""
         if server and server not in self.fingerprint_notes:
@@ -686,6 +706,28 @@ class DefenseTracker:
 
     def protections_detail(self) -> List[Dict[str, Any]]:
         rows = [det.to_dict() for det in self.vendor_detections.values()]
+        detail_vendors = {r["vendor"] for r in rows}
+        # Add passive-only entries for vendors observed in protections_seen but without
+        # a full VendorDetection (e.g. detected via body string but never challenged).
+        for vendor in sorted(self.protections_seen):
+            if vendor in detail_vendors:
+                continue
+            from protection_evidence import VENDOR_META
+            meta = VENDOR_META.get(vendor, {"category": "edge_waf", "display": vendor})
+            rows.append({
+                "vendor": vendor,
+                "display": meta.get("display", vendor),
+                "category": meta.get("category", "edge_waf"),
+                "category_label": meta.get("category", "edge_waf"),
+                "confidence": 0.25,
+                "confidence_label": "Low",
+                "scope": "host",
+                "active": False,
+                "tier": "passive",
+                "evidence": [],
+                "challenge_count": 0,
+                "sample_urls": [],
+            })
         return sort_detections(rows)
 
     def akamai_bot_manager_present(self) -> bool:
@@ -757,6 +799,14 @@ class DefenseTracker:
             "protections_label": format_protections_label(detail),
             "security_headers_present": sorted(self.security_headers_present),
             "security_headers_missing": sorted(self.security_headers_missing),
+            "security_headers_inconsistent": sorted(
+                # Headers seen on some responses but not all (ever_seen minus always_present)
+                getattr(self, "_security_headers_ever_seen", set())
+                - getattr(self, "_security_headers_always_present", set())
+            ),
+            "security_headers_response_count": int(
+                getattr(self, "_security_headers_response_count", 0) or 0
+            ),
             "caught_by_protection": self.caught_count,
             "completed_without_challenge": self.unchallenged_count,
             "origin_failure_count": self.origin_failure_count,
@@ -832,35 +882,62 @@ class DefenseTracker:
             "PROTECTIONS DETECTED ON THIS SERVER",
             "-" * 70,
         ]
-        if data["protections_detected"]:
-            detail_by_vendor = {d["vendor"]: d for d in data.get("protections_detail") or []}
-            for name in data["protections_detected"]:
-                row = detail_by_vendor.get(name)
+        detail_rows = data.get("protections_detail") or []
+        confirmed_active = [r for r in detail_rows if r.get("active") and r.get("tier") in ("confirmed_active", "page_level", "unconfirmed")]
+        passive_indicators = [r for r in detail_rows if not r.get("active") or r.get("tier") == "passive"]
+        detail_by_vendor = {d["vendor"]: d for d in detail_rows}
+        if confirmed_active:
+            lines.append("Confirmed / likely active protections:")
+            for row in confirmed_active:
+                name = row.get("vendor", "")
                 count = data["protection_block_counts"].get(name, 0)
                 suffix = f" ({count} block event(s))" if count else ""
-                if row:
-                    ev = ", ".join((row.get("evidence") or [])[:4])
-                    lines.append(
-                        f"  • {row.get('display') or name} — {row.get('tier')} / "
-                        f"{row.get('confidence_label')} confidence / scope={row.get('scope')}"
-                        f"{suffix}"
-                    )
-                    if ev:
-                        lines.append(f"      evidence: {ev}")
-                else:
-                    lines.append(f"  • {name.replace('_', ' ').title()}{suffix}")
-        else:
+                ev = ", ".join((row.get("evidence") or [])[:4])
+                lines.append(
+                    f"  • {row.get('display') or name} — {row.get('tier')} / "
+                    f"{row.get('confidence_label')} confidence / scope={row.get('scope')}"
+                    f"{suffix}"
+                )
+                if ev:
+                    lines.append(f"      evidence: {ev}")
+        if passive_indicators:
+            lines.append("Passive technology indicators (not confirmed active):")
+            for row in passive_indicators:
+                name = row.get("vendor", "")
+                ev = ", ".join((row.get("evidence") or [])[:2])
+                note = f" — evidence: {ev}" if ev else " — JS/cookie reference only; no block signal"
+                lines.append(f"  • {row.get('display') or name} (passive){note}")
+        # Legacy fallback: vendors sensed via fingerprint but without detail records
+        undetailed = [n for n in data["protections_detected"] if n not in detail_by_vendor]
+        if undetailed:
+            lines.append("Other observed signals (no detail record):")
+            for name in undetailed:
+                lines.append(f"  • {name.replace('_', ' ').title()}")
+        if not confirmed_active and not passive_indicators and not undetailed:
             lines.append("  • None clearly identified from headers/body signals")
         lines.append("")
-        lines.append("Security response headers present:")
+        resp_count = int(data.get("security_headers_response_count") or 0)
+        inconsistent = set(data.get("security_headers_inconsistent") or [])
+        lines.append(
+            f"Security response headers present (seen on at least one of "
+            f"{resp_count or '?'} sampled response(s)):"
+        )
         if data["security_headers_present"]:
-            for h in data["security_headers_present"]:
-                lines.append(f"  • {h}")
+            for h in sorted(data["security_headers_present"]):
+                note = " ⚠ inconsistent (absent on some responses)" if h in inconsistent else ""
+                lines.append(f"  • {h}{note}")
         else:
-            lines.append("  • (none of the common set seen on first check)")
-        if data["security_headers_missing"]:
-            lines.append("Common security headers missing (from sample response):")
-            for h in data["security_headers_missing"]:
+            lines.append("  • (none of the common set seen on any sampled response)")
+        missing_only = [h for h in data.get("security_headers_missing", []) if h not in inconsistent]
+        if missing_only:
+            lines.append("Common security headers consistently absent across all sampled responses:")
+            for h in missing_only:
+                lines.append(f"  • {h}")
+        if inconsistent:
+            lines.append(
+                "Headers present on some responses but absent on others (inconsistent deployment):"
+            )
+            for h in sorted(inconsistent):
                 lines.append(f"  • {h}")
         lines.append("")
         lines.append("-" * 70)
