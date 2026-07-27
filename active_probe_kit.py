@@ -221,10 +221,25 @@ def for_mode(
 
 
 def redact_payload(payload: str) -> str:
-    """Redact secrets and truncate payloads for ledger/report storage."""
+    """Redact secrets and truncate payloads for ledger/report storage.
+
+    Keeps short markers (VCXSS_*, VC_RCE_*) for reproducibility while stripping
+    callback secrets, poll tokens, and credential-shaped values.
+    """
     text = str(payload or "")
     text = re.sub(
-        r"(?i)\b(api[_-]?key|token|password|secret|authorization|cookie)=([^\s&]+)",
+        r"(?i)\b(api[_-]?key|token|password|secret|authorization|cookie|"
+        r"callback_secret|poll_token|polling_token|bearer)=([^\s&\"']+)",
+        r"\1=[REDACTED]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)(/poll/)[A-Za-z0-9_\-]{8,}",
+        r"\1[REDACTED]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)(callback_secret|poll_token|polling_token)[/:=]\S+",
         r"\1=[REDACTED]",
         text,
     )
@@ -1027,6 +1042,8 @@ def build_proof(**kwargs: Any) -> Dict[str, Any]:
     probe_body = kwargs.get("probe_body") or ""
     resp_class = kwargs.get("response_classification") or "application_response"
     evidence_line = kwargs.get("evidence_line") or ""
+    # Never export full sensitive response bodies — truncated + secret-redacted only
+    response_snippet = redact_payload((evidence_line or probe_body[:240])[:500])
     return {
         "endpoint": kwargs.get("endpoint") or "",
         "method": kwargs.get("method") or "GET",
@@ -1045,10 +1062,10 @@ def build_proof(**kwargs: Any) -> Dict[str, Any]:
             f"{kwargs.get('method')} {kwargs.get('endpoint')} "
             f"param={kwargs.get('parameter')} class={kwargs.get('payload_class')}"
         )[:500],
-        "response_proof_redacted": (evidence_line or probe_body[:240])[:500],
-        "evidence": evidence_line[:2000],
+        "response_proof_redacted": response_snippet,
+        "evidence": redact_payload(evidence_line[:2000]),
         "request": f"{kwargs.get('method')} {kwargs.get('endpoint')}"[:500],
-        "response": (probe_body or "")[:500],
+        "response": response_snippet,
     }
 
 
@@ -2089,6 +2106,7 @@ async def run_active_probe_kit(
                     proof["browser"] = {
                         "final_url": browser_meta.get("final_url"),
                         "executed": browser_meta.get("executed"),
+                        "reproduced": browser_meta.get("reproduced"),
                         "console_errors": browser_meta.get("console_errors") or [],
                         "csp_blocked": browser_meta.get("csp_blocked") or [],
                         "browser_request_id": browser_meta.get("browser_request_id"),

@@ -91,13 +91,19 @@ def is_edge_checkpoint(
         if "cloudflare" in body_l or headers_l.get("cf-ray"):
             return "cloudflare_challenge"
 
+    htmlish = bool(_HTMLISH_RE.search(body_text[:500]))
+    titled = bool(_CHECKPOINT_TITLE_RE.search(title_text))
     for marker in _CHECKPOINT_BODY_MARKERS:
         if marker in body_l or marker in title_l:
+            # Status 200 interstitials must look like real HTML/title pages.
+            # Bare marker strings (e.g. CDN header bits mis-fed as body) are not checkpoints.
+            if int(status_code or 0) == 200 and not (htmlish or titled or headers_l.get("cf-ray")):
+                continue
             if "vercel" in marker or "vercel" in server or "vercel" in body_l:
                 return "vercel_security_checkpoint"
             if "cloudflare" in marker or "cf-" in marker or headers_l.get("cf-ray"):
                 return "cloudflare_challenge"
-            if int(status_code or 0) in (401, 403, 503) and _HTMLISH_RE.search(body_text[:500]):
+            if int(status_code or 0) in (401, 403, 503) and htmlish:
                 return "edge_security_checkpoint"
     return ""
 

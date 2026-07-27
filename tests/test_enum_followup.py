@@ -59,6 +59,8 @@ def test_reuse_probe_body_avoids_second_get():
         path_segments=[],
         body=b"Company secrets API_KEY=test",
         content_type="text/plain",
+        validated=True,
+        classification="confirmed_unique_resource",
     )
 
     async def run():
@@ -110,6 +112,8 @@ def test_timeout_circuit_breaker_disables_followups():
                     body_hash="",
                     path_segments=[],
                     body=b"",  # force re-GET → timeout
+                    validated=True,
+                    classification="confirmed_unique_resource",
                 )
             )
         await sched.drain(timeout=10.0)
@@ -156,6 +160,8 @@ def test_schedule_is_non_blocking_for_caller():
             body_hash="",
             path_segments=[],
             body=b"",
+            validated=True,
+            classification="confirmed_unique_resource",
         )
         t0 = asyncio.get_event_loop().time()
         sched.schedule(probe)
