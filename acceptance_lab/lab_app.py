@@ -228,10 +228,12 @@ class LabHandler(BaseHTTPRequestHandler):
 
     def _xss_browser(self, params: Dict[str, str], head_only: bool = False) -> None:
         q = params.get("q", "")
-        # Attribute-breakout sink: unescaped into value="..."
+        # Attribute sink + raw HTML sink so Safe-kit event payloads (svg onload /
+        # onfocus) execute under Selenium. Encoded/reflected fixtures stay safe.
         body = (
             "<!DOCTYPE html><html><head><title>XSS browser</title></head><body>"
             f'<input id="q" value="{q}">'
+            f'<div id="sink">{q}</div>'
             "<p>search sink</p></body></html>"
         ).encode("utf-8")
         if head_only:
@@ -423,13 +425,10 @@ class LabHandler(BaseHTTPRequestHandler):
             "Breaker zone",
             "<p>Dedicated active-probe breaker exercise (checkpoint only on probe payloads):</p><ul>"
             '<li><a href="/active-breaker?id=1&amp;q=test&amp;cmd=id&amp;url=http://example.com&amp;name=a&amp;file=b">active-breaker</a></li>'
-            '<li><a href="/active-breaker?id=2&amp;q=test&amp;cmd=id">active-breaker-2</a></li>'
-            '<li><a href="/active-breaker?id=3&amp;q=search">active-breaker-3</a></li>'
-            '<li><a href="/rate-limit?id=1&amp;q=test">rate-limit-params</a></li>'
-            '<li><a href="/rate-limit?id=2&amp;q=test">rate-limit-2</a></li>'
-            "</ul>"
-            "<p>Raw edge pages (crawl skips security — not used for active-probe breaker proof): "
-            '<a href="/checkpoint">/checkpoint</a></p>',
+            '<li><a href="/active-breaker?id=2&amp;q=test&amp;cmd=id&amp;name=x&amp;file=y">active-breaker-2</a></li>'
+            '<li><a href="/active-breaker?id=3&amp;q=search&amp;cmd=id&amp;url=http://example.com">active-breaker-3</a></li>'
+            '<li><a href="/active-breaker?id=4&amp;q=test&amp;cmd=run&amp;name=n">active-breaker-4</a></li>'
+            "</ul>",
         )
         if head_only:
             body = b""
