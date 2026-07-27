@@ -1678,8 +1678,22 @@ def scan_open_redirect(url: str) -> List[Finding]:
                 (
                     "open_redirect",
                     sev,
-                    f"Parameter '{name}' points off-site to {target_host} ({note}; precise passive open redirect)",
+                    (
+                        f"Passive candidate — Parameter '{name}' points off-site to {target_host} "
+                        f"({note}). Validation: unverified. Active testing: not performed."
+                    ),
                     _text_evidence(f"{name}={decoded}", label="redirect_target"),
+                    {
+                        "verification": "detected",
+                        "confidence": "low",
+                        "confidence_reason": "passive_candidate",
+                        "validation": "unverified",
+                        "proof": {
+                            "validation_state": "passive_candidate",
+                            "active_testing": "not_performed",
+                            "label": "Passive candidate",
+                        },
+                    },
                 )
             )
     return findings

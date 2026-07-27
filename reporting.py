@@ -556,6 +556,48 @@ class ReportWriter:
             "INSERT OR REPLACE INTO summary VALUES (?, ?)",
             ("broken_links_summary", json.dumps(bl_summary)),
         )
+        # Active-probe / edge breaker export (shared target-level state)
+        try:
+            br = dict(getattr(stats, "active_probe_breaker", None) or {})
+            if br:
+                conn.execute(
+                    "INSERT OR REPLACE INTO summary VALUES (?, ?)",
+                    ("active_probe_breaker", json.dumps(br, default=str)),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO summary VALUES (?, ?)",
+                    ("active_probe_breaker_tripped", "1" if br.get("tripped") else "0"),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO summary VALUES (?, ?)",
+                    ("active_probe_breaker_reason", str(br.get("reason") or "")),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO summary VALUES (?, ?)",
+                    ("active_probe_breaker_remaining_probes", str(br.get("remaining_probes") or 0)),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO summary VALUES (?, ?)",
+                    (
+                        "active_probe_breaker_remaining_state",
+                        str(br.get("remaining_state") or br.get("remaining") or ""),
+                    ),
+                )
+            conn.execute(
+                "INSERT OR REPLACE INTO summary VALUES (?, ?)",
+                (
+                    "edge_circuit_breaker",
+                    "1" if bool(getattr(stats, "edge_circuit_breaker", False)) else "0",
+                ),
+            )
+            cov = dict(getattr(stats, "active_probe_coverage", None) or {})
+            if cov:
+                conn.execute(
+                    "INSERT OR REPLACE INTO summary VALUES (?, ?)",
+                    ("active_probe_coverage", json.dumps(cov, default=str)),
+                )
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return path
