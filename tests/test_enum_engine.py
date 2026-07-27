@@ -250,5 +250,5 @@ def test_active_probe_detects_reflected_xss():
             max_forms=0,
         )
     )
-    # Plain body reflection is medium (not proven executable sink)
-    assert any(f[0] == "xss" and f[1] == "medium" for f in findings)
+    # Plain body reflection is info/low unverified candidate — not Medium vuln
+    assert any(f[0] == "xss" and f[1] in ("info", "low") for f in findings)

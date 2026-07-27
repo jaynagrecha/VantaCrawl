@@ -1892,6 +1892,151 @@ def run_passive_vuln_scan(
     return findings
 
 
+# Active-probe response classes that must never confirm SQLi/XSS/RCE/SSRF.
+_ACTIVE_CONTAMINATED = frozenset(
+    {
+        "edge_checkpoint",
+        "captcha",
+        "rate_limit",
+        "generic_waf_deny",
+        "origin_failure",
+    }
+)
+
+# State-changing form actions — POST active mutation stays off unless explicitly authorized.
+_MUTATION_DENY_RE = re.compile(
+    r"(?i)/(?:account/delete|checkout|payment|password/change|admin/update|message/send)(?:/|$|\?)"
+)
+
+_XSS_MARKER = "<crawler-xss-probe>"
+_XSS_BREAKOUT_MARKER = "data-crawler-xss"
+_XSS_BREAKOUT_PAYLOAD = '"><img data-crawler-xss="1" src=x>'
+_RCE_MARKER = "crawler-rce-probe-9f3a"
+
+
+def _normalize_probe_text(text: str) -> str:
+    """Strip dynamic noise so baseline vs probe compares application content."""
+    t = (text or "").lower()
+    t = re.sub(r"(?is)<script\b[^>]*>.*?</script>", " ", t)
+    t = re.sub(r"(?is)<style\b[^>]*>.*?</style>", " ", t)
+    t = re.sub(
+        r"(?i)(?:csrf(?:[_-]?token)?|_token|nonce|request[_-]?id|session(?:id)?|authenticity_token)"
+        r"[\s\"'=:]+[a-z0-9_\-]{4,}",
+        "#tok",
+        t,
+    )
+    t = re.sub(r"\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b", "#", t)
+    t = re.sub(r"\b[a-f0-9]{8,}\b", "#", t)
+    t = re.sub(r"\b\d{10,13}\b", "#", t)  # epoch / ms timestamps
+    t = re.sub(r"\b\d{4,}\b", "#", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _probe_normalized_hash(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(_normalize_probe_text(text).encode("utf-8", errors="replace")).hexdigest()[:32]
+
+
+def _bodies_meaningfully_differ(baseline: str, probe: str) -> bool:
+    """True when normalized bodies differ (ignores nonce/token/timestamp churn)."""
+    return _normalize_probe_text(baseline) != _normalize_probe_text(probe)
+
+
+def _classify_active_response(
+    status_code: int,
+    body: str = "",
+    headers: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Classify probe response; contaminated classes cannot confirm vulns."""
+    if int(status_code or 0) <= 0:
+        return "origin_failure"
+    body_l = (body or "").lower()[:12000]
+    try:
+        from edge_checkpoint import is_edge_checkpoint
+
+        cp = is_edge_checkpoint(status_code, body, headers)
+        if cp:
+            return "edge_checkpoint"
+    except Exception:
+        pass
+    try:
+        from evasion_layer import detect_challenge
+
+        ch = (detect_challenge(status_code, body, headers) or "").lower()
+        if ch in ("rate_limit", "akamai_rate_burst") or int(status_code or 0) == 429:
+            return "rate_limit"
+        if any(tok in ch for tok in ("captcha", "recaptcha", "hcaptcha", "turnstile")):
+            return "captcha"
+        if ch in (
+            "waf_block",
+            "akamai_soft_deny",
+            "cloudflare_soft_deny",
+            "soft_deny",
+        ) or any(tok in ch for tok in ("cloudflare", "akamai", "datadome", "perimeterx")):
+            return "generic_waf_deny"
+        if "checkpoint" in ch or "just a moment" in ch:
+            return "edge_checkpoint"
+        if ch:
+            return "generic_waf_deny"
+    except Exception:
+        pass
+    if int(status_code or 0) == 429:
+        return "rate_limit"
+    if any(tok in body_l for tok in ("captcha", "hcaptcha", "recaptcha", "cf-turnstile")):
+        return "captcha"
+    if any(
+        tok in body_l
+        for tok in (
+            "vercel security checkpoint",
+            "checking your browser",
+            "attention required! | cloudflare",
+            "cf-browser-verification",
+        )
+    ):
+        return "edge_checkpoint"
+    # WAF deny pages often echo attack keywords — never treat as app proof
+    if re.search(
+        r"(?i)(sql\s*injection\s*detected|xss\s*(?:attack\s*)?detected|attack\s*detected|"
+        r"request\s*blocked|not\s*acceptable|web\s*application\s*firewall)",
+        body_l,
+    ) and re.search(
+        r"(?i)(waf|cloudflare|akamai|blocked|denied|forbidden|firewall|modsecurity|imperva)",
+        body_l,
+    ):
+        return "generic_waf_deny"
+    if int(status_code or 0) in (403, 503) and re.search(
+        r"(?i)(waf|blocked|access denied|firewall|security)",
+        body_l,
+    ):
+        return "generic_waf_deny"
+    return "application_response"
+
+
+def _is_contaminated_response(classification: str) -> bool:
+    return (classification or "") in _ACTIVE_CONTAMINATED
+
+
+def _mutation_form_blocked(action: str, method: str) -> bool:
+    """POST to state-changing endpoints stays passive-only."""
+    if (method or "GET").upper() != "POST":
+        return False
+    path = urlparse(action or "").path or action or ""
+    return bool(_MUTATION_DENY_RE.search(path))
+
+
+def _html_entity_encode_marker(marker: str) -> str:
+    return (
+        (marker or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
 def _active_match_evidence(category: str, body: str, payload: str, marker: str, baseline: str = "") -> Optional[str]:
     """Build exact matched-pattern evidence for an active probe hit."""
     text = body or ""
@@ -1902,6 +2047,8 @@ def _active_match_evidence(category: str, body: str, payload: str, marker: str, 
         idx = text.find(marker)
         if idx >= 0:
             return _text_evidence(marker, label=f"reflected_marker@offset_{idx}")
+        if _XSS_BREAKOUT_MARKER in text:
+            return _text_evidence(_XSS_BREAKOUT_MARKER, label="xss_breakout_marker")
         return _text_evidence(marker, label="reflected_marker")
     if category == "directory_traversal":
         m = re.search(r"(?i)(root:x:0:0:|/bin/(?:ba)?sh\b)", text)
@@ -1932,6 +2079,14 @@ def _sql_error_new_vs_baseline(body: str, baseline: str) -> bool:
     return True
 
 
+def _sql_new_evidence_labels(body: str) -> List[str]:
+    m = SQL_ERROR_RE.search(body or "")
+    if not m:
+        return []
+    raw = (m.group(0) or "").strip()
+    return [raw[:120] or "SQL error newly introduced"]
+
+
 def _ssrf_metadata_proof_new(body: str, baseline: str) -> bool:
     """True only for cloud-metadata proof tokens that were not already in baseline.
 
@@ -1944,23 +2099,70 @@ def _ssrf_metadata_proof_new(body: str, baseline: str) -> bool:
     return True
 
 
-def _xss_raw_reflection(body: str, marker: str, baseline: str) -> Tuple[bool, str]:
-    """Return (hit, severity). Raw HTML marker reflection only; encoded-only ignored."""
+def _classify_xss_probe(
+    body: str, marker: str, baseline: str, *, payload: str = ""
+) -> Optional[Dict[str, str]]:
+    """Evidence-graded XSS disposition. Encoded reflection → no finding."""
     text = body or ""
     base = baseline or ""
+    encoded = _html_entity_encode_marker(marker)
+
+    # Encoded-only reflection of the primary marker → reject as vulnerability
     if marker not in text:
-        return False, ""
+        if payload == _XSS_BREAKOUT_PAYLOAD:
+            if _XSS_BREAKOUT_MARKER not in text:
+                return None
+            if _XSS_BREAKOUT_MARKER in base:
+                return None
+            if re.search(r'(?is)<img\b[^>]*\bdata-crawler-xss\s*=\s*["\']?1', text):
+                return {
+                    "severity": "medium",
+                    "detail_bit": "attribute/context breakout candidate (not browser-confirmed)",
+                    "validation_state": "attribute_breakout",
+                    "confidence": "medium",
+                    "verification": "verified",
+                }
+            return None
+        if encoded in text and encoded not in base:
+            return None  # properly HTML-encoded — not vulnerable
+        return None
+
     if marker in base:
-        return False, ""
-    # Prefer high when marker lands in a script/event sink; otherwise medium (reflection only).
+        return None
+
     idx = text.find(marker)
-    window = text[max(0, idx - 80) : idx + len(marker) + 80] if idx >= 0 else ""
-    if re.search(r"(?is)<script\b", window) or re.search(
-        r"(?is)\bon\w+\s*=\s*['\"][^'\"]*" + re.escape(marker),
+    window = text[max(0, idx - 100) : idx + len(marker) + 100] if idx >= 0 else text
+
+    # Script / event-handler context still requires browser confirmation for "confirmed XSS"
+    if re.search(r"(?is)<script\b[^>]*>[^<]{0,200}" + re.escape(marker), text) or re.search(
+        r"(?is)\bon\w+\s*=\s*['\"][^'\"]{0,80}" + re.escape(marker),
         text,
     ):
-        return True, "high"
-    return True, "medium"
+        return {
+            "severity": "medium",
+            "detail_bit": "sink-context candidate (not browser-confirmed execution)",
+            "validation_state": "sink_context_candidate",
+            "confidence": "medium",
+            "verification": "verified",
+        }
+
+    if re.search(r'''(?is)["']\s*(?:autofocus|on\w+)\b''', window):
+        return {
+            "severity": "medium",
+            "detail_bit": "attribute/context breakout candidate (not browser-confirmed)",
+            "validation_state": "attribute_breakout",
+            "confidence": "medium",
+            "verification": "verified",
+        }
+
+    # Raw unencoded reflection in HTML text — unverified candidate, not Medium vuln
+    return {
+        "severity": "info",
+        "detail_bit": "unverified reflection candidate (marker in HTML text; not proven executable)",
+        "validation_state": "reflection_only",
+        "confidence": "low",
+        "verification": "detected",
+    }
 
 
 def _rce_executed_not_reflected(body: str, marker: str, payload: str, baseline: str) -> bool:
@@ -1970,10 +2172,12 @@ def _rce_executed_not_reflected(body: str, marker: str, payload: str, baseline: 
         return False
     if marker in (baseline or ""):
         return False
-    # Full command reflection (`;echo marker` or `echo marker`) is not execution proof
     if payload and payload in text:
         return False
     if f"echo {marker}" in text.lower():
+        return False
+    # Marker only inside HTML comments is not execution proof
+    if re.search(r"(?is)<!--[^>]*" + re.escape(marker), text) and text.count(marker) == 1:
         return False
     return True
 
@@ -1987,6 +2191,45 @@ def _traversal_proof_new(body: str, baseline: str) -> bool:
     return True
 
 
+def _build_active_proof(
+    *,
+    endpoint: str,
+    method: str,
+    parameter: str,
+    baseline_status: int,
+    probe_status: int,
+    baseline_body: str,
+    probe_body: str,
+    payload_class: str,
+    new_evidence: List[str],
+    response_classification: str,
+    confidence: str,
+    validation_state: str,
+    evidence_line: str = "",
+) -> Dict[str, Any]:
+    """Required evidence bundle for every active finding (screenshot contract)."""
+    return {
+        "endpoint": endpoint,
+        "method": method,
+        "parameter": parameter,
+        "baseline_status": int(baseline_status or 0),
+        "probe_status": int(probe_status or 0),
+        "baseline_normalized_hash": _probe_normalized_hash(baseline_body),
+        "probe_normalized_hash": _probe_normalized_hash(probe_body),
+        "payload_class": payload_class,
+        "new_evidence": list(new_evidence or []),
+        "response_classification": response_classification,
+        "waf_or_checkpoint": bool(_is_contaminated_response(response_classification)),
+        "confidence": confidence,
+        "validation_state": validation_state,
+        "request_proof_redacted": f"{method} {endpoint} param={parameter} class={payload_class}"[:500],
+        "response_proof_redacted": (evidence_line or (probe_body or "")[:240])[:500],
+        "evidence": (evidence_line or "")[:2000],
+        "request": f"{method} {endpoint}"[:500],
+        "response": (probe_body or "")[:500],
+    }
+
+
 async def run_active_vuln_probes(
     client,
     url: str,
@@ -1998,59 +2241,70 @@ async def run_active_vuln_probes(
 ) -> List[Finding]:
     """Send minimal safe payloads on GET params and forms (authorized testing only).
 
-    Confirmed hits require differential evidence vs a successful baseline response
-    (except XSS reflection of a unique marker). Each finding includes matched evidence.
+    Hits require differential evidence vs a successful per-endpoint baseline, reject
+    WAF/checkpoint contamination, and attach a structured proof bundle. XSS uses an
+    evidence ladder (encoded → reject; plain reflection → info candidate; breakout →
+    medium candidate; browser execution not claimed without confirmation).
     """
-    from urllib.parse import parse_qsl, urlparse
+    from urllib.parse import parse_qsl, urlparse as _urlparse
 
-    findings: List[Finding] = []
+    findings: List[Any] = []
     seen: set = set()
-    xss_marker = "<crawler-xss-probe>"
-    rce_marker = "crawler-rce-probe-9f3a"
+    xss_marker = _XSS_MARKER
+    rce_marker = _RCE_MARKER
 
-    def add(category: str, severity: str, detail: str, evidence: Optional[str] = None):
-        key = (category, detail, evidence or "")
+    def add(
+        category: str,
+        severity: str,
+        detail: str,
+        evidence: Optional[str] = None,
+        *,
+        meta: Optional[Dict[str, Any]] = None,
+    ):
+        key = (category, detail, evidence or "", str((meta or {}).get("proof", {}).get("validation_state") or ""))
         if key not in seen:
             seen.add(key)
-            findings.append((category, severity, detail, evidence))
+            if meta:
+                findings.append((category, severity, detail, evidence, meta))
+            else:
+                findings.append((category, severity, detail, evidence))
 
     sql_names = re.compile(r"(?i)^(id|uid|user_id|cat|category|item|pid|order|sort|query|q|search|filter|name)$")
+    xss_names = re.compile(
+        r"(?i)^(q|query|search|s|keyword|term|name|title|message|comment|text|content|input)$"
+    )
 
+    # (category, payload, default_severity, name_ok, payload_class)
     probe_defs = (
-        (
-            "sql_injection",
-            "'",
-            "high",
-            lambda name: bool(sql_names.match(name)),
-        ),
+        ("sql_injection", "'", "high", lambda name: bool(sql_names.match(name)), "sqli_quote"),
+        ("xss", xss_marker, "info", lambda name: bool(xss_names.match(name)), "xss_marker"),
         (
             "xss",
-            xss_marker,
+            _XSS_BREAKOUT_PAYLOAD,
             "medium",
-            lambda name: bool(
-                re.match(
-                    r"(?i)^(q|query|search|s|keyword|term|name|title|message|comment|text|content|input)$",
-                    name,
-                )
-            ),
+            lambda name: bool(xss_names.match(name)),
+            "xss_attr_breakout",
         ),
         (
             "directory_traversal",
             "../../../../etc/passwd",
             "critical",
             lambda name: bool(re.match(r"(?i)^(file|path|folder|dir|document|template|include|doc)$", name)),
+            "path_traversal",
         ),
         (
             "rce",
             f";echo {rce_marker}",
             "critical",
             lambda name: bool(re.match(r"(?i)^(cmd|command|exec|execute|run|shell)$", name)),
+            "rce_echo",
         ),
         (
             "ssrf",
             "http://169.254.169.254/latest/meta-data/",
             "high",
             lambda name: bool(SSRF_PARAM_RE.match(name)),
+            "ssrf_imds",
         ),
     )
 
@@ -2062,6 +2316,14 @@ async def run_active_vuln_probes(
     async def _send_post(target: str, data: dict):
         return await client.post(target, data=data, timeout=8, follow_redirects=True)
 
+    def _resp_meta(response) -> Tuple[int, str, Dict[str, Any], str]:
+        # Default 200 when clients omit status_code (test fakes / thin wrappers)
+        status = int(getattr(response, "status_code", 200) or 200)
+        body = getattr(response, "text", None) or ""
+        headers = dict(getattr(response, "headers", None) or {})
+        final_url = str(getattr(response, "url", "") or "")
+        return status, body, headers, final_url
+
     async def _run_probes_on_field(
         method: str,
         target: str,
@@ -2071,37 +2333,95 @@ async def run_active_vuln_probes(
         baseline_body: str,
         *,
         baseline_ok: bool,
+        baseline_status: int = 0,
+        baseline_final_url: str = "",
     ):
-        for category, payload, severity, name_ok in probe_defs:
+        for category, payload, severity, name_ok, payload_class in probe_defs:
             if not name_ok(field_name):
                 continue
-            # Differential categories need a real baseline; never confirm on failed baseline fetch
             if category in ("sql_injection", "ssrf", "rce", "directory_traversal") and not baseline_ok:
                 continue
             trial = dict(values)
-            trial[field_name] = str(trial.get(field_name) or "1") + payload
+            if category == "xss" and payload == _XSS_BREAKOUT_PAYLOAD:
+                trial[field_name] = payload
+            else:
+                trial[field_name] = str(trial.get(field_name) or "1") + payload
             try:
                 if method == "POST":
                     response = await _send_post(target, trial)
                 else:
                     response = await _send_get(target, trial)
-                body = response.text or ""
-                if category != "xss" and baseline_ok:
-                    if body.strip() == (baseline_body or "").strip():
-                        continue
+                probe_status, body, headers, probe_final = _resp_meta(response)
+                resp_class = _classify_active_response(probe_status, body, headers)
+                if _is_contaminated_response(resp_class):
+                    continue
+
+                # Redirect-only differences are interesting but not SQLi/XSS proof
+                redirect_changed = bool(
+                    baseline_final_url
+                    and probe_final
+                    and str(baseline_final_url).split("?")[0] != str(probe_final).split("?")[0]
+                )
 
                 hit = False
                 out_severity = severity
+                validation_state = "differential_signal"
+                confidence = "medium"
+                verification = "verified"
+                detail_bit = "differential signal"
+                new_evidence: List[str] = []
+                xss_disp: Optional[Dict[str, str]] = None
+
                 if category == "sql_injection":
-                    hit = _sql_error_new_vs_baseline(body, baseline_body)
+                    # Require new SQL error; nonce-only churn is not enough
+                    if not _sql_error_new_vs_baseline(body, baseline_body):
+                        continue
+                    if not _bodies_meaningfully_differ(baseline_body, body) and not SQL_ERROR_RE.search(body or ""):
+                        continue
+                    hit = True
+                    new_evidence = _sql_new_evidence_labels(body)
+                    detail_bit = "differential signal (new database error vs baseline)"
+                    validation_state = "differential_signal"
+                    if redirect_changed:
+                        detail_bit += "; redirect also changed (not alone SQLi proof)"
                 elif category == "xss":
-                    hit, out_severity = _xss_raw_reflection(body, xss_marker, baseline_body)
+                    xss_disp = _classify_xss_probe(
+                        body, xss_marker, baseline_body, payload=payload
+                    )
+                    if not xss_disp:
+                        continue
+                    hit = True
+                    out_severity = xss_disp["severity"]
+                    detail_bit = xss_disp["detail_bit"]
+                    validation_state = xss_disp["validation_state"]
+                    confidence = xss_disp["confidence"]
+                    verification = xss_disp["verification"]
+                    new_evidence = [detail_bit]
                 elif category == "directory_traversal":
+                    if not _bodies_meaningfully_differ(baseline_body, body):
+                        continue
                     hit = _traversal_proof_new(body, baseline_body)
+                    detail_bit = "confirmed server-side behavior (passwd/shell marker)"
+                    validation_state = "confirmed_server_side_behavior"
+                    confidence = "high"
+                    verification = "confirmed"
+                    new_evidence = ["passwd/shell content newly introduced"]
                 elif category == "rce":
+                    if not _bodies_meaningfully_differ(baseline_body, body) and rce_marker not in body:
+                        continue
                     hit = _rce_executed_not_reflected(body, rce_marker, payload, baseline_body)
+                    detail_bit = "confirmed server-side behavior (unique echo output)"
+                    validation_state = "confirmed_server_side_behavior"
+                    confidence = "high"
+                    verification = "confirmed"
+                    new_evidence = [f"executed marker {rce_marker}"]
                 elif category == "ssrf":
                     hit = _ssrf_metadata_proof_new(body, baseline_body)
+                    detail_bit = "confirmed server-side behavior (metadata proof token)"
+                    validation_state = "confirmed_server_side_behavior"
+                    confidence = "high"
+                    verification = "confirmed"
+                    new_evidence = ["cloud metadata proof token"]
 
                 if hit:
                     marker = (
@@ -2112,39 +2432,68 @@ async def run_active_vuln_probes(
                     evidence = _active_match_evidence(
                         category, body, payload, marker, baseline_body
                     )
-                    detail_bit = (
-                        "reflection (not proven executable sink)"
-                        if category == "xss" and out_severity == "medium"
-                        else "probe confirmed"
+                    proof = _build_active_proof(
+                        endpoint=target,
+                        method=method,
+                        parameter=field_name,
+                        baseline_status=baseline_status,
+                        probe_status=probe_status,
+                        baseline_body=baseline_body,
+                        probe_body=body,
+                        payload_class=payload_class,
+                        new_evidence=new_evidence,
+                        response_classification=resp_class,
+                        confidence=confidence,
+                        validation_state=validation_state,
+                        evidence_line=evidence or "",
                     )
+                    if redirect_changed:
+                        proof["redirect_changed"] = True
+                        proof["baseline_final_url"] = str(baseline_final_url)[:300]
+                        proof["probe_final_url"] = str(probe_final)[:300]
                     add(
                         category,
                         out_severity,
                         f"Active {category} {detail_bit} on {source} '{field_name}' at {target}",
                         evidence,
+                        meta={
+                            "verification": verification,
+                            "confidence": confidence,
+                            "confidence_reason": validation_state,
+                            "proof": proof,
+                            "validation": (
+                                "confirmed"
+                                if validation_state == "confirmed_server_side_behavior"
+                                else "unverified"
+                            ),
+                        },
                     )
             except Exception:
                 continue
 
-    parsed = urlparse(url)
+    parsed = _urlparse(url)
     pairs = parse_qsl(parsed.query, keep_blank_values=True)
     if pairs:
         values = {name: value for name, value in pairs}
+        # Per-endpoint baseline (this URL + method + param set)
         baseline_ok = False
         baseline_body = ""
+        baseline_status = 0
+        baseline_final = ""
         try:
             baseline_resp = await _send_get(url, values)
-            baseline_body = baseline_resp.text or ""
-            baseline_ok = True
+            baseline_status, baseline_body, base_headers, baseline_final = _resp_meta(baseline_resp)
+            base_class = _classify_active_response(baseline_status, baseline_body, base_headers)
+            baseline_ok = not _is_contaminated_response(base_class)
         except Exception:
             baseline_body = ""
             baseline_ok = False
-        # Prioritize interesting param names first
         ordered = sorted(
             pairs,
             key=lambda item: (
                 0
-                if sql_names.match(item[0]) or SSRF_PARAM_RE.match(item[0])
+                if sql_names.match(item[0])
+                or SSRF_PARAM_RE.match(item[0])
                 or OPEN_REDIRECT_PARAM_RE.match(item[0])
                 or re.match(r"(?i)^(file|path|cmd|q|search)$", item[0])
                 else 1
@@ -2159,8 +2508,9 @@ async def run_active_vuln_probes(
                 "query param",
                 baseline_body,
                 baseline_ok=baseline_ok,
+                baseline_status=baseline_status,
+                baseline_final_url=baseline_final,
             )
-            # Active open-redirect: confirm Location / refresh points at probe host
             if OPEN_REDIRECT_PARAM_RE.match(name):
                 trial = dict(values)
                 trial[name] = redirect_probe
@@ -2171,7 +2521,7 @@ async def run_active_vuln_probes(
                         timeout=8,
                         follow_redirects=False,
                     )
-                    location = response.headers.get("location") or ""
+                    location = (getattr(response, "headers", None) or {}).get("location") or ""
                     if "crawler-open-redirect-probe.invalid" in location.lower():
                         add(
                             "open_redirect",
@@ -2186,19 +2536,24 @@ async def run_active_vuln_probes(
         for form in forms[:max_forms]:
             action = form.get("action") or url
             method = (form.get("method") or "GET").upper()
+            if _mutation_form_blocked(action, method):
+                continue
             fields = [field for field in form.get("fields", []) if field][:max_params]
             if not fields:
                 continue
             values = {field: "test" for field in form.get("fields", []) if field}
             baseline_ok = False
             baseline_body = ""
+            baseline_status = 0
+            baseline_final = ""
             try:
                 if method == "POST":
                     baseline_resp = await _send_post(action, values)
                 else:
                     baseline_resp = await _send_get(action, values)
-                baseline_body = baseline_resp.text or ""
-                baseline_ok = True
+                baseline_status, baseline_body, base_headers, baseline_final = _resp_meta(baseline_resp)
+                base_class = _classify_active_response(baseline_status, baseline_body, base_headers)
+                baseline_ok = not _is_contaminated_response(base_class)
             except Exception:
                 baseline_body = ""
                 baseline_ok = False
@@ -2211,18 +2566,18 @@ async def run_active_vuln_probes(
                     "form field",
                     baseline_body,
                     baseline_ok=baseline_ok,
+                    baseline_status=baseline_status,
+                    baseline_final_url=baseline_final,
                 )
 
     # GraphQL introspection confirmation (POST)
     findings.extend(await confirm_graphql_introspection(client, url))
-    # IDOR object-id mutation (multi-signal)
     try:
         from exploit_probes import probe_idor
 
         findings.extend(await probe_idor(client, url, max_params=min(4, max_params)))
     except Exception:
         pass
-    # Safe CSRF canary (same-origin only; skips tracking / destructive forms)
     try:
         from exploit_probes import probe_csrf
 
