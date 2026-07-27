@@ -792,6 +792,15 @@ def assess_active_vuln(category: str, detail: str, severity: str) -> ImpactResul
             summary="Object-id parameter is an IDOR candidate — not confirmed until mutation proof.",
             validation="unverified",
         )
+    # Marker reflection without executable sink is possible XSS, not confirmed exploit
+    if role == "xss" and "reflection (not proven" in d:
+        return ImpactResult(
+            role="xss",
+            impact="possible",
+            severity=severity if severity in ("medium", "high") else "medium",
+            summary="Active XSS marker reflected — not proven as an executable sink.",
+            validation="unverified",
+        )
     if _is_active_confirmed(detail) or (role == "idor" and "active idor" in d):
         return ImpactResult(
             role=role,
