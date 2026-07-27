@@ -770,23 +770,50 @@ def _host_of(url: str) -> str:
 
 
 def _normalize_csrf_group_key(evidence: str) -> str:
-    """Extract normalized form action from CSRF evidence for group-level aggregation.
+    """Build a group key for CSRF info-level hardening observations.
 
-    Strips URL fragment and query string so forms at the same action endpoint
-    (e.g. /cart/add#frag?variant=123) are collapsed into one group per action path.
+    Groups first by form purpose (method + canonical field signature), then by
+    normalized action path (fragment and query stripped). This ensures:
+    - Blog comment forms on 100 different posts (same fields, different paths) → 1 group
+    - Contact form variants with the same core fields → 1 group
+    - Structurally distinct forms (cart vs newsletter vs delete) → separate groups
     """
-    m = re.search(r"(GET|POST|PUT|PATCH|DELETE)\s+(\S+)", evidence or "")
+    m = re.search(r"(?i)(get|post|put|patch|delete)\s+(\S+)\s+fields=([^\`]*)", evidence or "")
     if not m:
         return (evidence or "")[:80]
-    method = m.group(1)
+    method = m.group(1).upper()
     action = m.group(2)
+    fields_raw = m.group(3).strip()
+
+    # Normalize field signature: sort field names, strip numeric suffixes and IDs
+    # to capture "same form type, different instance" (e.g. product-id-1 vs product-id-2)
+    field_list = [f.strip() for f in fields_raw.split(",") if f.strip() and f.strip() not in ("utf8",)]
+    # Canonical key fields that identify form purpose — strip ephemeral IDs
+    canonical_fields: list = []
+    for f in sorted(field_list):
+        # Normalise field: remove trailing digits (contact[body]1 → contact[body])
+        f_norm = re.sub(r"\d+$", "", f)
+        # Treat shopify internal fields as noise for grouping
+        if f_norm in ("form_type", "section-id", "section_id"):
+            continue
+        canonical_fields.append(f_norm[:40])
+    field_sig = "|".join(canonical_fields[:8])
+
+    # If the field signature uniquely identifies the form purpose, use it as primary key
+    # with the path as secondary (so identical forms across different pages collapse)
     from urllib.parse import urlparse, urlunparse
     try:
         parts = urlparse(action)
-        normalized = urlunparse(parts._replace(fragment="", query=""))
+        # Strip fragment and query; keep scheme + host + path for uniqueness within the site
+        norm_path = urlunparse(parts._replace(fragment="", query=""))
     except Exception:
-        normalized = action.split("?")[0].split("#")[0]
-    return f"{method}|{normalized}"
+        norm_path = action.split("?")[0].split("#")[0]
+
+    # Primary grouping: method + field_sig (collapses same form type across all pages)
+    # This is the key change: blog comment forms on N pages → 1 group
+    if field_sig:
+        return f"{method}|fields:{field_sig}"
+    return f"{method}|{norm_path}"
 
 
 def group_findings_for_report(findings: List[Dict[str, Any]], *, max_groups: int = 40) -> List[Dict[str, Any]]:

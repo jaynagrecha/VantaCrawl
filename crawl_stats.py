@@ -439,21 +439,43 @@ class CrawlStats:
                 upath = url
             dedupe_key = f"file_upload|{host}|{upath}"
         elif category == "csrf" and sev_l == "info":
-            # Aggregate unauthenticated CSRF hardening observations by normalized form action.
-            # Strip URL fragment and query string so the same form action across product pages
-            # (e.g. https://example.com/cart#fragment?x=1) collapses to one finding.
-            # Use case-insensitive match because evidence_key is already lowercased.
-            _csrf_action_m = re.search(r"(?i)(get|post|put|patch|delete)\s+(\S+)", evidence_key)
-            if _csrf_action_m:
-                try:
-                    from urllib.parse import urlparse as _up, urlunparse as _uu
-                    _p = _up(_csrf_action_m.group(2))
-                    _norm = _uu(_p._replace(fragment="", query=""))
-                except Exception:
-                    _norm = _csrf_action_m.group(2).split("?")[0].split("#")[0]
-                dedupe_key = f"csrf_hardening|{host}|{_csrf_action_m.group(1)}|{_norm}"
+            # Aggregate unauthenticated CSRF hardening observations.
+            # Group by method + canonical field signature so the same form type appearing on
+            # many pages (e.g. comment forms on every blog post) collapses to one finding.
+            # evidence_key is already lowercased so match is case-insensitive by nature.
+            _csrf_m = re.search(
+                r"(?i)(get|post|put|patch|delete)\s+(\S+)\s+fields=([^\`]*)", evidence_key
+            )
+            if _csrf_m:
+                _method_n = _csrf_m.group(1).upper()
+                _fields_raw = _csrf_m.group(3).strip()
+                _field_list = sorted(
+                    f.strip() for f in _fields_raw.split(",")
+                    if f.strip() and f.strip() not in ("utf8", "form_type", "section-id", "section_id")
+                )
+                _field_sig = "|".join(re.sub(r"\d+$", "", f)[:40] for f in _field_list[:8])
+                if _field_sig:
+                    dedupe_key = f"csrf_hardening|{host}|{_method_n}|fields:{_field_sig}"
+                else:
+                    try:
+                        from urllib.parse import urlparse as _up, urlunparse as _uu
+                        _p = _up(_csrf_m.group(2))
+                        _norm = _uu(_p._replace(fragment="", query=""))
+                    except Exception:
+                        _norm = _csrf_m.group(2).split("?")[0].split("#")[0]
+                    dedupe_key = f"csrf_hardening|{host}|{_method_n}|{_norm}"
             else:
-                dedupe_key = f"csrf_hardening|{host}|{evidence_key[:80]}"
+                _csrf_action_m2 = re.search(r"(?i)(get|post|put|patch|delete)\s+(\S+)", evidence_key)
+                if _csrf_action_m2:
+                    try:
+                        from urllib.parse import urlparse as _up, urlunparse as _uu
+                        _p = _up(_csrf_action_m2.group(2))
+                        _norm = _uu(_p._replace(fragment="", query=""))
+                    except Exception:
+                        _norm = _csrf_action_m2.group(2).split("?")[0].split("#")[0]
+                    dedupe_key = f"csrf_hardening|{host}|{_csrf_action_m2.group(1)}|{_norm}"
+                else:
+                    dedupe_key = f"csrf_hardening|{host}|{evidence_key[:80]}"
         elif category in ("xss", "csrf") and evidence_key:
             # Same XSS sink / CSRF evidence across pages → one finding per host
             dedupe_key = f"{category}|{host}|{evidence_key}"

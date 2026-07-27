@@ -38,49 +38,58 @@ def _csrf_finding(action: str, fields: str = "") -> Dict[str, Any]:
     }
 
 
-def test_csrf_group_key_strips_fragment():
+def test_csrf_group_key_same_fields_different_fragment():
     key1 = _normalize_csrf_group_key(
-        "csrf_form: `POST https://keutek.com/contact#contact-abc123 fields=form_type,utf8`"
+        "csrf_form: `POST https://keutek.com/contact#contact-abc123 "
+        "fields=form_type,utf8,contact[email],contact[body]`"
     )
     key2 = _normalize_csrf_group_key(
-        "csrf_form: `POST https://keutek.com/contact#contact-xyz789 fields=form_type,utf8`"
+        "csrf_form: `POST https://keutek.com/contact#contact-xyz789 "
+        "fields=form_type,utf8,contact[email],contact[body]`"
     )
-    assert key1 == key2, "Same path with different fragment should produce same key"
+    assert key1 == key2, "Same field signature with different fragment should produce same key"
 
 
-def test_csrf_group_key_strips_query():
+def test_csrf_group_key_same_fields_different_path():
+    """Blog comment forms on different post URLs with identical fields → same group."""
     key1 = _normalize_csrf_group_key(
-        "csrf_form: `POST https://keutek.com/cart/add?variant=123 fields=id`"
+        "csrf_form: `POST https://keutek.com/blogs/news/article-1 "
+        "fields=form_type,utf8,comment[author],comment[email],comment[body]`"
     )
     key2 = _normalize_csrf_group_key(
-        "csrf_form: `POST https://keutek.com/cart/add?variant=456 fields=id`"
+        "csrf_form: `POST https://keutek.com/blogs/news/article-2 "
+        "fields=form_type,utf8,comment[author],comment[email],comment[body]`"
     )
-    assert key1 == key2, "Same path with different query should produce same key"
+    assert key1 == key2, "Same field signature on different paths should collapse to one group"
 
 
-def test_csrf_group_key_keeps_distinct_paths_separate():
+def test_csrf_group_key_keeps_distinct_fields_separate():
     key1 = _normalize_csrf_group_key(
         "csrf_form: `POST https://keutek.com/cart fields=(none)`"
     )
     key2 = _normalize_csrf_group_key(
-        "csrf_form: `POST https://keutek.com/cart/add fields=id`"
+        "csrf_form: `POST https://keutek.com/cart/add fields=id,product-id`"
     )
-    assert key1 != key2, "Different paths must produce different keys"
+    assert key1 != key2, "Different field signatures must produce different keys"
 
 
-def test_csrf_flood_collapses_to_one_group_per_action():
-    """326 CSRF findings for different product pages but same /contact action → few groups."""
+def test_csrf_flood_collapses_to_one_group_per_field_signature():
+    """326 CSRF findings for different product pages but same form fields → few groups."""
     findings = []
+    # Contact forms with same field signature but different fragments
+    contact_fields = "form_type,utf8,contact[email],contact[body]"
     for i in range(50):
-        findings.append(_csrf_finding(f"https://keutek.com/contact#contact-contact{i}"))
+        findings.append(_csrf_finding(f"https://keutek.com/contact#contact-{i}", contact_fields))
+    # Cart add forms with different fields
+    cart_fields = "form_type,utf8,id,product-id"
     for i in range(50):
-        findings.append(_csrf_finding(f"https://keutek.com/cart/add?variant={i}"))
+        findings.append(_csrf_finding(f"https://keutek.com/cart/add?variant={i}", cart_fields))
 
     groups = group_findings_for_report(findings, max_groups=200)
     csrf_groups = [g for g in groups if g["category"] == "csrf"]
     assert len(csrf_groups) == 2, (
-        f"Expected 2 CSRF groups (contact + cart/add), got {len(csrf_groups)}: "
-        f"{[g['evidence'] if g.get('evidence') else g['detail'] for g in csrf_groups]}"
+        f"Expected 2 CSRF groups (contact + cart/add field signatures), got {len(csrf_groups)}: "
+        f"{[g['detail'][:60] for g in csrf_groups]}"
     )
     counts = sorted(g["count"] for g in csrf_groups)
     assert counts == [50, 50]
