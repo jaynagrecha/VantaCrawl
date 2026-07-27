@@ -2718,14 +2718,18 @@ async def run_active_probe_kit(
             ts_status = str(report.get("status") or "")
             if ts_status == "insufficient":
                 stats.active_validation_coverage = "partial"  # type: ignore[attr-defined]
-                if not getattr(stats, "assessment_inconclusive_reason", None):
-                    missing = ", ".join(report.get("missing_families") or []) or "dedicated fixtures"
-                    stats.assessment_inconclusive_reason = (  # type: ignore[attr-defined]
-                        f"target-selection coverage insufficient ({missing} discovered but not tested)"
-                    )
+                missing = ", ".join(report.get("missing_families") or []) or "dedicated fixtures"
+                stats.assessment_inconclusive_reason = (  # type: ignore[attr-defined]
+                    f"target-selection coverage insufficient ({missing} discovered but not tested)"
+                )
             elif ts_status == "complete":
+                stats.active_validation_coverage = "complete"  # type: ignore[attr-defined]
+                prev_reason = str(getattr(stats, "assessment_inconclusive_reason", "") or "")
+                if "target-selection coverage insufficient" in prev_reason:
+                    stats.assessment_inconclusive_reason = ""  # type: ignore[attr-defined]
+            elif ts_status == "partial":
                 if not getattr(stats, "active_validation_coverage", None):
-                    stats.active_validation_coverage = "complete"  # type: ignore[attr-defined]
+                    stats.active_validation_coverage = "partial"  # type: ignore[attr-defined]
         except Exception:
             pass
 
