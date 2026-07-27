@@ -554,8 +554,8 @@ td,th{{border:1px solid #ccc;padding:6px;text-align:left}}</style></head>
 <li>Links found: {snap['links_found']}</li>
 <li>Enum hits: {snap['enum_hits']}</li>
 <li>Findings: {snap['findings_count']}</li>
-<li>Broken links: {snap.get('broken_links_summary', {}).get('unique_urls', snap['broken_links_count'])} unique
- ({snap['broken_links_count']} row(s))</li>
+<li>Broken links (404/5xx): {snap.get('broken_links_summary', {}).get('headline_broken', snap.get('broken_links_summary', {}).get('unique_404', 0))} unique
+ ({snap.get('broken_links_summary', {}).get('unique_access_denied', 0)} access-denied not counted as broken; {snap['broken_links_count']} raw row(s))</li>
 <li>Duration: {snap['elapsed_seconds']}s</li>
 </ul><h2>Technologies</h2><p>{escape(tech or 'None detected')}</p>
 <h2>Security Findings</h2><table><tr><th>Severity</th><th>Category</th><th>URL</th><th>Detail</th></tr>{rows or '<tr><td colspan=4>None</td></tr>'}</table>

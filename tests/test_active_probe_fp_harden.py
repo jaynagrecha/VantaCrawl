@@ -296,6 +296,44 @@ def test_normalize_ignores_nonce_churn():
     assert a == b
 
 
+def test_active_sqli_redirect_change_alone_not_positive():
+    """Redirect to /error without a new SQL error is interesting, not SQLi."""
+
+    class _RedirectClient:
+        n = 0
+
+        async def get(self, url, params=None, timeout=8, follow_redirects=True):
+            params = params or {}
+            joined = " ".join(str(v) for v in params.values())
+            self.n += 1
+            if "'" in joined:
+                return _Resp("oops", status=302, url="https://x.com/error")
+            return _Resp("search results", status=200, url="https://x.com/search")
+
+        async def post(self, *a, **k):
+            return _Resp("ok")
+
+    findings = asyncio.run(
+        run_active_vuln_probes(_RedirectClient(), "https://x.com/search?q=shoes", max_params=2, max_forms=0)
+    )
+    assert not any(f[0] == "sql_injection" for f in findings)
+
+
+def test_broken_headline_excludes_access_denied():
+    from crawl_stats import CrawlStats
+
+    summary = CrawlStats.summarize_broken_links(
+        [
+            {"url": "https://a/x", "status": "403", "class": "access_denied"},
+            {"url": "https://a/y", "status": "404", "class": "not_found"},
+            {"url": "https://a/z", "status": "503", "class": "temporary_unavailable"},
+        ]
+    )
+    assert summary["headline_broken"] == 2
+    assert summary["unique_access_denied"] == 1
+    assert summary["unique_urls"] == 3
+
+
 def test_build_active_proof_contract():
     proof = _build_active_proof(
         endpoint="https://x.com/item",

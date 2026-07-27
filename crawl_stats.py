@@ -322,6 +322,9 @@ class CrawlStats:
                 + class_counts.get("dns_failure", 0)
                 + class_counts.get("connection_failure", 0)
             ),
+            # Headline "broken" = 404/5xx only — access-denied is not broken
+            "headline_broken": int(class_counts.get("not_found", 0))
+            + int(class_counts.get("temporary_unavailable", 0)),
         }
 
     def record_finding(
