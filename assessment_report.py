@@ -121,8 +121,19 @@ def build_assessment_document(
     # Exclude suppressed / invalidated findings from severity totals and executive items
     from report_status import is_suppressed_or_invalidated as _is_suppressed
 
-    active_vulnerabilities = [f for f in vulnerabilities if not _is_suppressed(f)]
-    active_hardening = [f for f in hardening_issues if not _is_suppressed(f)]
+    def _is_attack_surface(f: Dict[str, Any]) -> bool:
+        return str(f.get("assessment_state") or "") == "Attack-surface observation"
+
+    active_vulnerabilities = [
+        f for f in vulnerabilities if not _is_suppressed(f) and not _is_attack_surface(f)
+    ]
+    active_hardening = [
+        f for f in hardening_issues if not _is_suppressed(f) and not _is_attack_surface(f)
+    ]
+    # Attack-surface items are inventoried separately — never in severity totals
+    attack_surface_only = [
+        f for f in findings_dual if _is_attack_surface(f) and not _is_suppressed(f)
+    ]
 
     # Overall risk ignores hardening noise — only demonstrated vulnerabilities drive Medium+
     vuln_sev = Counter(str(f.get("severity") or "info") for f in active_vulnerabilities)
@@ -306,11 +317,7 @@ def build_assessment_document(
         f for f in active_vulnerabilities + active_hardening
         if str(f.get("assessment_state") or "") == "Informational technology finding"
     ]
-    attack_surface_inventory = [
-        f for f in findings_dual
-        if str(f.get("assessment_state") or "") == "Attack-surface observation"
-        and not _is_suppressed(f)
-    ]
+    attack_surface_inventory = list(attack_surface_only)
     # Coverage gaps section: note what phases did/didn't run
     active_probe_coverage = dict(getattr(stats, "active_probe_coverage", None) or {})
     content_coverage = str(getattr(stats, "target_content_coverage", "") or "").lower()
@@ -395,9 +402,10 @@ def build_assessment_document(
         "scan_status_meta": status_meta,
         "directory_enum_message": status_meta.get("directory_enum_message"),
         "methodology": methodology,
-        "findings": findings_dual,
-        "vulnerabilities": vulnerabilities,
-        "hardening_issues": hardening_issues,
+        # Executive / severity-facing lists exclude suppressed + attack-surface inventory
+        "findings": active_vulnerabilities + active_hardening,
+        "vulnerabilities": active_vulnerabilities,
+        "hardening_issues": active_hardening,
         "recommendations": recommendations,
         "roadmap": roadmap,
         "suppressed_observations": suppressed_appendix[:40],

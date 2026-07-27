@@ -177,11 +177,21 @@ def assessment_state_for_finding(
         return "False positive / invalidated"
     # These categories are attack-surface inventory, not vulnerability findings
     if cat in (
-        "file_upload", "rate_limit", "well_known", "cloud_url", "js_intel", "websocket",
-        "oauth", "business_logic", "graphql",
+        "file_upload",
+        "rate_limit",
+        "well_known",
+        "cloud_url",
+        "js_intel",
+        "websocket",
+        "oauth",
+        "business_logic",
+        "graphql",
+        "api_leak",
     ):
         return "Attack-surface observation"
     if "deep-link flow" in detail_l or "password-reset deep-link" in detail_l:
+        return "Attack-surface observation"
+    if "graphql" in detail_l and cat in ("api_leak", "info_leak", "information_disclosure"):
         return "Attack-surface observation"
     # SSO/OAuth surface signals without confirmed exploit
     if cat == "oauth" or (cat == "authentication" and "sso" in detail_l):
