@@ -47,5 +47,15 @@ Public site: Horizon Catalog. Machine catalog: `/catalog.json`.
 | ssrf meta / log4j / xmlrpc / race / redos / csv | `/meta/*`, `/ssrf/*`, `/log4j/greet`, `/xmlrpc.php`, `/race/*`, `/redos/search`, `/csv/export` |
 | type_juggling | `/typejuggling/login` |
 
+## robots.txt bypass test
+| Item | Detail |
+|------|--------|
+| Policy | `GET /robots.txt` — `Disallow: /private/`, `/secret-admin-panel`, `/hidden/finance`, plus leak/git/backup/… |
+| Sitemap | `/sitemap.xml` lists only public URLs (no `/private/*`) |
+| Unlinked targets | `/private/admin`, `/private/secrets.env`, `/private/internal-api`, `/private/db-dump.sql`, `/secret-admin-panel`, `/hidden/finance` |
+| Marker | body contains `ROBOTS_BYPASS_CANARY` (+ `sk_live_robots_disallow_playground`) |
+| Honor robots | crawler must **not** fetch those paths → no canary in crawl graph |
+| Bypass robots | crawler ignores Disallow (or uses Disallow as hints) → finds canary / secrets |
+
 **Canary:** `fixtures/canary.txt` → `PLAYGROUND_CANARY_TOKEN`  
 **Local OOB:** `/oob/<nonce>/ping` + `/oob/poll?nonce=`

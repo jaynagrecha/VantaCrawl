@@ -144,23 +144,6 @@ def xxe_parse(handler, params: Dict[str, str], *, head_only: bool = False) -> No
 
 
 @register(
-    "/secret-admin-panel",
-    title="Hidden admin panel",
-    family="discovery",
-    expected="enum / hidden directory discovery",
-    tags=["enum"],
-    linked=False,
-)
-def hidden_admin(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
-    send(
-        handler,
-        200,
-        page("Secret admin", "<p>Internal admin panel (not linked from index).</p>"),
-        head_only=head_only,
-    )
-
-
-@register(
     "/api/user",
     title="JSON API without auth",
     family="api",
@@ -183,23 +166,4 @@ def api_user(handler, params: Dict[str, str], *, head_only: bool = False) -> Non
     )
 
 
-@register(
-    "/robots.txt",
-    title="robots.txt",
-    family="discovery",
-    expected="disallow hints toward hidden paths",
-    tags=["passive"],
-    linked=False,
-)
-def robots(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
-    body = (
-        b"User-agent: *\n"
-        b"Disallow: /secret-admin-panel\n"
-        b"Disallow: /leak/\n"
-        b"Disallow: /actuator/\n"
-        b"Disallow: /.git/\n"
-        b"Disallow: /backup/\n"
-        b"Disallow: /keys/\n"
-        b"Disallow: /bac/\n"
-    )
-    send(handler, 200, body, headers={"Content-Type": "text/plain"}, head_only=head_only)
+# /robots.txt + /secret-admin-panel live in vulns/robots_bypass.py
