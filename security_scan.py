@@ -2242,8 +2242,14 @@ async def run_active_vuln_probes(
     callback_base: str = "",
     redirect_proof_host: str = "redirect-proof.vantacrawl-lab.example",
     traversal_fixture_installed: bool = False,
+    traversal_canary_path: str = "",
+    traversal_canary_expected_content: str = "",
+    oob_callback_poll_url: str = "",
     browser_evaluate=None,
     callback_received=None,
+    stats=None,
+    oob=None,
+    scan_id: str = "",
 ) -> List[Finding]:
     """Safe / Extended / Lab active probes (authorized targets only).
 
@@ -2262,10 +2268,15 @@ async def run_active_vuln_probes(
             callback_base=callback_base or "",
             redirect_proof_host=redirect_proof_host or "redirect-proof.vantacrawl-lab.example",
             traversal_fixture_installed=bool(traversal_fixture_installed),
+            traversal_canary_path=traversal_canary_path or "",
+            traversal_canary_expected_content=traversal_canary_expected_content or "",
             max_params=max_params,
             max_forms=max_forms,
             browser_evaluate=browser_evaluate,
             callback_received=callback_received,
+            stats=stats,
+            oob=oob,
+            scan_id=scan_id or "",
         )
         findings = list(
             await run_active_probe_kit(

@@ -1867,9 +1867,26 @@ async def _run_security_checks(
                 confidence_reason=meta.get("confidence_reason"),
             )
         if config.vuln_active_probe:
+            from active_probe_browser import make_browser_evaluate
             from active_probe_kit import normalize_mode
+            from oob_callback import OobCallbackCorrelator
 
             probe_mode = normalize_mode(str(getattr(config, "active_probe_mode", "safe") or "safe"))
+            callback_base = str(getattr(config, "ssrf_callback_base", "") or "")
+            poll_url = str(getattr(config, "oob_callback_poll_url", "") or "")
+            oob = None
+            callback_received = None
+            if callback_base or poll_url:
+                oob = OobCallbackCorrelator(
+                    scan_id=str(getattr(stats, "scan_id", "") or getattr(config, "report_title", "") or ""),
+                    callback_base=callback_base,
+                    poll_url=poll_url,
+                    http_client=client,
+                )
+                callback_received = oob.make_callback_received()
+            browser_evaluate = make_browser_evaluate(
+                config, output_callback=output_callback, stats=stats
+            )
             for item in await run_active_vuln_probes(
                 client,
                 url,
@@ -1878,7 +1895,7 @@ async def _run_security_checks(
                 max_forms=config.active_probe_max_forms,
                 body_text=body_text or "",
                 mode=probe_mode,
-                callback_base=str(getattr(config, "ssrf_callback_base", "") or ""),
+                callback_base=callback_base,
                 redirect_proof_host=str(
                     getattr(config, "redirect_proof_host", "")
                     or "redirect-proof.vantacrawl-lab.example"
@@ -1886,6 +1903,15 @@ async def _run_security_checks(
                 traversal_fixture_installed=bool(
                     getattr(config, "traversal_fixture_installed", False)
                 ),
+                traversal_canary_path=str(getattr(config, "traversal_canary_path", "") or ""),
+                traversal_canary_expected_content=str(
+                    getattr(config, "traversal_canary_expected_content", "") or ""
+                ),
+                oob_callback_poll_url=poll_url,
+                browser_evaluate=browser_evaluate,
+                callback_received=callback_received,
+                stats=stats,
+                oob=oob,
             ):
                 category, severity, detail, evidence, meta = _unpack_finding(item)
                 await emit(

@@ -33,8 +33,10 @@ STATE_BASELINE_FAILED = "baseline_failed"
 STATE_INCONCLUSIVE = "inconclusive"
 STATE_ATTR_BREAKOUT = "attribute_breakout"
 STATE_DOM_NODE = "dom_node_injected"
+STATE_HTML_INJECTION = "html_injection"
 STATE_SINK_CANDIDATE = "sink_context_candidate"
 STATE_CANARY_FILE = "canary_file_confirmed"
+STATE_MARKER_SIGNAL = "marker_output_signal"
 
 MODES = ("passive", "safe", "extended", "lab")
 
@@ -43,9 +45,6 @@ _LAB_ONLY_CLASSES = frozenset(
     {
         "ssrf_imds_lab",
         "trav_passwd_lab",
-        "trav_canary",
-        "trav_canary_enc",
-        "trav_canary_dblenc",
         "xxe_oob",
         "sqli_lab_sleep_mysql",
         "sqli_lab_waitfor_mssql",
@@ -102,14 +101,24 @@ class ProbeModeSettings:
     callback_base: str = ""
     redirect_proof_host: str = "redirect-proof.vantacrawl-lab.example"
     traversal_fixture_root: str = "/opt/vantacrawl-fixtures"
-    # Owned-lab only: set True when VC_TRAVERSAL_* fixtures are installed on the target
+    # Explicit canary gate (preferred): both must be set to send canary probes
+    traversal_canary_path: str = ""
+    traversal_canary_expected_content: str = ""
+    # Legacy alias — if True and path/content empty, derive defaults from fixture root
     traversal_fixture_installed: bool = False
     max_params: int = 8
     max_forms: int = 3
-    # Optional: async (page_url, js_expr) -> Any for XSS browser confirm
+    scan_id: str = ""
+    # Optional: async (page_url, js_expr, **kw) -> bool|dict for XSS browser confirm
     browser_evaluate: Optional[Callable[..., Any]] = None
     # Optional: async (nonce) -> bool for SSRF/XXE OOB confirm
     callback_received: Optional[Callable[..., Any]] = None
+    # Optional CrawlStats (or duck-typed) for unified request ledger
+    stats: Any = None
+    # Optional OobCallbackCorrelator for register_probe + correlation
+    oob: Any = None
+    # Coverage notes written for reports
+    coverage_notes: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -186,6 +195,8 @@ def for_mode(
     redirect_proof_host: str = "redirect-proof.vantacrawl-lab.example",
     traversal_fixture_root: str = "/opt/vantacrawl-fixtures",
     traversal_fixture_installed: bool = False,
+    traversal_canary_path: str = "",
+    traversal_canary_expected_content: str = "",
 ) -> List[ProbeSpec]:
     """Central backend gate: payloads for a mode. Lab classes never leak into safe."""
     settings = ProbeModeSettings(
@@ -194,6 +205,8 @@ def for_mode(
         redirect_proof_host=redirect_proof_host or "redirect-proof.vantacrawl-lab.example",
         traversal_fixture_root=traversal_fixture_root or "/opt/vantacrawl-fixtures",
         traversal_fixture_installed=bool(traversal_fixture_installed),
+        traversal_canary_path=traversal_canary_path or "",
+        traversal_canary_expected_content=traversal_canary_expected_content or "",
     )
     specs = build_payload_specs(settings, nonce or new_probe_nonce())
     mode_n = normalize_mode(mode)
@@ -207,6 +220,33 @@ def for_mode(
     return specs
 
 
+def redact_payload(payload: str) -> str:
+    """Redact secrets and truncate payloads for ledger/report storage."""
+    text = str(payload or "")
+    text = re.sub(
+        r"(?i)\b(api[_-]?key|token|password|secret|authorization|cookie)=([^\s&]+)",
+        r"\1=[REDACTED]",
+        text,
+    )
+    if len(text) > 160:
+        return text[:72] + "…[redacted]…" + text[-40:]
+    return text
+
+
+def resolve_traversal_canary(settings: ProbeModeSettings, nonce: str) -> Tuple[str, str]:
+    """Return (path, expected_content) or ("","") when canary must be skipped."""
+    path = str(getattr(settings, "traversal_canary_path", "") or "").strip()
+    content = str(getattr(settings, "traversal_canary_expected_content", "") or "").strip()
+    if path and content:
+        return path, content
+    if bool(getattr(settings, "traversal_fixture_installed", False)):
+        root = str(getattr(settings, "traversal_fixture_root", "") or "/opt/vantacrawl-fixtures").rstrip("/")
+        derived_path = f"../../../../{root.lstrip('/')}/VC_TRAVERSAL_{nonce}.txt"
+        derived_content = f"VC_TRAVERSAL_PROOF_{nonce}"
+        return derived_path, derived_content
+    return "", ""
+
+
 def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSpec]:
     """Mini payload set for the selected mode (internal; prefer for_mode)."""
     mode = normalize_mode(settings.mode)
@@ -217,10 +257,10 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
     rce_tok = f"VC_RCE_{nonce}"
     trav_proof = f"VC_TRAVERSAL_PROOF_{nonce}"
     trav_file = f"{settings.traversal_fixture_root.rstrip('/')}/VC_TRAVERSAL_{nonce}.txt"
-    # Relative traversal toward fixture (lab + fixture installed only)
     trav_payload = f"../../../../{trav_file.lstrip('/')}"
     cb = (settings.callback_base or "").rstrip("/")
     redirect_dest = f"https://{settings.redirect_proof_host}/{nonce}"
+    canary_path, canary_content = resolve_traversal_canary(settings, nonce)
 
     specs: List[ProbeSpec] = []
 
@@ -521,41 +561,43 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
                 {},
             )
         )
-    # Lab + installed fixture: canary file confirmation (never for safe external)
-    if mode == "lab" and settings.traversal_fixture_installed:
+    # Lab + configured canary: canary file confirmation (skip unless path+content set)
+    if canary_path and canary_content:
         specs.append(
             ProbeSpec(
                 "directory_traversal",
-                trav_payload,
+                canary_path,
                 "trav_canary",
                 _file_names,
                 "high",
                 "traversal",
-                {"proof": trav_proof, "canary": True},
+                {"proof": canary_content, "canary": True},
             )
         )
-        specs.append(
-            ProbeSpec(
-                "directory_traversal",
-                trav_payload.replace("/", "%2f"),
-                "trav_canary_enc",
-                _file_names,
-                "high",
-                "traversal",
-                {"proof": trav_proof, "canary": True},
+        if mode in ("extended", "lab"):
+            specs.append(
+                ProbeSpec(
+                    "directory_traversal",
+                    canary_path.replace("/", "%2f"),
+                    "trav_canary_enc",
+                    _file_names,
+                    "high",
+                    "traversal",
+                    {"proof": canary_content, "canary": True},
+                )
             )
-        )
-        specs.append(
-            ProbeSpec(
-                "directory_traversal",
-                trav_payload.replace("/", "%252f"),
-                "trav_canary_dblenc",
-                _file_names,
-                "high",
-                "traversal",
-                {"proof": trav_proof, "canary": True},
+        if mode == "lab":
+            specs.append(
+                ProbeSpec(
+                    "directory_traversal",
+                    canary_path.replace("/", "%252f"),
+                    "trav_canary_dblenc",
+                    _file_names,
+                    "high",
+                    "traversal",
+                    {"proof": canary_content, "canary": True},
+                )
             )
-        )
     if mode == "lab":
         specs.append(
             ProbeSpec(
@@ -618,14 +660,11 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
             )
         )
 
-    # Assert Safe Active never ships risky classes
+    # Assert Safe Active never ships risky lab classes
     if mode == "safe":
         banned = {
             "ssrf_imds_lab",
             "trav_passwd_lab",
-            "trav_canary",
-            "trav_canary_enc",
-            "trav_canary_dblenc",
             "xxe_oob",
             "sqli_lab_sleep_mysql",
             "sqli_lab_waitfor_mssql",
@@ -640,8 +679,6 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
             assert "WAITFOR" not in s.payload.upper()
             assert "UNION SELECT" not in s.payload.upper()
             assert "DROP " not in s.payload.upper()
-            assert "VC_TRAVERSAL_PROOF" not in s.payload
-            assert "/opt/vantacrawl-fixtures" not in s.payload
 
     return specs
 
@@ -919,14 +956,15 @@ def classify_xss(body: str, token: str, baseline: str, *, payload: str = "", dom
         if not (dom_id and re.search(rf'(?is)<b\b[^>]*\bid=["\']?{re.escape(dom_id)}', text)):
             return None
 
-    # Injected DOM node
+    # Injected DOM node — harmless HTML injection, not confirmed XSS
     if dom_id and re.search(rf'(?is)<b\b[^>]*\bid=["\']?{re.escape(dom_id)}', text):
         return {
-            "severity": "medium",
-            "detail_bit": "DOM node injected (medium-confidence; not browser-confirmed)",
-            "validation_state": STATE_DOM_NODE,
-            "confidence": "medium",
-            "verification": "verified",
+            "category": "html_injection",
+            "severity": "low",
+            "detail_bit": "HTML injection (harmless node; not confirmed XSS)",
+            "validation_state": STATE_HTML_INJECTION,
+            "confidence": "low",
+            "verification": "detected",
         }
 
     if re.search(r"(?is)<script\b[^>]*>[^<]{0,200}" + re.escape(token), text) or re.search(
@@ -935,7 +973,7 @@ def classify_xss(body: str, token: str, baseline: str, *, payload: str = "", dom
     ):
         return {
             "severity": "medium",
-            "detail_bit": "sink-context candidate (not browser-confirmed execution)",
+            "detail_bit": "medium-confidence XSS candidate (sink context; not browser-confirmed)",
             "validation_state": STATE_SINK_CANDIDATE,
             "confidence": "medium",
             "verification": "verified",
@@ -945,7 +983,7 @@ def classify_xss(body: str, token: str, baseline: str, *, payload: str = "", dom
         if _raw_token_present(text):
             return {
                 "severity": "medium",
-                "detail_bit": "attribute/context breakout candidate (not browser-confirmed)",
+                "detail_bit": "medium-confidence XSS candidate (attribute/event context; not browser-confirmed)",
                 "validation_state": STATE_ATTR_BREAKOUT,
                 "confidence": "medium",
                 "verification": "verified",
@@ -1018,7 +1056,17 @@ async def run_active_probe_kit(
     if mode == "passive":
         return []
 
+    if mode == "passive":
+        settings.coverage_notes = {
+            "traversal_canary": "skipped",
+            "reason": "passive mode",
+            "xss_browser": "skipped",
+            "oob_callback": "skipped",
+        }
+        return []
+
     nonce = new_probe_nonce()
+    canary_path, canary_content = resolve_traversal_canary(settings, nonce)
     specs = for_mode(
         mode,
         nonce=nonce,
@@ -1026,9 +1074,37 @@ async def run_active_probe_kit(
         redirect_proof_host=settings.redirect_proof_host,
         traversal_fixture_root=settings.traversal_fixture_root,
         traversal_fixture_installed=settings.traversal_fixture_installed,
+        traversal_canary_path=settings.traversal_canary_path,
+        traversal_canary_expected_content=settings.traversal_canary_expected_content,
     )
     findings: List[Any] = []
     seen: set = set()
+    stats = settings.stats
+    oob = settings.oob
+
+    coverage = {
+        "traversal_canary": "configured" if (canary_path and canary_content) else "skipped",
+        "reason": ("" if (canary_path and canary_content) else "no controlled canary configured"),
+        "xss_browser": "wired" if settings.browser_evaluate else "unavailable",
+        "oob_callback": "wired" if settings.callback_received else "unavailable",
+        "message": (
+            "Traversal active confirmation: skipped"
+            if not (canary_path and canary_content)
+            else "Traversal active confirmation: canary configured"
+        ),
+    }
+    if not (canary_path and canary_content):
+        coverage["detail"] = "Reason: no controlled canary configured"
+    if not settings.browser_evaluate:
+        coverage["xss_note"] = "XSS execution confirmation unavailable in this scan configuration."
+    if not settings.callback_received:
+        coverage["oob_note"] = "SSRF/XXE callback confirmation unavailable (probe generation only)."
+    settings.coverage_notes = coverage
+    if stats is not None:
+        try:
+            stats.active_probe_coverage = dict(coverage)
+        except Exception:
+            pass
 
     def add(category: str, severity: str, detail: str, evidence: Optional[str], meta: Dict[str, Any]):
         key = (category, detail, evidence or "", meta.get("proof", {}).get("validation_state"))
@@ -1037,10 +1113,137 @@ async def run_active_probe_kit(
         seen.add(key)
         findings.append((category, severity, detail, evidence, meta))
 
-    async def _send(method: str, target: str, values: dict, *, follow: bool = True):
-        if method == "POST":
-            return await client.post(target, data=values, timeout=8, follow_redirects=follow)
-        return await client.get(target, params=values, timeout=8, follow_redirects=follow)
+    def _ledger(
+        *,
+        role: str,
+        method: str,
+        target: str,
+        status: int,
+        body: str,
+        final_url: str,
+        headers: Optional[Dict[str, Any]] = None,
+        duration_ms: float = 0.0,
+        probe_class: str = "",
+        probe_name: str = "",
+        parameter: str = "",
+        payload: str = "",
+        resp_class: str = "",
+        result_state: str = "",
+        values: Optional[dict] = None,
+    ) -> None:
+        if stats is None or not hasattr(stats, "record_request"):
+            return
+        try:
+            ledger_url = target
+            if (method or "GET").upper() == "GET" and values:
+                parsed = urlparse(target)
+                ledger_url = urlunparse(
+                    (
+                        parsed.scheme,
+                        parsed.netloc,
+                        parsed.path,
+                        parsed.params,
+                        urlencode(values, doseq=True),
+                        parsed.fragment,
+                    )
+                )
+            ct = ""
+            for hk, hv in dict(headers or {}).items():
+                if str(hk).lower() == "content-type":
+                    ct = str(hv or "")[:120]
+                    break
+            stats.record_request(
+                phase="active_probe",
+                source=probe_class or "active_probe",
+                url=ledger_url,
+                status=status,
+                final_url=final_url or ledger_url,
+                response_type=ct,
+                bytes_=len(body or ""),
+                content_hash=probe_hash(body or ""),
+                raw_hash=probe_hash(body or ""),
+                normalized_hash=probe_hash(body or ""),
+                duration_ms=duration_ms,
+                outcome="ok" if int(status or 0) and int(status) < 400 else "http_error",
+                classification=resp_class or "",
+                probe_class=probe_class,
+                probe_name=probe_name,
+                probe_mode=mode,
+                probe_role=role,
+                parameter=parameter,
+                method=method,
+                payload_redacted=redact_payload(payload),
+                result_state=result_state,
+            )
+        except Exception:
+            pass
+
+    async def _send(
+        method: str,
+        target: str,
+        values: dict,
+        *,
+        follow: bool = True,
+        role: str = "probe",
+        probe_class: str = "",
+        probe_name: str = "",
+        parameter: str = "",
+        payload: str = "",
+        result_state: str = "",
+    ):
+        t0 = time.monotonic()
+        try:
+            if method == "POST":
+                resp = await client.post(target, data=values, timeout=8, follow_redirects=follow)
+            else:
+                resp = await client.get(target, params=values, timeout=8, follow_redirects=follow)
+        except Exception:
+            duration_ms = (time.monotonic() - t0) * 1000.0
+            _ledger(
+                role=role,
+                method=method,
+                target=target,
+                status=0,
+                body="",
+                final_url=target,
+                duration_ms=duration_ms,
+                probe_class=probe_class,
+                probe_name=probe_name,
+                parameter=parameter,
+                payload=payload,
+                resp_class="origin_failure",
+                result_state=result_state or STATE_BASELINE_FAILED,
+                values=values,
+            )
+            raise
+        duration_ms = (time.monotonic() - t0) * 1000.0
+        status = int(getattr(resp, "status_code", 200) or 200)
+        body = getattr(resp, "text", None) or ""
+        headers = dict(getattr(resp, "headers", None) or {})
+        final = str(getattr(resp, "url", "") or "")
+        resp_class = classify_response(status, body, headers)
+        _ledger(
+            role=role,
+            method=method,
+            target=target,
+            status=status,
+            body=body,
+            final_url=final,
+            headers=headers,
+            duration_ms=duration_ms,
+            probe_class=probe_class,
+            probe_name=probe_name,
+            parameter=parameter,
+            payload=payload,
+            resp_class=resp_class,
+            result_state=result_state,
+            values=values,
+        )
+        try:
+            setattr(resp, "_vc_duration_ms", duration_ms)
+        except Exception:
+            pass
+        return resp
 
     def _meta(resp) -> Tuple[int, str, Dict[str, Any], str]:
         status = int(getattr(resp, "status_code", 200) or 200)
@@ -1052,6 +1255,21 @@ async def run_active_probe_kit(
     sql_names = re.compile(
         r"(?i)^(id|uid|user_id|cat|category|item|pid|order|sort|query|q|search|filter|name)$"
     )
+
+    if not (canary_path and canary_content):
+        add(
+            "active_probe_coverage",
+            "info",
+            "Traversal active confirmation: skipped — no controlled canary configured",
+            "traversal_canary_skipped",
+            {
+                "verification": "informational",
+                "confidence": "high",
+                "confidence_reason": "coverage",
+                "proof": {"validation_state": STATE_INCONCLUSIVE, "coverage": coverage},
+                "validation": "unverified",
+            },
+        )
 
     async def probe_field(
         method: str,
@@ -1068,7 +1286,16 @@ async def run_active_probe_kit(
         control_vals = dict(values)
         control_vals[field] = f"VCCTRL_{nonce}"
         try:
-            ctrl_resp = await _send(method, target, control_vals)
+            ctrl_resp = await _send(
+                method,
+                target,
+                control_vals,
+                role="control",
+                probe_class="nonce_control",
+                probe_name="VCCTRL",
+                parameter=field,
+                payload=f"VCCTRL_{nonce}",
+            )
             _, ctrl_body, ctrl_hdrs, _ = _meta(ctrl_resp)
             ctrl_class = classify_response(int(getattr(ctrl_resp, "status_code", 200) or 200), ctrl_body, ctrl_hdrs)
             if is_contaminated(ctrl_class):
@@ -1104,11 +1331,35 @@ async def run_active_probe_kit(
             else:
                 trial[field] = str(trial.get(field) or "1") + spec.payload
 
+            if oob is not None and spec.kind in ("ssrf", "xxe") and spec.meta.get("callback"):
+                try:
+                    oob.register_probe(
+                        str(spec.meta.get("nonce") or nonce),
+                        probe_id=f"{spec.payload_class}:{field}",
+                        endpoint=target,
+                        parameter=field,
+                        category=spec.category,
+                    )
+                except Exception:
+                    pass
+
             try:
                 follow = spec.kind != "redirect"
                 t0 = time.monotonic()
-                resp = await _send(method, target, trial, follow=follow)
-                elapsed_ms = (time.monotonic() - t0) * 1000.0
+                resp = await _send(
+                    method,
+                    target,
+                    trial,
+                    follow=follow,
+                    role="probe",
+                    probe_class=spec.category,
+                    probe_name=spec.payload_class,
+                    parameter=field,
+                    payload=spec.payload,
+                )
+                elapsed_ms = float(getattr(resp, "_vc_duration_ms", 0) or 0) or (
+                    (time.monotonic() - t0) * 1000.0
+                )
                 # CRLF: also try without following; headers matter
                 p_status, p_body, p_hdrs, p_final = _meta(resp)
                 resp_class = classify_response(p_status, p_body, p_hdrs)
@@ -1116,6 +1367,7 @@ async def run_active_probe_kit(
                     continue
 
                 hit = False
+                finding_category = spec.category
                 severity = spec.default_severity
                 validation_state = STATE_DIFFERENTIAL
                 confidence = "medium"
@@ -1124,6 +1376,7 @@ async def run_active_probe_kit(
                 new_evidence: List[str] = []
                 evidence_line = ""
                 compare_meta: Dict[str, Any] = {}
+                browser_meta: Dict[str, Any] = {}
 
                 if spec.kind == "sqli_error":
                     if not _SQL_ERROR_RE.search(p_body or ""):
@@ -1131,7 +1384,17 @@ async def run_active_probe_kit(
                     if _SQL_ERROR_RE.search(baseline_body or ""):
                         continue
                     # Reproduce (step 4)
-                    resp2 = await _send(method, target, trial, follow=True)
+                    resp2 = await _send(
+                        method,
+                        target,
+                        trial,
+                        follow=True,
+                        role="replay",
+                        probe_class=spec.category,
+                        probe_name=spec.payload_class,
+                        parameter=field,
+                        payload=spec.payload,
+                    )
                     _, body2, hdrs2, _ = _meta(resp2)
                     if is_contaminated(classify_response(int(getattr(resp2, "status_code", 200) or 200), body2, hdrs2)):
                         continue
@@ -1165,8 +1428,20 @@ async def run_active_probe_kit(
                     ignore = tuple(p for p in (true_payload, false_payload) if len(p) >= 3)
                     # Repeat false for reproducibility
                     t1 = time.monotonic()
-                    resp2 = await _send(method, target, trial, follow=True)
-                    elapsed2 = (time.monotonic() - t1) * 1000.0
+                    resp2 = await _send(
+                        method,
+                        target,
+                        trial,
+                        follow=True,
+                        role="replay",
+                        probe_class=spec.category,
+                        probe_name=spec.payload_class,
+                        parameter=field,
+                        payload=spec.payload,
+                    )
+                    elapsed2 = float(getattr(resp2, "_vc_duration_ms", 0) or 0) or (
+                        (time.monotonic() - t1) * 1000.0
+                    )
                     s2, b2, _, f2 = _meta(resp2)
                     repeated = ResponseSnap(status=s2, body=b2, final_url=f2, elapsed_ms=elapsed2)
                     baseline_snap = ResponseSnap(
@@ -1205,7 +1480,17 @@ async def run_active_probe_kit(
                     ctrl_vals[field] = str(values.get(field) or "1")
                     tc0 = time.monotonic()
                     try:
-                        await _send(method, target, ctrl_vals, follow=True)
+                        await _send(
+                            method,
+                            target,
+                            ctrl_vals,
+                            follow=True,
+                            role="control",
+                            probe_class=spec.category,
+                            probe_name=spec.payload_class,
+                            parameter=field,
+                            payload=str(ctrl_vals[field]),
+                        )
                     except Exception:
                         pass
                     ctrl_ms = (time.monotonic() - tc0) * 1000.0
@@ -1215,7 +1500,17 @@ async def run_active_probe_kit(
                         continue
                     # Reproduce once
                     t2 = time.monotonic()
-                    await _send(method, target, trial, follow=True)
+                    await _send(
+                        method,
+                        target,
+                        trial,
+                        follow=True,
+                        role="replay",
+                        probe_class=spec.category,
+                        probe_name=spec.payload_class,
+                        parameter=field,
+                        payload=spec.payload,
+                    )
                     elapsed2 = (time.monotonic() - t2) * 1000.0
                     if elapsed2 < min_ms:
                         continue
@@ -1240,15 +1535,36 @@ async def run_active_probe_kit(
                         payload=spec.payload,
                         dom_id=str(spec.meta.get("dom_id") or ""),
                     )
-                    # Optional browser confirm
-                    if spec.meta.get("needs_browser") and settings.browser_evaluate:
+                    if settings.browser_evaluate and (
+                        spec.meta.get("needs_browser")
+                        or (
+                            disp
+                            and disp.get("validation_state")
+                            in (STATE_ATTR_BREAKOUT, STATE_SINK_CANDIDATE)
+                        )
+                    ):
                         try:
-                            page_url = str(p_final or target)
-                            ok = await settings.browser_evaluate(
-                                page_url, f"document.body.dataset.vc === '{token}'"
+                            from active_probe_browser import build_probe_page_url
+
+                            page_url = build_probe_page_url(target, method, trial)
+                            if (method or "GET").upper() == "GET":
+                                page_url = str(p_final or page_url)
+                            eval_result = await settings.browser_evaluate(
+                                page_url,
+                                f"document.body.dataset.vc === '{token}'",
+                                method=method,
+                                post_data=trial if (method or "GET").upper() == "POST" else None,
                             )
-                            if ok:
+                            executed = False
+                            if isinstance(eval_result, dict):
+                                executed = bool(eval_result.get("executed"))
+                                browser_meta = dict(eval_result)
+                            else:
+                                executed = bool(eval_result)
+                                browser_meta = {"executed": executed}
+                            if executed:
                                 hit = True
+                                finding_category = "xss"
                                 severity = "high"
                                 detail_bit = "browser execution confirmed (dataset.vc marker)"
                                 validation_state = STATE_BROWSER_EXEC
@@ -1256,11 +1572,12 @@ async def run_active_probe_kit(
                                 verification = "confirmed"
                                 new_evidence = [f"dataset.vc={token}"]
                                 evidence_line = f"browser_exec: dataset.vc={token}"
-                                disp = None  # already handled
+                                disp = None
                         except Exception:
                             pass
                     if disp:
                         hit = True
+                        finding_category = str(disp.get("category") or spec.category)
                         severity = disp["severity"]
                         detail_bit = disp["detail_bit"]
                         validation_state = disp["validation_state"]
@@ -1268,6 +1585,11 @@ async def run_active_probe_kit(
                         verification = disp["verification"]
                         new_evidence = [detail_bit]
                         evidence_line = f"xss: {token}"
+                        if not settings.browser_evaluate and validation_state != STATE_REFLECTED_ONLY:
+                            detail_bit = (
+                                f"{detail_bit} — XSS execution confirmation unavailable "
+                                "in this scan configuration"
+                            )
 
                 elif spec.kind == "rce":
                     marker = str(spec.meta.get("marker") or "")
@@ -1275,9 +1597,8 @@ async def run_active_probe_kit(
                     if marker and marker in (baseline_body or ""):
                         continue
 
-                    def _rce_isolated(body: str) -> Tuple[bool, List[str]]:
-                        """Calculated output / marker must be isolated from reflected operands."""
-                        evidence: List[str] = []
+                    def _rce_parts(body: str):
+                        evidence = []
                         stripped = body or ""
                         for lit in (
                             spec.payload,
@@ -1290,34 +1611,67 @@ async def run_active_probe_kit(
                         ):
                             if lit:
                                 stripped = stripped.replace(lit, "")
-                        if arith and arith in stripped and arith not in (baseline_body or ""):
-                            evidence.append(f"arith_result={arith}")
+                        has_arith = bool(
+                            arith and arith in stripped and arith not in (baseline_body or "")
+                        )
+                        has_marker = False
                         if marker and marker in stripped and marker not in (baseline_body or ""):
-                            if f"printf {marker}" not in (body or "") and f"echo {marker}" not in (body or ""):
-                                evidence.append(f"marker={marker}")
-                        return bool(evidence), evidence
+                            if f"printf {marker}" not in (body or "") and f"echo {marker}" not in (
+                                body or ""
+                            ):
+                                has_marker = True
+                        if has_arith:
+                            evidence.append(f"arith_result={arith}")
+                        if has_marker:
+                            evidence.append(f"marker={marker}")
+                        return has_arith, has_marker, evidence
 
-                    ok, new_evidence = _rce_isolated(p_body)
-                    if not ok:
+                    has_arith, has_marker, new_evidence = _rce_parts(p_body)
+                    if not has_arith and not has_marker:
                         continue
-                    # Reproduce
-                    resp2 = await _send(method, target, trial, follow=True)
+                    resp2 = await _send(
+                        method,
+                        target,
+                        trial,
+                        follow=True,
+                        role="replay",
+                        probe_class=spec.category,
+                        probe_name=spec.payload_class,
+                        parameter=field,
+                        payload=spec.payload,
+                    )
                     _, body2, hdrs2, _ = _meta(resp2)
                     if is_contaminated(
                         classify_response(int(getattr(resp2, "status_code", 200) or 200), body2, hdrs2)
                     ):
                         continue
-                    ok2, ev2 = _rce_isolated(body2)
-                    if not ok2:
+                    has_arith2, has_marker2, ev2 = _rce_parts(body2)
+                    if has_arith and has_arith2:
+                        hit = True
+                        severity = "critical"
+                        detail_bit = (
+                            "confirmed server-side behavior "
+                            "(arithmetic transformation reproduced)"
+                        )
+                        validation_state = STATE_SERVER_EXEC
+                        confidence = "high"
+                        verification = "confirmed"
+                        new_evidence = [e for e in (new_evidence or ev2) if e.startswith("arith_")]
+                        evidence_line = ",".join(new_evidence)
+                    elif has_marker and has_marker2:
+                        hit = True
+                        severity = "high"
+                        detail_bit = (
+                            "probable command-injection marker output "
+                            "(not arithmetic-confirmed)"
+                        )
+                        validation_state = STATE_MARKER_SIGNAL
+                        confidence = "medium"
+                        verification = "detected"
+                        new_evidence = [e for e in (new_evidence or ev2) if e.startswith("marker=")]
+                        evidence_line = ",".join(new_evidence)
+                    else:
                         continue
-                    hit = True
-                    severity = "critical"
-                    detail_bit = "confirmed server-side behavior (command output / arith, reproduced)"
-                    validation_state = STATE_SERVER_EXEC
-                    confidence = "high"
-                    verification = "confirmed"
-                    new_evidence = new_evidence or ev2
-                    evidence_line = ",".join(new_evidence)
 
                 elif spec.kind == "ssti":
                     arith = str(spec.meta.get("arith") or "")
@@ -1337,7 +1691,17 @@ async def run_active_probe_kit(
                     if not _ssti_isolated(p_body):
                         continue
                     # Reproduce
-                    resp2 = await _send(method, target, trial, follow=True)
+                    resp2 = await _send(
+                        method,
+                        target,
+                        trial,
+                        follow=True,
+                        role="replay",
+                        probe_class=spec.category,
+                        probe_name=spec.payload_class,
+                        parameter=field,
+                        payload=spec.payload,
+                    )
                     _, body2, hdrs2, _ = _meta(resp2)
                     if is_contaminated(
                         classify_response(int(getattr(resp2, "status_code", 200) or 200), body2, hdrs2)
@@ -1374,8 +1738,18 @@ async def run_active_probe_kit(
                             new_evidence = [f"callback_nonce={nonce}"]
                             evidence_line = f"ssrf_callback: {nonce}"
                         else:
-                            # Without listener: never confirm on URL echo
-                            continue
+                            # Never confirm from URL reflection — report unconfirmed probe
+                            hit = True
+                            severity = "info"
+                            detail_bit = (
+                                "SSRF callback probe sent; confirmation unavailable "
+                                "(no correlated callback)"
+                            )
+                            validation_state = STATE_INCONCLUSIVE
+                            confidence = "low"
+                            verification = "detected"
+                            new_evidence = [f"callback_url_redacted={redact_payload(spec.payload)}"]
+                            evidence_line = "ssrf_probe_sent_unconfirmed"
                     elif spec.meta.get("imds"):
                         if not _imds_proof(p_body, baseline_body):
                             continue
@@ -1392,7 +1766,17 @@ async def run_active_probe_kit(
                     # Safe external: path normalization / differential only — never confirmed
                     if not bodies_differ(baseline_body, p_body, ignore=(spec.payload,)):
                         continue
-                    resp2 = await _send(method, target, trial, follow=True)
+                    resp2 = await _send(
+                        method,
+                        target,
+                        trial,
+                        follow=True,
+                        role="replay",
+                        probe_class=spec.category,
+                        probe_name=spec.payload_class,
+                        parameter=field,
+                        payload=spec.payload,
+                    )
                     s2, b2, h2, f2 = _meta(resp2)
                     if is_contaminated(classify_response(s2, b2, h2)):
                         continue
@@ -1453,18 +1837,26 @@ async def run_active_probe_kit(
                         new_evidence = ["passwd_marker"]
                     if not ok:
                         continue
-                    # Canary file confirmation only for owned lab with installed fixture
                     if is_canary:
-                        if mode != "lab" or not settings.traversal_fixture_installed:
+                        if not (canary_path and canary_content):
                             continue
-                        # Reproduce canary once
-                        resp2 = await _send(method, target, trial, follow=True)
+                        resp2 = await _send(
+                            method,
+                            target,
+                            trial,
+                            follow=True,
+                            role="replay",
+                            probe_class=spec.category,
+                            probe_name=spec.payload_class,
+                            parameter=field,
+                            payload=spec.payload,
+                        )
                         _, body2, _, _ = _meta(resp2)
                         if proof and proof not in (body2 or ""):
                             continue
                         hit = True
                         severity = "high"
-                        detail_bit = "canary file confirmed (lab fixture)"
+                        detail_bit = "canary file confirmed (configured fixture)"
                         validation_state = STATE_CANARY_FILE
                         confidence = "high"
                         verification = "confirmed"
@@ -1535,6 +1927,17 @@ async def run_active_probe_kit(
                             verification = "confirmed"
                             new_evidence = [f"xxe_callback={nonce}"]
                             evidence_line = "xxe_oob"
+                        else:
+                            hit = True
+                            severity = "info"
+                            detail_bit = (
+                                "XXE callback probe sent; confirmation unavailable "
+                                "(no correlated callback)"
+                            )
+                            validation_state = STATE_INCONCLUSIVE
+                            confidence = "low"
+                            verification = "detected"
+                            evidence_line = "xxe_probe_sent_unconfirmed"
 
                 if not hit:
                     continue
@@ -1556,10 +1959,19 @@ async def run_active_probe_kit(
                 )
                 if compare_meta:
                     proof["comparison"] = compare_meta
+                if browser_meta:
+                    proof["browser"] = {
+                        "final_url": browser_meta.get("final_url"),
+                        "executed": browser_meta.get("executed"),
+                        "console_errors": browser_meta.get("console_errors") or [],
+                        "csp_blocked": browser_meta.get("csp_blocked") or [],
+                        "browser_request_id": browser_meta.get("browser_request_id"),
+                        "evidence": browser_meta.get("evidence"),
+                    }
                 add(
-                    spec.category,
+                    finding_category,
                     severity,
-                    f"Active {spec.category} {detail_bit} on {source} '{field}' at {target}",
+                    f"Active {finding_category} {detail_bit} on {source} '{field}' at {target}",
                     evidence_line or detail_bit,
                     {
                         "verification": verification,
@@ -1592,7 +2004,14 @@ async def run_active_probe_kit(
         baseline_status = 0
         baseline_final = ""
         try:
-            base_resp = await _send("GET", url, values)
+            base_resp = await _send(
+                "GET",
+                url,
+                values,
+                role="baseline",
+                probe_class="baseline",
+                probe_name="baseline",
+            )
             baseline_status, baseline_body, base_hdrs, baseline_final = _meta(base_resp)
             baseline_ok = not is_contaminated(
                 classify_response(baseline_status, baseline_body, base_hdrs)
@@ -1640,7 +2059,14 @@ async def run_active_probe_kit(
             baseline_status = 0
             baseline_final = ""
             try:
-                base_resp = await _send(method, action, values)
+                base_resp = await _send(
+                    method,
+                    action,
+                    values,
+                    role="baseline",
+                    probe_class="baseline",
+                    probe_name="baseline",
+                )
                 baseline_status, baseline_body, base_hdrs, baseline_final = _meta(base_resp)
                 baseline_ok = not is_contaminated(
                     classify_response(baseline_status, baseline_body, base_hdrs)

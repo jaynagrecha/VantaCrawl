@@ -260,7 +260,13 @@ def config_to_report_meta(config) -> Dict[str, Any]:
         "vuln_active_probe": getattr(config, "vuln_active_probe", False),
         "active_probe_mode": getattr(config, "active_probe_mode", "safe"),
         "ssrf_callback_base": getattr(config, "ssrf_callback_base", "") or "",
+        "oob_callback_poll_url": getattr(config, "oob_callback_poll_url", "") or "",
         "redirect_proof_host": getattr(config, "redirect_proof_host", "") or "",
+        "traversal_canary_path": getattr(config, "traversal_canary_path", "") or "",
+        "traversal_canary_expected_content": getattr(
+            config, "traversal_canary_expected_content", ""
+        )
+        or "",
         "traversal_fixture_installed": bool(
             getattr(config, "traversal_fixture_installed", False)
         ),
