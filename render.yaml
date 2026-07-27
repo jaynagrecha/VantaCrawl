@@ -114,8 +114,8 @@ services:
     plan: free
     region: oregon
     healthCheckPath: /healthz
-    buildCommand: "python -c \"print('ok')\""
-    startCommand: "python vuln_playground/app.py --host 0.0.0.0 --port $PORT"
+    buildCommand: "pip install -r vuln_playground/requirements.txt"
+    startCommand: "cd vuln_playground && python -m waitress --host=0.0.0.0 --port=$PORT --threads=8 wsgi:app"
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.3"

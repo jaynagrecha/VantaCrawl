@@ -40,6 +40,13 @@ class PlaygroundHandler(BaseHTTPRequestHandler):
     # Generic public fingerprint — avoid advertising this as a vuln lab.
     server_version = "Apache/2.4.58 (Unix)"
     sys_version = ""
+    # HTTP/1.0 disables keep-alive; prevents intermittent proxy/CF "Not Found"
+    # races under ThreadingHTTPServer (local fallback only — Render uses Waitress).
+    protocol_version = "HTTP/1.0"
+
+    def setup(self) -> None:
+        super().setup()
+        self.close_connection = True
 
     def log_message(self, fmt: str, *args) -> None:
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
