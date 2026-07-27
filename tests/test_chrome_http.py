@@ -79,3 +79,17 @@ def test_chrome_ua_pool_has_no_linux():
 def test_curl_cffi_available_in_ci_or_skips_softly():
     # Local/CI install should pull curl_cffi from requirements; keep assertion informative.
     assert isinstance(HAS_CURL_CFFI, bool)
+
+
+def test_coalesce_headers_collapses_case_variants():
+    from chrome_http import coalesce_headers
+
+    merged = coalesce_headers(
+        {"accept": "text/html", "User-Agent": "A"},
+        {"Accept": "application/json", "user-agent": "B"},
+    )
+    # One canonical wire name each — last write wins
+    assert "Accept" in merged and "accept" not in merged
+    assert merged["Accept"] == "application/json"
+    assert "User-Agent" in merged and "user-agent" not in merged
+    assert merged["User-Agent"] == "B"

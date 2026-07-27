@@ -18,6 +18,56 @@ log = logging.getLogger(__name__)
 DEFAULT_IMPERSONATE = "chrome146"
 DEFAULT_CHROME_MAJOR = "146"
 
+# Canonical wire names — prevents case-variant duplicates (Akamai 3904016).
+_HEADER_CANON = {
+    "accept": "Accept",
+    "accept-encoding": "Accept-Encoding",
+    "accept-language": "Accept-Language",
+    "cache-control": "Cache-Control",
+    "connection": "Connection",
+    "content-type": "Content-Type",
+    "cookie": "Cookie",
+    "dnt": "DNT",
+    "origin": "Origin",
+    "referer": "Referer",
+    "sec-ch-ua": "Sec-CH-UA",
+    "sec-ch-ua-arch": "Sec-CH-UA-Arch",
+    "sec-ch-ua-bitness": "Sec-CH-UA-Bitness",
+    "sec-ch-ua-full-version": "Sec-CH-UA-Full-Version",
+    "sec-ch-ua-full-version-list": "Sec-CH-UA-Full-Version-List",
+    "sec-ch-ua-mobile": "Sec-CH-UA-Mobile",
+    "sec-ch-ua-model": "Sec-CH-UA-Model",
+    "sec-ch-ua-platform": "Sec-CH-UA-Platform",
+    "sec-ch-ua-platform-version": "Sec-CH-UA-Platform-Version",
+    "sec-fetch-dest": "Sec-Fetch-Dest",
+    "sec-fetch-mode": "Sec-Fetch-Mode",
+    "sec-fetch-site": "Sec-Fetch-Site",
+    "sec-fetch-user": "Sec-Fetch-User",
+    "upgrade-insecure-requests": "Upgrade-Insecure-Requests",
+    "user-agent": "User-Agent",
+}
+
+
+def coalesce_headers(*parts: Optional[Mapping[str, str]]) -> Dict[str, str]:
+    """Merge header maps case-insensitively; last write wins; one name per key on the wire."""
+    out: Dict[str, str] = {}
+    canon_for: Dict[str, str] = {}
+    for part in parts:
+        if not part:
+            continue
+        for key, value in dict(part).items():
+            if value is None:
+                continue
+            lower = str(key).lower()
+            canon = _HEADER_CANON.get(lower, str(key))
+            prev = canon_for.get(lower)
+            if prev and prev in out and prev != canon:
+                del out[prev]
+            canon_for[lower] = canon
+            out[canon] = str(value)
+    return out
+
+
 try:
     from curl_cffi.requests import AsyncSession as CurlAsyncSession
     from curl_cffi.requests.exceptions import RequestException as CurlRequestException
@@ -110,13 +160,12 @@ class StealthAsyncClient:
         params: Any = None,
         **kwargs,
     ) -> CompatResponse:
-        merged = dict(self.headers)
-        if headers:
-            merged.update(dict(headers))
+        caller = dict(headers or {})
+        merged = coalesce_headers(self.headers, caller)
 
         method_u = method.upper()
         # HEAD/OPTIONS/API probes must not claim document navigation — Akamai flags that.
-        accept_l = (merged.get("Accept") or "").lower()
+        accept_l = (merged.get("Accept") or merged.get("accept") or "").lower()
         is_navigation = method_u == "GET" and "application/json" not in accept_l
 
         # Merge query params into the URL (httpx-compatible). curl_cffi does not
@@ -156,9 +205,8 @@ class StealthAsyncClient:
             try:
                 built = await self.evasion.before_request(request_url, is_navigation=is_navigation)
                 # Prefer per-request stealth headers; keep explicit caller overrides
-                for key, value in built.items():
-                    if not headers or key not in headers:
-                        merged[key] = value
+                fill = {k: v for k, v in built.items() if not caller or k not in caller}
+                merged = coalesce_headers(merged, fill)
             except Exception:
                 log.debug("evasion before_request failed", exc_info=True)
         # Strip response-only / bot-tells that should never leave on requests

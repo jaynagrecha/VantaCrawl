@@ -2054,11 +2054,8 @@ async def _check_broken_links(
     async def _one(link: str):
         async with sem:
             try:
-                # HEAD is a common Akamai bot tell — use GET under stealth/WAF targets
-                if prefer_get:
-                    response = await client.get(link, timeout=10, follow_redirects=True)
-                else:
-                    response = await client.head(link, timeout=8, follow_redirects=True)
+                # Always GET — Akamai flags HEAD as bot rule 3904010.
+                response = await client.get(link, timeout=10, follow_redirects=True)
                 if response.status_code >= 400:
                     status = str(response.status_code)
                     # Rate-limited links are inconclusive — never "broken"
