@@ -1,0 +1,9 @@
+secret-admin-panel
+secret-admin-panel/
+leak
+leak/env
+admin
+admin/
+backup
+.env
+config
