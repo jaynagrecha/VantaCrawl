@@ -268,6 +268,43 @@ _LHS_ASSIGN_RE = re.compile(
     r"(?i)(?P<lhs>[A-Za-z_][\w.\-]*?)\s*['\"]?\s*[:=]\s*['\"]?(?P<rhs>[^\s'\"]{3,})\s*$"
 )
 
+# Generated CSS-module / hashed class identifiers (e.g. Shopify "_7ozb2u1e",
+# webpack "Button_password__aB3x"). Not credentials.
+_CSS_MODULE_CLASS_RE = re.compile(
+    r"^(?:"
+    r"_[A-Za-z0-9][A-Za-z0-9_]{3,47}"  # _7ozb2u1e, _abc_12
+    r"|[A-Za-z_][\w-]*__[A-Za-z0-9_-]{2,40}"  # Component_name__hash
+    r")$"
+)
+_CSS_MAP_CONTEXT_NAME_RE = re.compile(
+    r"(?i)\b(?:"
+    r"fieldTypeVariant|field[_-]?type[_-]?variant|"
+    r"classNames?|styles?|classes|variants?|cssModules?|css|"
+    r"styleMap|classMap|locals"
+    r")\b"
+)
+_INPUT_TYPE_VARIANT_KEYS = frozenset(
+    {
+        "number",
+        "tel",
+        "text",
+        "email",
+        "url",
+        "password",
+        "search",
+        "date",
+        "time",
+        "color",
+        "file",
+        "checkbox",
+        "radio",
+        "hidden",
+        "submit",
+        "reset",
+        "button",
+    }
+)
+
 # Exact sensitive segments / known filenames — avoid matching prose paths like backup-restore-policy
 SENSITIVE_PATH_RE = re.compile(
     r"(?i)/(?:"
@@ -546,6 +583,69 @@ def _lhs_is_html_data_or_aria_attr(raw: str) -> bool:
     return lhs.startswith("data-") or lhs.startswith("aria-") or lhs.startswith("data_")
 
 
+def _looks_like_generated_css_class(value: str) -> bool:
+    """True for hashed CSS-module / style-variant class identifiers."""
+    val = (value or "").strip()
+    if not val or len(val) > 64:
+        return False
+    # Real passwords almost always include punctuation or spaces; CSS hashes do not.
+    if re.search(r"[^A-Za-z0-9_\-]", val):
+        return False
+    if not _CSS_MODULE_CLASS_RE.match(val):
+        return False
+    # Prefer opaque hashes (digits mixed in) over plain words like "_password".
+    if val.startswith("_"):
+        body = val[1:]
+        if not any(ch.isdigit() for ch in body):
+            # Allow underscore+alpha only when long enough to look generated
+            if len(body) < 8:
+                return False
+        return True
+    # CSS-modules local: must contain __hash and usually a digit in the hash
+    if "__" in val:
+        return True
+    return False
+
+
+def _count_input_type_class_siblings(ctx: str) -> int:
+    """Count object keys that look like HTML input types mapped to class ids."""
+    if not ctx:
+        return 0
+    found = 0
+    for key in _INPUT_TYPE_VARIANT_KEYS:
+        if re.search(
+            rf'(?i)(?:^|[{{,\s;]){re.escape(key)}\s*:\s*[\'"][_A-Za-z][A-Za-z0-9_\-]{{3,}}[\'"]',
+            ctx,
+        ):
+            found += 1
+    return found
+
+
+def _in_css_class_mapping_context(name: str, surrounding_code: str = "", raw: str = "") -> bool:
+    """True when the assignment sits in a styles/variants/className map."""
+    name_tail = (name or "").strip().rsplit(".", 1)[-1]
+    name_tail_l = name_tail.lower().replace("-", "_")
+    ctx = f"{surrounding_code or ''}\n{raw or ''}\n{name or ''}"
+    if _CSS_MAP_CONTEXT_NAME_RE.search(ctx):
+        return True
+    if name_tail_l in {
+        "classname",
+        "classnames",
+        "class",
+        "classes",
+        "style",
+        "styles",
+        "variant",
+        "variants",
+        "css",
+        "fieldtypevariant",
+    }:
+        return True
+    if _count_input_type_class_siblings(ctx) >= 3:
+        return True
+    return False
+
+
 def classify_secret_candidate(
     name: str,
     value: str,
@@ -565,6 +665,16 @@ def classify_secret_candidate(
     value_norm = re.sub(r"[^a-z0-9]+", "", value_l)
     ctx = (surrounding_code or "") + "\n" + (raw or "")
     ctx_l = ctx.lower()
+
+    # CSS-module / style-variant class maps (Shopify fieldTypeVariant, etc.)
+    if _looks_like_generated_css_class(value or ""):
+        if _in_css_class_mapping_context(name, surrounding_code, raw):
+            return "css_class_mapping_not_secret"
+        # Do not report short opaque CSS-class ids merely because the key is password.
+        if name_tail_l in {"password", "passwd", "pwd"} or name_tail_l.endswith("_password"):
+            return "css_class_mapping_not_secret"
+        if name_tail_l in {"classname", "class", "classes", "style", "styles", "variant", "css"}:
+            return "css_class_mapping_not_secret"
 
     non_secret_norms = {_normalize_field_token(k) for k in _NON_SECRET_LHS_KEYWORDS}
     if name_l in non_secret_norms or name_tail_l.replace("_", "") in {
