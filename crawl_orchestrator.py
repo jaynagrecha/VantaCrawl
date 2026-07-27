@@ -567,16 +567,17 @@ async def run_full_crawl_async(
                     return
                 visited.add(current_url)
             output_callback(f"Crawling: {current_url}")
-            stats.pages_crawled += 1
             stats.queue_size = len(queue)
             operations_since_checkpoint += 1
             if update_progress:
-                stats.session_total_estimate = stats.pages_crawled + len(queue)
+                # pages_crawled updated only after a real HTTP response is recorded
+                est_done = int(getattr(stats, "pages_crawled", 0) or 0)
+                stats.session_total_estimate = est_done + len(queue)
                 emit_download_progress(
                     update_progress,
                     max(stats.session_total_estimate, 1),
-                    stats.pages_crawled,
-                    f"Page {stats.pages_crawled} of ~{stats.session_total_estimate} · queue {len(queue)}",
+                    est_done,
+                    f"Page {est_done} of ~{stats.session_total_estimate} · queue {len(queue)}",
                 )
             try:
                 page_html = None
@@ -660,10 +661,25 @@ async def run_full_crawl_async(
                             normalized_hash=norm_h,
                             outcome="ok" if status_code_t < 400 else "http_error",
                         )
+                        stats.pages_crawled += 1
                     except Exception:
                         pass
                     if hasattr(stats, "note_url_kind"):
                         stats.note_url_kind(current_url, "crawl")
+                elif body is not None:
+                    # Still count a crawl attempt with unknown status into the ledger
+                    try:
+                        stats.record_request(
+                            phase="crawl",
+                            source="page",
+                            url=current_url,
+                            depth=current_depth,
+                            status=0,
+                            outcome="unknown_status",
+                        )
+                        stats.pages_crawled += 1
+                    except Exception:
+                        pass
                 if body:
                     stats.bytes_downloaded += len(body)
 
@@ -687,16 +703,15 @@ async def run_full_crawl_async(
                     output_callback(
                         f"Edge checkpoint ({cp_sig}) — skipping extract/save/security for {current_url}"
                     )
+                    # Annotate the existing crawl ledger row — do not duplicate
                     try:
-                        stats.record_request(
-                            phase="crawl",
-                            source="edge_checkpoint",
-                            url=current_url,
-                            depth=current_depth,
-                            status=status_code_t,
-                            outcome="blocked_inconclusive",
-                            classification=cp_sig,
-                        )
+                        ledger = getattr(stats, "request_ledger", None) or []
+                        for row in reversed(ledger):
+                            if isinstance(row, dict) and row.get("url") == current_url and row.get("phase") == "crawl":
+                                row["classification"] = cp_sig
+                                row["outcome"] = "blocked_inconclusive"
+                                row["source"] = "edge_checkpoint"
+                                break
                     except Exception:
                         pass
                     return
@@ -1119,17 +1134,24 @@ async def run_full_crawl_async(
             )
 
         if await running() and getattr(config, "api_recon", False):
-            from api_recon import run_api_recon
+            if bool(getattr(stats, "enum_edge_blocked", False)) or bool(
+                getattr(stats, "edge_circuit_breaker", False)
+            ):
+                output_callback(
+                    "API recon skipped — edge circuit breaker (checkpoint prevented differentiation)."
+                )
+            else:
+                from api_recon import run_api_recon
 
-            await run_api_recon(
-                config,
-                client,
-                stats=stats,
-                seed_urls=list(discovered) + list(extra_seeds or []),
-                output_callback=output_callback,
-                running=running,
-                update_progress=update_progress,
-            )
+                await run_api_recon(
+                    config,
+                    client,
+                    stats=stats,
+                    seed_urls=list(discovered) + list(extra_seeds or []),
+                    output_callback=output_callback,
+                    running=running,
+                    update_progress=update_progress,
+                )
 
     _persist_checkpoint(config, visited, discovered, queue, link_depths, use_priority)
 
@@ -1293,6 +1315,31 @@ async def _run_full_enum_suite(
         await followup.drain(timeout=45.0)
     else:
         output_callback("Directory enum skipped (wordlist, mutations, and smart order are off).")
+
+    # Circuit breaker: once the target edge checkpoint blocks differentiation,
+    # stop aggressive active phases (cloud/vhost/API) and pause injection probes.
+    edge_blocked = bool(getattr(stats, "enum_edge_blocked", False)) or bool(
+        getattr(stats, "target_content_coverage", "") == "failed"
+    )
+    if edge_blocked:
+        stats.edge_circuit_breaker = True  # type: ignore[attr-defined]
+        stats.vuln_active_probe_paused = True  # type: ignore[attr-defined]
+        try:
+            # Prevent follow-up / later security paths from sending injection probes
+            setattr(config, "vuln_active_probe", False)
+            setattr(config, "s3_enum", False)
+            setattr(config, "gcs_enum", False)
+            setattr(config, "vhost_enum", False)
+            setattr(config, "api_recon_active", False)
+        except Exception:
+            pass
+        output_callback(
+            "Edge circuit breaker — aborting cloud/vhost enum and pausing active injection/"
+            "API probes after uniform edge checkpoint."
+        )
+        if hasattr(stats, "mark_enum_finished"):
+            stats.mark_enum_finished()
+        return
 
     if config.vhost_enum and await running():
         baseline_length, baseline_status = await get_async_baseline(client, config.start_url)
@@ -1673,6 +1720,22 @@ async def _run_security_checks(
             )
         except Exception:
             _hdr_cp = ""
+        # Track HSTS presence on real application responses for contradiction-free reporting
+        hsts_present = False
+        try:
+            for hk, hv in (headers or {}).items():
+                if str(hk).lower() == "strict-transport-security" and str(hv or "").strip():
+                    hsts_present = True
+                    break
+        except Exception:
+            hsts_present = False
+        if hsts_present and not _hdr_cp:
+            seen = getattr(stats, "_hsts_observed_urls", None)
+            if seen is None:
+                stats._hsts_observed_urls = set()  # type: ignore[attr-defined]
+                seen = stats._hsts_observed_urls
+            seen.add(url)
+            stats.hsts_observed = True  # type: ignore[attr-defined]
         if _hdr_cp:
             # Checkpoint HSTS/CSP is irrelevant to application posture
             pass
@@ -1681,6 +1744,10 @@ async def _run_security_checks(
                 d = (detail or "").lower()
                 emit_header = False
                 if "hsts" in d or "strict-transport" in d:
+                    # Do not claim Missing HSTS if we already observed it on an app response
+                    if bool(getattr(stats, "hsts_observed", False)):
+                        stats.hsts_inconsistent = True  # type: ignore[attr-defined]
+                        continue
                     emit_header = scheme == "https" and bool(header_once)
                 elif login_why and (
                     "x-frame" in d or "csp" in d or "content-security" in d

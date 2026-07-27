@@ -55,13 +55,26 @@ def save_enum_checkpoint(
     path_segments: List[str],
     depth: int,
     found_urls: List[str],
+    *,
+    enumeration_state: str = "",
+    remaining_base_words: int = 0,
+    resume_allowed: Optional[bool] = None,
 ):
     payload = {
         "start_url": start_url,
-        "word_index": word_index,
+        "word_index": int(word_index or 0),
+        "last_attempted_word_index": int(word_index or 0),
         "path_segments": path_segments,
         "depth": depth,
         "found_urls": found_urls,
+        "enumeration_state": enumeration_state
+        or ("completed" if remaining_base_words <= 0 else "in_progress"),
+        "remaining_base_words": int(remaining_base_words or 0),
+        "resume_allowed": (
+            bool(resume_allowed)
+            if resume_allowed is not None
+            else bool(remaining_base_words > 0)
+        ),
     }
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as handle:

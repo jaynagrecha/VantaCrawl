@@ -38,6 +38,7 @@ CLASS_CONFIRMED = "confirmed_unique_resource"
 CLASS_PROVISIONAL = "provisional_cluster_representative"
 CLASS_QUARANTINED = "quarantined_probable_fallback"
 CLASS_REVOKED = "revoked_fallback_cluster_anchor"
+CLASS_VALIDATION_INTERRUPTED = "validation_interrupted"
 CLASS_WILDCARD = "wildcard_response"
 CLASS_SOFT_404 = "soft_404"
 CLASS_CASE_VARIANT = "case_variant"
@@ -586,6 +587,63 @@ class HitProvenanceTracker:
             out = list(self.pending_revokes)
             self.pending_revokes.clear()
             return out
+
+    def blocked_cluster_keys_for_edge_abort(self) -> Set[str]:
+        """Content keys whose provisional anchors must revoke on edge abort."""
+        blocked: Set[str] = set()
+        with self._lock:
+            for key, cluster in self.clusters.items():
+                title_l = ""
+                for mem in cluster.members[:3]:
+                    for rec in self.records:
+                        if rec.url == mem and rec.fingerprint:
+                            title_l = (rec.fingerprint.title or "").lower()
+                            break
+                    if title_l:
+                        break
+                if (
+                    cluster.revoked
+                    or cluster.edge_signal
+                    or cluster.should_revoke()
+                    or "checkpoint" in title_l
+                ):
+                    blocked.add(key)
+        return blocked
+
+    def disposition_on_edge_abort(self, url: str) -> Tuple[str, str, str]:
+        """Classify a provisional hit when enum aborts on edge checkpoint.
+
+        Returns (classification, state, acceptance_reason).
+        Distinct fingerprints (e.g. /login) → validation_interrupted.
+        Checkpoint / fallback cluster members → revoked.
+        """
+        content_key = ""
+        with self._lock:
+            for rec in self.records:
+                if rec.url != url:
+                    continue
+                if rec.fingerprint:
+                    content_key = (
+                        rec.fingerprint.normalized_hash or rec.fingerprint.raw_hash or ""
+                    )
+                break
+        blocked_keys = self.blocked_cluster_keys_for_edge_abort()
+        in_blocked = bool(content_key and content_key in blocked_keys)
+        with self._lock:
+            cluster = self.clusters.get(content_key) if content_key else None
+            if cluster and (cluster.revoked or cluster.edge_signal):
+                in_blocked = True
+        if in_blocked:
+            return (
+                CLASS_REVOKED,
+                "revoked",
+                "anchor_of_content_equivalent_fallback_cluster",
+            )
+        return (
+            CLASS_VALIDATION_INTERRUPTED,
+            "validation_interrupted",
+            "edge_blocked_before_final_validation",
+        )
 
     def promote_survivors(self) -> List[EnumHitRecord]:
         """End-of-enum: provisional anchors whose clusters stayed unique → confirmed."""

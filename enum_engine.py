@@ -46,6 +46,7 @@ from enum_validation import (
     CLASS_PROVISIONAL,
     CLASS_REVOKED,
     CLASS_UNVERIFIED,
+    CLASS_VALIDATION_INTERRUPTED,
     CLASS_WILDCARD,
     HitProvenanceTracker,
     ResponseFingerprint,
@@ -1643,29 +1644,75 @@ async def run_pro_directory_enum(
             )
             await handle_hit(probe, 0, force_confirmed=True)
     else:
-        # Edge-blocked: revoke any remaining provisional anchors
+        # Edge-blocked: ONLY revoke provisionals that belong to a checkpoint /
+        # fallback content cluster. Distinct fingerprints (e.g. /login) stay as
+        # validation_interrupted — never globally revoked.
         for url in list(getattr(stats, "enum_provisional_urls", []) or []):
+            classification, state, reason = provenance.disposition_on_edge_abort(url)
             for rec in list(getattr(stats, "enum_hit_records", []) or []):
-                if isinstance(rec, dict) and rec.get("url") == url and not rec.get("validated"):
-                    rec["classification"] = CLASS_REVOKED
-                    rec["state"] = "revoked"
-                    rec["acceptance_reason"] = "anchor_of_content_equivalent_fallback_cluster"
-            output_callback(
-                f"ENUM-REVOKE {url}\n"
-                f"Reason: anchor_of_content_equivalent_fallback_cluster\n"
-                f"Cluster members: blocked-enum"
-            )
+                if not isinstance(rec, dict) or rec.get("url") != url:
+                    continue
+                if rec.get("validated"):
+                    continue
+                rec["classification"] = classification
+                rec["state"] = state
+                rec["acceptance_reason"] = reason
+                if classification == CLASS_REVOKED:
+                    output_callback(
+                        f"ENUM-REVOKE {url}\n"
+                        f"Reason: {reason}\n"
+                        f"Cluster members: blocked-enum"
+                    )
+                else:
+                    output_callback(
+                        f"ENUM-INTERRUPT {url}\n"
+                        f"Reason: {reason}\n"
+                        f"Distinct provisional — not a fallback-cluster anchor"
+                    )
 
     _apply_revokes(provenance.drain_revokes())
 
     if config.false_positive_learning:
         fp_store.save()
-    save_enum_checkpoint(config.enum_checkpoint_file, config.start_url, len(words), [], 0, list(found_set))
-    stats.enum_current_word = ""
-    # Preserve tested count when aborted early
-    if not bool(getattr(stats, "enum_edge_blocked", False)):
+    # Honest checkpoint: never claim the full wordlist was attempted on abort
+    last_index = int(getattr(stats, "enum_base_words_processed", 0) or stats.enum_words_tested or 0)
+    if bool(getattr(stats, "enum_edge_blocked", False)):
+        stats.enum_state = "aborted_edge_checkpoint"  # type: ignore[attr-defined]
+        stats.enum_coverage_complete = False  # type: ignore[attr-defined]
+        stats.enum_resume_allowed = True  # type: ignore[attr-defined]
+        stats.enum_remaining_base_words = max(0, total_words - last_index)  # type: ignore[attr-defined]
+        save_enum_checkpoint(
+            config.enum_checkpoint_file,
+            config.start_url,
+            last_index,
+            [],
+            0,
+            list(found_set),
+            enumeration_state="aborted_edge_checkpoint",
+            remaining_base_words=max(0, total_words - last_index),
+            resume_allowed=True,
+        )
+    else:
+        stats.enum_state = "completed"  # type: ignore[attr-defined]
+        stats.enum_coverage_complete = True  # type: ignore[attr-defined]
+        stats.enum_resume_allowed = False  # type: ignore[attr-defined]
+        stats.enum_remaining_base_words = 0  # type: ignore[attr-defined]
         stats.enum_words_tested = total_words
         stats.enum_base_words_processed = total_words  # type: ignore[attr-defined]
+        save_enum_checkpoint(
+            config.enum_checkpoint_file,
+            config.start_url,
+            len(words),
+            [],
+            0,
+            list(found_set),
+            enumeration_state="completed",
+            remaining_base_words=0,
+            resume_allowed=False,
+        )
+    stats.enum_current_word = ""
+    if hasattr(stats, "mark_enum_finished"):
+        stats.mark_enum_finished()
     edge_blocked = bool(getattr(stats, "enum_edge_blocked", False)) or bool(
         getattr(wildcard, "edge_blocked", False)
     )

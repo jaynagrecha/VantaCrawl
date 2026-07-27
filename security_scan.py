@@ -817,6 +817,31 @@ def audit_security_headers(headers: dict, url: str) -> List[Tuple[str, str, str]
 
 
 def discover_parameters(url: str, body_text: str = "", forms: Optional[List[dict]] = None) -> List[Dict[str, Any]]:
+    # HTML <meta name="…"> values are document metadata, not request parameters
+    _META_NOT_PARAMS = frozenset(
+        {
+            "viewport",
+            "description",
+            "theme-color",
+            "keywords",
+            "author",
+            "robots",
+            "googlebot",
+            "referrer",
+            "color-scheme",
+            "format-detection",
+            "apple-mobile-web-app-capable",
+            "apple-mobile-web-app-status-bar-style",
+            "msapplication-tilecolor",
+            "twitter:card",
+            "twitter:title",
+            "og:title",
+            "og:description",
+            "og:image",
+            "og:type",
+            "og:url",
+        }
+    )
     params = []
     parsed = urlparse(url)
     for name, values in parse_qs(parsed.query).items():
@@ -825,11 +850,20 @@ def discover_parameters(url: str, body_text: str = "", forms: Optional[List[dict
         if match not in {p["name"] for p in params}:
             params.append({"url": url, "name": match, "source": "url_pattern", "sample": []})
     if body_text:
-        for match in re.findall(r'name=["\']([^"\']+)["\']', body_text):
-            params.append({"url": url, "name": match, "source": "html_input", "sample": []})
+        # Prefer real form controls over bare name= attributes (which include <meta>)
+        for match in re.findall(
+            r'(?is)<(?:input|select|textarea)\b[^>]*\bname=["\']([^"\']+)["\']',
+            body_text,
+        ):
+            if match.casefold() in _META_NOT_PARAMS:
+                continue
+            if match not in {p["name"] for p in params}:
+                params.append({"url": url, "name": match, "source": "html_input", "sample": []})
     if forms:
         for form in forms:
             for field in form.get("fields", []):
+                if str(field).casefold() in _META_NOT_PARAMS:
+                    continue
                 params.append({"url": form.get("action", url), "name": field, "source": "form", "sample": []})
     return params
 

@@ -90,16 +90,29 @@ def _takeaways(stats: CrawlStats, finding_groups: List[dict], defense: Optional[
     if stats.subdomain_urls:
         items.append(f"{len(stats.subdomain_urls)} subdomain(s) responded — expand scope review if needed.")
     if defense and defense.get("gap_rate_percent", 0) > 50:
-        items.append("Bot/WAF catch rate looks low — many requests completed without a challenge signal.")
+        # Do not treat mixed-probe catch rates as a protection gap verdict
+        if "OBSERVATIONAL" not in str(defense.get("verdict_title") or ""):
+            items.append(
+                "Bot/WAF challenge signals were sparse in scored scanner traffic (observational only)."
+            )
     if stats.broken_links:
         summary = CrawlStats.summarize_broken_links(stats.broken_links)
-        items.append(
-            f"{summary.get('unique_urls', 0)} unique broken/denied URL(s) "
-            f"({summary.get('unique_404', 0)}×404, "
-            f"{summary.get('unique_access_denied', 0)}×access-denied, "
-            f"{summary.get('unique_fetch_errors', 0)}×fetch-error; "
-            f"{summary.get('rows_total', 0)} raw row(s))."
-        )
+        headline = int(summary.get("unique_404") or 0) + int(summary.get("unique_5xx") or 0)
+        denied = int(summary.get("unique_access_denied") or 0)
+        if headline:
+            items.append(
+                f"{headline} broken link(s) (404/5xx"
+                f"{f'; {denied}×access-denied not counted as broken' if denied else ''})."
+            )
+        elif denied:
+            items.append(
+                f"{denied} access-denied link(s) (401/403) — not counted as broken links."
+            )
+        else:
+            items.append(
+                f"{summary.get('unique_urls', 0)} unique denied/error URL(s) "
+                f"({summary.get('rows_total', 0)} raw row(s))."
+            )
     if not items:
         items.append("No urgent standout items; review the chapters below for coverage details.")
     return items[:8]
