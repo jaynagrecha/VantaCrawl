@@ -1,88 +1,29 @@
-# Vuln Playground — architecture & how to extend
+# Horizon Catalog
 
-Standalone **dirty playground** for scanning with VantaCrawl in prod-like setups.
-This is **not** `acceptance_lab/` (frozen post-PR #81 baseline). Edit freely.
+Intentionally vulnerable web playground for scanner QA and crawl-policy testing.
 
-## Layout
+Public demo: [horizon-catalog.onrender.com](https://horizon-catalog.onrender.com/)
 
-```
-vuln_playground/
-  app.py              # HTTP server, index, local OOB callback/poll
-  http_util.py        # request/response helpers
-  registry.py         # @register decorator + catalog
-  run.sh              # HOST/PORT launcher (default :9080)
-  EXPECTED.md         # ground-truth cheat sheet for scan scoring
-  fixtures/           # canary + sample secrets/files
-  vulns/              # one module per vulnerability family
-```
-
-## Run (local)
+## Quick start
 
 ```bash
-cd vuln_playground
+python3 -m pip install -r requirements.txt
 ./run.sh
-# or
-PORT=9080 python3 app.py
+# or (Render / Waitress)
+python -m waitress --host=0.0.0.0 --port=${PORT:-9080} --threads=8 wsgi:app
 ```
 
-Open `http://127.0.0.1:9080/`. Machine-readable route list: `/catalog.json`.
-Public homepage is intentionally bland (“Horizon Catalog”).
+Open `http://127.0.0.1:9080/`. Machine catalog: `/catalog.json`.
 
-## Deploy (Render)
+## What it covers
 
-Blueprint service name: **`horizon-catalog`** (generic onrender hostname).
-Defined in repo-root `render.yaml`. Start command binds `0.0.0.0:$PORT`.
+XSS, SQLi (error/blind/time/second-order), SSRF, SSTI engines, RCE, LFI/RFI, command injection,
+auth/logic flaws (IDOR, JWT, SAML, OTP), CSRF/CORS/cookies, GraphQL, deserialization,
+cloud/exposure surfaces, and a **robots.txt Disallow bypass** testbed under `/private/*`
+(marker: `ROBOTS_BYPASS_CANARY`).
 
-After it is live, scan:
+See `EXPECTED.md` for ground-truth scoring notes.
 
-```text
-https://horizon-catalog.onrender.com/
-```
+## Safety
 
-Free instances sleep after ~15 minutes idle (cold start on next hit).
-
-Point VantaCrawl at that base URL (Safe / Extended / Lab as you prefer).
-For local OOB SSRF confirmation without an external callback service, configure
-the scanner callback/poll to this same origin:
-
-- callback ping: `http://127.0.0.1:9080/oob/<nonce>/ping`
-- poll: `http://127.0.0.1:9080/oob/poll?nonce=<nonce>`
-
-(Exact wiring depends on your CrawlConfig callback fields — use the playground
-host as the callback base when testing OOB on loopback. On Render, use the
-public `https://horizon-catalog.onrender.com/oob/...` URLs similarly.)
-
-## Safety model
-
-Sinks are **simulated** where dangerous (no real shell, no real IMDS fetch).
-`/ssrf/fetch` does perform real outbound HTTP GETs — only run on networks you control.
-
-## Add / modify a vulnerability
-
-1. Create `vulns/my_thing.py` (or edit an existing family file).
-2. Register a route:
-
-```python
-from http_util import page, send
-from registry import register
-
-@register(
-    "/demo/ping",
-    title="Demo ping",
-    family="demo",
-    expected="none — example route",
-    tags=["active"],
-    notes="Delete me when done.",
-)
-def demo_ping(handler, params, *, head_only=False):
-    send(handler, 200, page("Ping", "<p>pong</p>"), head_only=head_only)
-```
-
-3. Restart `./run.sh`. The index and `/catalog.json` update automatically.
-
-Disable index linking with `linked=False` (still reachable by URL / enum).
-
-## Ground truth
-
-See [EXPECTED.md](./EXPECTED.md) for what VantaCrawl *should* report per route.
-Use that when judging prod scanner behavior (TP / FP / FN).
+This app is deliberately unsafe. Run only in isolated lab environments you own.
