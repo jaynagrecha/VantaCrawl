@@ -37,7 +37,9 @@ _OOB_LOCK = threading.Lock()
 
 
 class PlaygroundHandler(BaseHTTPRequestHandler):
-    server_version = "VantaCrawlVulnPlayground/1.0"
+    # Generic public fingerprint — avoid advertising this as a vuln lab.
+    server_version = "Apache/2.4.58 (Unix)"
+    sys_version = ""
 
     def log_message(self, fmt: str, *args) -> None:
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
@@ -102,29 +104,21 @@ class PlaygroundHandler(BaseHTTPRequestHandler):
         return spec.handler(self, params, head_only=head_only)
 
     def _index(self, head_only: bool = False) -> None:
-        by_family: Dict[str, list] = {}
+        # Public index looks like a mundane product catalog — expected
+        # findings stay in EXPECTED.md /vulns module docs, not on the homepage.
+        links = []
         for spec in linked_index():
-            by_family.setdefault(spec.family, []).append(spec)
-        sections = []
-        for family in sorted(by_family):
-            items = "".join(
-                f'<li><span class="tag">{html.escape(family)}</span>'
-                f'<a href="{html.escape(s.path)}">{html.escape(s.title)}</a> '
-                f'<code>{html.escape(s.path)}</code> — '
-                f'<em>{html.escape(s.expected)}</em></li>'
-                for s in by_family[family]
+            # Prefer bland titles for the public nav
+            label = spec.title.split("(")[0].strip()
+            links.append(
+                f'<li><a href="{html.escape(spec.path)}">{html.escape(label)}</a></li>'
             )
-            sections.append(f"<h2>{html.escape(family)}</h2><ul>{items}</ul>")
         body = page(
-            "VantaCrawl Vuln Playground",
-            "<p><span class='tag'>DIRTY PLAYGROUND</span> "
-            "Standalone intentionally vulnerable target for VantaCrawl prod-style scans. "
-            "Not the acceptance baseline — edit freely under <code>vulns/</code>.</p>"
-            "<p>Machine catalog: <a href='/catalog.json'><code>/catalog.json</code></a> · "
-            "Health: <a href='/healthz'><code>/healthz</code></a> · "
-            "Local OOB: <code>/oob/&lt;nonce&gt;/ping</code> + <code>/oob/poll?nonce=…</code></p>"
-            + "".join(sections)
-            + "<p>Hidden (not linked): <code>/secret-admin-panel</code>, <code>/robots.txt</code></p>",
+            "Horizon Catalog",
+            "<p>Welcome to the Horizon product catalog demo.</p>"
+            "<p>Browse sample tools, account settings, and support utilities.</p>"
+            f"<ul>{''.join(links)}</ul>"
+            "<p><a href='/healthz'>Status</a></p>",
         )
         send(self, 200, body, head_only=head_only)
 
@@ -193,7 +187,7 @@ def main() -> None:
     args = parser.parse_args()
     httpd = ThreadingHTTPServer((args.host, args.port), PlaygroundHandler)
     print(
-        f"vuln playground on http://{args.host}:{args.port}/  "
+        f"horizon-catalog listening on http://{args.host}:{args.port}/  "
         f"(modules={len(loaded)} routes={len(catalog())})",
         flush=True,
     )

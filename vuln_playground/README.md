@@ -16,7 +16,7 @@ vuln_playground/
   vulns/              # one module per vulnerability family
 ```
 
-## Run
+## Run (local)
 
 ```bash
 cd vuln_playground
@@ -26,6 +26,20 @@ PORT=9080 python3 app.py
 ```
 
 Open `http://127.0.0.1:9080/`. Machine-readable route list: `/catalog.json`.
+Public homepage is intentionally bland (“Horizon Catalog”).
+
+## Deploy (Render)
+
+Blueprint service name: **`horizon-catalog`** (generic onrender hostname).
+Defined in repo-root `render.yaml`. Start command binds `0.0.0.0:$PORT`.
+
+After it is live, scan:
+
+```text
+https://horizon-catalog.onrender.com/
+```
+
+Free instances sleep after ~15 minutes idle (cold start on next hit).
 
 Point VantaCrawl at that base URL (Safe / Extended / Lab as you prefer).
 For local OOB SSRF confirmation without an external callback service, configure
@@ -35,7 +49,8 @@ the scanner callback/poll to this same origin:
 - poll: `http://127.0.0.1:9080/oob/poll?nonce=<nonce>`
 
 (Exact wiring depends on your CrawlConfig callback fields — use the playground
-host as the callback base when testing OOB on loopback.)
+host as the callback base when testing OOB on loopback. On Render, use the
+public `https://horizon-catalog.onrender.com/oob/...` URLs similarly.)
 
 ## Safety model
 
