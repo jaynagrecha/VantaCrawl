@@ -103,6 +103,7 @@ def _bind_handler(req: WSGIRequest) -> PlaygroundHandler:
     handler.do_POST = PlaygroundHandler.do_POST.__get__(handler, PlaygroundHandler)  # type: ignore
     handler.do_HEAD = PlaygroundHandler.do_HEAD.__get__(handler, PlaygroundHandler)  # type: ignore
     handler.do_OPTIONS = PlaygroundHandler.do_OPTIONS.__get__(handler, PlaygroundHandler)  # type: ignore
+    handler.do_TRACE = PlaygroundHandler.do_TRACE.__get__(handler, PlaygroundHandler)  # type: ignore
     handler._dispatch = PlaygroundHandler._dispatch.__get__(handler, PlaygroundHandler)  # type: ignore
     handler._index = PlaygroundHandler._index.__get__(handler, PlaygroundHandler)  # type: ignore
     handler._oob = PlaygroundHandler._oob.__get__(handler, PlaygroundHandler)  # type: ignore
@@ -122,6 +123,8 @@ def application(environ: Dict[str, Any], start_response: Callable[..., Any]) -> 
             handler.do_HEAD()
         elif method == "OPTIONS":
             handler.do_OPTIONS()
+        elif method == "TRACE":
+            handler.do_TRACE()
         else:
             req.send_response(405)
             req.send_header("Content-Type", "text/plain; charset=utf-8")

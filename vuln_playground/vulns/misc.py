@@ -192,5 +192,14 @@ def api_user(handler, params: Dict[str, str], *, head_only: bool = False) -> Non
     linked=False,
 )
 def robots(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
-    body = b"User-agent: *\nDisallow: /secret-admin-panel\nDisallow: /leak/\n"
+    body = (
+        b"User-agent: *\n"
+        b"Disallow: /secret-admin-panel\n"
+        b"Disallow: /leak/\n"
+        b"Disallow: /actuator/\n"
+        b"Disallow: /.git/\n"
+        b"Disallow: /backup/\n"
+        b"Disallow: /keys/\n"
+        b"Disallow: /bac/\n"
+    )
     send(handler, 200, body, headers={"Content-Type": "text/plain"}, head_only=head_only)

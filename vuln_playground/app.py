@@ -66,10 +66,13 @@ class PlaygroundHandler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Credentials", "true")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, TRACE")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def do_TRACE(self) -> None:
+        self._dispatch()
 
     def _dispatch(self, head_only: bool = False) -> None:
         parsed = urlparse(self.path)
