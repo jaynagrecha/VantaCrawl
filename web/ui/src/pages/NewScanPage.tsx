@@ -71,9 +71,10 @@ function SettingControl({
   const presets = meta?.presets || [];
 
   const isBool = isToggleField(value, meta);
-  const isNumber = typeof value === "number" || control === "number";
+  const isNumber = typeof value === "number" || control === "number" || control === "number_with_presets";
   const isSelect = control === "select" && options.length > 0;
   const isPresetText = control === "text_with_presets";
+  const isPresetNumber = control === "number_with_presets" && presets.length > 0;
   const isPassword = control === "password";
 
   if (isBool) {
@@ -120,11 +121,12 @@ function SettingControl({
     const text = value == null ? "" : String(value);
     const matched = presets.find((p) => p.value === text);
     return (
-      <div className="field setting-field setting-field-wide">
+      <div className={`field setting-field setting-field-wide ${disabled ? "disabled" : ""}`}>
         <label>{label}</label>
         {help ? <p className="setting-help-inline">{help}</p> : null}
         <select
           value={matched ? text : "__custom__"}
+          disabled={disabled}
           onChange={(e) => {
             if (e.target.value === "__custom__") return;
             onChange(fieldKey, e.target.value);
@@ -139,9 +141,47 @@ function SettingControl({
         </select>
         <input
           value={text}
+          disabled={disabled}
           onChange={(e) => onChange(fieldKey, e.target.value)}
-          placeholder="Comma-separated values"
+          placeholder="Type a custom value or pick a preset"
         />
+      </div>
+    );
+  }
+
+  if (isPresetNumber) {
+    const num = Number(value ?? 0);
+    const current = Number.isFinite(num) ? String(num) : "0";
+    const matched = presets.find((p) => p.value === current);
+    return (
+      <div className={`field setting-field ${disabled ? "disabled" : ""}`}>
+        <label>{label}</label>
+        {help ? <p className="setting-help-inline">{help}</p> : null}
+        <select
+          value={matched ? current : "__custom__"}
+          disabled={disabled}
+          onChange={(e) => {
+            if (e.target.value === "__custom__") return;
+            const next = Number(e.target.value);
+            onChange(fieldKey, Number.isFinite(next) ? next : 0);
+          }}
+        >
+          {presets.map((opt) => (
+            <option key={`${opt.label}:${opt.value}`} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+          <option value="__custom__">Custom (edit below)</option>
+        </select>
+        <input
+          type="number"
+          disabled={disabled}
+          value={Number.isFinite(num) ? num : 0}
+          onChange={(e) => onChange(fieldKey, Number(e.target.value))}
+        />
+        {disabled && fieldKey === "branch_depth_limit" ? (
+          <p className="setting-help-inline">Disabled while Flat enum is on (effective depth = 0).</p>
+        ) : null}
       </div>
     );
   }

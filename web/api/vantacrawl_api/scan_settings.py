@@ -145,7 +145,7 @@ _HUMAN = {
     "vuln_active_probe": ("Active probes", "Send safe injection probes (authorized only)."),
     "active_probe_mode": (
         "Active probe mode",
-        "passive | safe | extended | lab. Safe = crawl-safe mini payloads. Lab = deeper sequences (opt-in only).",
+        "Safe = crawl-safe mini payloads. Extended = broader active coverage. Lab = deeper sequences (opt-in only).",
     ),
     "ssrf_callback_base": (
         "SSRF/XXE callback base",
@@ -311,12 +311,33 @@ _ENUM_METHODS = (
     ("HEAD", "HEAD - lighter probes (often flagged by bot managers)"),
 )
 
+_SCOPE_MODES = (
+    ("exact-origin", "Exact origin - scheme + host + port only"),
+    ("allowed-subdomains", "Allowed subdomains - start host and its subdomains (default)"),
+    ("off", "Off - no host gate at enqueue"),
+)
+
+_ACTIVE_PROBE_MODES = (
+    ("passive", "Passive - discovery only, no active injection"),
+    ("safe", "Safe - crawl-safe mini payloads (default)"),
+    ("extended", "Extended - broader active coverage"),
+    ("lab", "Lab - deeper sequences (opt-in / authorized only)"),
+)
+
 _EXTENSION_PRESETS = (
     ("php,asp,aspx,bak,old,txt,zip,sql,config,env", "Common web + backups"),
     ("php,asp,aspx,jsp,cgi", "Script extensions only"),
     ("bak,old,txt,zip,sql,tar,gz,7z", "Backup / archive focus"),
     ("env,config,yml,yaml,json,ini,conf", "Config / secrets focus"),
     ("", "None (path names only)"),
+)
+
+_DOWNLOAD_EXTENSION_PRESETS = (
+    ("", "All extensions (default)"),
+    ("html,htm,css,js,json,xml,txt", "Web documents"),
+    ("pdf,doc,docx,xls,xlsx,csv", "Office / documents"),
+    ("jpg,jpeg,png,gif,webp,svg,ico", "Images"),
+    ("zip,tar,gz,7z,rar,sql,bak", "Archives / dumps"),
 )
 
 _STATUS_BLACKLIST_PRESETS = (
@@ -326,6 +347,86 @@ _STATUS_BLACKLIST_PRESETS = (
     ("404,403", "Ignore 404 and 403"),
     ("", "None (treat all statuses)"),
 )
+
+_STATUS_WHITELIST_PRESETS = (
+    ("", "No whitelist (default — use blacklist)"),
+    ("200", "200 only"),
+    ("200,301,302", "200 + redirects"),
+    ("200,301,302,401,403", "200 / redirects / auth walls"),
+    ("200,403", "200 and 403"),
+)
+
+_EXCLUDE_LENGTH_PRESETS = (
+    ("", "None (default)"),
+    ("0", "Ignore empty bodies (0)"),
+    ("0,43", "Ignore empty + tiny soft-404s"),
+)
+
+_ENUM_PREFIX_PRESETS = (
+    ("", "Auto / none (default)"),
+    ("/,/admin/,/api/,/backup/", "Common high-value prefixes"),
+    ("/,/api/,/v1/,/v2/,/graphql/", "API-focused"),
+    ("/,/wp-admin/,/wp-content/,/wp-includes/", "WordPress-ish"),
+)
+
+_API_AUTH_HEADER_PRESETS = (
+    ("Authorization", "Authorization (default)"),
+    ("X-API-Key", "X-API-Key"),
+    ("X-Auth-Token", "X-Auth-Token"),
+    ("Api-Key", "Api-Key"),
+    ("", "None / custom"),
+)
+
+_REDIRECT_PROOF_PRESETS = (
+    ("redirect-proof.vantacrawl-lab.example", "Built-in lab proof host (default)"),
+    ("example.com", "example.com"),
+    ("https://example.com", "https://example.com"),
+    ("", "Empty (skip external proof host)"),
+)
+
+_SSRF_CALLBACK_PRESETS = (
+    ("", "Empty - skip OOB confirm (default)"),
+    ("https://oast.example", "https://oast.example (placeholder)"),
+    ("http://127.0.0.1:8080", "Local listener http://127.0.0.1:8080"),
+)
+
+_OOB_POLL_PRESETS = (
+    ("", "Empty - no poller (default)"),
+    ("https://poll.oast.example/poll", "Interactsh-style poll URL (placeholder)"),
+)
+
+_TRAVERSAL_CANARY_PATH_PRESETS = (
+    ("", "Empty - skip canary probes (default)"),
+    ("etc/passwd", "etc/passwd (Unix lab)"),
+    ("windows/win.ini", "windows/win.ini (Windows lab)"),
+    ("var/www/html/canary.txt", "var/www/html/canary.txt"),
+)
+
+_TRAVERSAL_CANARY_CONTENT_PRESETS = (
+    ("", "Empty - skip canary confirm (default)"),
+    ("root:x:0:0:", "Unix passwd marker (root:x:0:0:)"),
+    ("for 16-bit app support", "win.ini marker"),
+    ("VANTA_TRAVERSAL_CANARY", "Lab canary token"),
+)
+
+_SECRET_ORG_HINT_PRESETS = (
+    ("", "None (auto from start URL)"),
+)
+
+_PROXY_URL_PRESETS = (
+    ("", "None (direct)"),
+    ("http://127.0.0.1:8080", "Local HTTP proxy :8080"),
+    ("http://127.0.0.1:8888", "Local HTTP proxy :8888"),
+    ("socks5://127.0.0.1:1080", "Local SOCKS5 :1080"),
+)
+
+
+def _preset_pairs(*pairs: tuple[str, str]) -> List[Dict[str, str]]:
+    return [{"value": value, "label": label} for value, label in pairs]
+
+
+def _number_presets(*pairs: tuple[str | int | float, str]) -> List[Dict[str, str]]:
+    return [{"value": str(value), "label": label} for value, label in pairs]
 
 
 def _field(
@@ -356,37 +457,7 @@ def setting_fields() -> Dict[str, Dict[str, Any]]:
         "aggressive": "Aggressive - max impersonation / jitter",
     }
     fields = {
-        "evasion_level": _field(
-            "evasion_level",
-            control="select",
-            options=[{"value": level, "label": level_labels.get(level, level)} for level in LEVELS],
-        ),
-        "evasion_browser": _field("evasion_browser", control="select", options=browser_opts),
-        "evasion_ua_strategy": _field(
-            "evasion_ua_strategy",
-            control="select",
-            options=[{"value": value, "label": label} for value, label in _UA_STRATEGIES],
-        ),
-        "enum_method": _field(
-            "enum_method",
-            control="select",
-            options=[{"value": value, "label": label} for value, label in _ENUM_METHODS],
-        ),
-        "api_recon_method": _field(
-            "api_recon_method",
-            control="select",
-            options=[{"value": value, "label": label} for value, label in _ENUM_METHODS],
-        ),
-        "enum_extensions": _field(
-            "enum_extensions",
-            control="text_with_presets",
-            presets=[{"value": value, "label": label} for value, label in _EXTENSION_PRESETS],
-        ),
-        "enum_status_blacklist": _field(
-            "enum_status_blacklist",
-            control="text_with_presets",
-            presets=[{"value": value, "label": label} for value, label in _STATUS_BLACKLIST_PRESETS],
-        ),
+        # --- Core ---
         "profile": _field(
             "profile",
             control="select",
@@ -397,9 +468,265 @@ def setting_fields() -> Dict[str, Dict[str, Any]]:
                 {"value": "gobuster", "label": "Gobuster-style - enum-heavy"},
             ],
         ),
-        "auth_password": _field("auth_password", control="password"),
-        "login_password": _field("login_password", control="password"),
-        "api_auth_header_value": _field("api_auth_header_value", control="password"),
+        "scope_mode": _field(
+            "scope_mode",
+            control="select",
+            options=_preset_pairs(*_SCOPE_MODES),
+        ),
+        "max_depth": _field(
+            "max_depth",
+            control="number_with_presets",
+            presets=_number_presets(
+                (1, "1 - shallow"),
+                (2, "2 - light"),
+                (3, "3 - default"),
+                (5, "5 - deeper"),
+                (8, "8 - deep"),
+                (0, "0 - uncapped / rely on other limits"),
+            ),
+        ),
+        "link_depth_limit": _field(
+            "link_depth_limit",
+            control="number_with_presets",
+            presets=_number_presets(
+                (0, "0 - off (default)"),
+                (2, "2"),
+                (3, "3"),
+                (5, "5"),
+                (10, "10"),
+            ),
+        ),
+        "branch_depth_limit": _field(
+            "branch_depth_limit",
+            control="number_with_presets",
+            presets=_number_presets(
+                (0, "0 - off (default)"),
+                (1, "1"),
+                (2, "2"),
+                (3, "3"),
+                (5, "5"),
+            ),
+        ),
+        "max_values_per_parameter": _field(
+            "max_values_per_parameter",
+            control="number_with_presets",
+            presets=_number_presets((1, "1"), (2, "2 - default"), (3, "3"), (5, "5"), (10, "10")),
+        ),
+        "max_query_variants_per_endpoint": _field(
+            "max_query_variants_per_endpoint",
+            control="number_with_presets",
+            presets=_number_presets((1, "1"), (2, "2"), (3, "3 - default"), (5, "5"), (10, "10")),
+        ),
+        "max_instances_per_route_template": _field(
+            "max_instances_per_route_template",
+            control="number_with_presets",
+            presets=_number_presets((1, "1"), (2, "2 - default"), (3, "3"), (5, "5"), (10, "10")),
+        ),
+        "max_locales_per_route_template": _field(
+            "max_locales_per_route_template",
+            control="number_with_presets",
+            presets=_number_presets((1, "1"), (2, "2 - default"), (3, "3"), (5, "5")),
+        ),
+        "crawl_concurrency": _field(
+            "crawl_concurrency",
+            control="number_with_presets",
+            presets=_number_presets(
+                (1, "1 - serial"),
+                (2, "2 - gentle"),
+                (4, "4 - default"),
+                (8, "8 - faster"),
+                (12, "12 - aggressive"),
+            ),
+        ),
+        "enum_concurrency": _field(
+            "enum_concurrency",
+            control="number_with_presets",
+            presets=_number_presets(
+                (10, "10 - gentle"),
+                (20, "20"),
+                (35, "35 - default"),
+                (50, "50"),
+                (80, "80 - aggressive"),
+            ),
+        ),
+        "download_concurrency": _field(
+            "download_concurrency",
+            control="number_with_presets",
+            presets=_number_presets((2, "2"), (4, "4"), (6, "6 - default"), (10, "10"), (16, "16")),
+        ),
+        # --- Discovery ---
+        "subdomain_enum_limit": _field(
+            "subdomain_enum_limit",
+            control="number_with_presets",
+            presets=_number_presets(
+                (100, "100 - light"),
+                (250, "250"),
+                (500, "500 - default"),
+                (1000, "1000"),
+                (5000, "5000 - heavy"),
+            ),
+        ),
+        "api_recon_word_limit": _field(
+            "api_recon_word_limit",
+            control="number_with_presets",
+            presets=_number_presets(
+                (500, "500 - light"),
+                (1000, "1000"),
+                (3000, "3000 - default"),
+                (5000, "5000"),
+                (10000, "10000 - heavy"),
+            ),
+        ),
+        "api_recon_method": _field(
+            "api_recon_method",
+            control="select",
+            options=_preset_pairs(*_ENUM_METHODS),
+        ),
+        "api_auth_header_name": _field(
+            "api_auth_header_name",
+            control="text_with_presets",
+            presets=_preset_pairs(*_API_AUTH_HEADER_PRESETS),
+        ),
+        # --- Directory enum ---
+        "enum_method": _field(
+            "enum_method",
+            control="select",
+            options=_preset_pairs(*_ENUM_METHODS),
+        ),
+        "enum_extensions": _field(
+            "enum_extensions",
+            control="text_with_presets",
+            presets=_preset_pairs(*_EXTENSION_PRESETS),
+        ),
+        "enum_status_blacklist": _field(
+            "enum_status_blacklist",
+            control="text_with_presets",
+            presets=_preset_pairs(*_STATUS_BLACKLIST_PRESETS),
+        ),
+        "enum_status_whitelist": _field(
+            "enum_status_whitelist",
+            control="text_with_presets",
+            presets=_preset_pairs(*_STATUS_WHITELIST_PRESETS),
+        ),
+        "exclude_lengths": _field(
+            "exclude_lengths",
+            control="text_with_presets",
+            presets=_preset_pairs(*_EXCLUDE_LENGTH_PRESETS),
+        ),
+        "enum_prefixes": _field(
+            "enum_prefixes",
+            control="text_with_presets",
+            presets=_preset_pairs(*_ENUM_PREFIX_PRESETS),
+        ),
+        "enum_word_limit": _field(
+            "enum_word_limit",
+            control="number_with_presets",
+            presets=_number_presets(
+                (0, "0 - entire wordlist (default)"),
+                (500, "500"),
+                (2000, "2000"),
+                (5000, "5000"),
+                (20000, "20000"),
+            ),
+        ),
+        "mutation_max_candidates": _field(
+            "mutation_max_candidates",
+            control="number_with_presets",
+            presets=_number_presets(
+                (5000, "5000 - light"),
+                (20000, "20000"),
+                (50000, "50000 - default"),
+                (100000, "100000"),
+            ),
+        ),
+        "enum_redirect_max_hops": _field(
+            "enum_redirect_max_hops",
+            control="number_with_presets",
+            presets=_number_presets((1, "1"), (3, "3"), (5, "5 - default"), (8, "8"), (10, "10")),
+        ),
+        "enum_similarity_threshold": _field(
+            "enum_similarity_threshold",
+            control="number_with_presets",
+            presets=_number_presets(
+                (30, "30 - looser"),
+                (40, "40"),
+                (50, "50 - default"),
+                (70, "70 - stricter"),
+                (85, "85 - very strict"),
+            ),
+        ),
+        "enum_checkpoint_interval": _field(
+            "enum_checkpoint_interval",
+            control="number_with_presets",
+            presets=_number_presets(
+                (1000, "1000"),
+                (2500, "2500"),
+                (5000, "5000 - default"),
+                (10000, "10000"),
+            ),
+        ),
+        # --- Security ---
+        "active_probe_mode": _field(
+            "active_probe_mode",
+            control="select",
+            options=_preset_pairs(*_ACTIVE_PROBE_MODES),
+        ),
+        "ssrf_callback_base": _field(
+            "ssrf_callback_base",
+            control="text_with_presets",
+            presets=_preset_pairs(*_SSRF_CALLBACK_PRESETS),
+        ),
+        "oob_callback_poll_url": _field(
+            "oob_callback_poll_url",
+            control="text_with_presets",
+            presets=_preset_pairs(*_OOB_POLL_PRESETS),
+        ),
+        "redirect_proof_host": _field(
+            "redirect_proof_host",
+            control="text_with_presets",
+            presets=_preset_pairs(*_REDIRECT_PROOF_PRESETS),
+        ),
+        "traversal_canary_path": _field(
+            "traversal_canary_path",
+            control="text_with_presets",
+            presets=_preset_pairs(*_TRAVERSAL_CANARY_PATH_PRESETS),
+        ),
+        "traversal_canary_expected_content": _field(
+            "traversal_canary_expected_content",
+            control="text_with_presets",
+            presets=_preset_pairs(*_TRAVERSAL_CANARY_CONTENT_PRESETS),
+        ),
+        "secret_validate_max": _field(
+            "secret_validate_max",
+            control="number_with_presets",
+            presets=_number_presets((5, "5"), (10, "10"), (25, "25 - default"), (50, "50"), (100, "100")),
+        ),
+        "secret_org_hints": _field(
+            "secret_org_hints",
+            control="text_with_presets",
+            presets=_preset_pairs(*_SECRET_ORG_HINT_PRESETS),
+        ),
+        "broken_link_sample_size": _field(
+            "broken_link_sample_size",
+            control="number_with_presets",
+            presets=_number_presets(
+                (0, "0 - off"),
+                (10, "10 - light"),
+                (30, "30 - default"),
+                (50, "50"),
+                (100, "100"),
+            ),
+        ),
+        "active_probe_max_params": _field(
+            "active_probe_max_params",
+            control="number_with_presets",
+            presets=_number_presets((3, "3"), (5, "5"), (8, "8 - default"), (12, "12"), (20, "20")),
+        ),
+        "active_probe_max_forms": _field(
+            "active_probe_max_forms",
+            control="number_with_presets",
+            presets=_number_presets((1, "1"), (2, "2"), (3, "3 - default"), (5, "5"), (10, "10")),
+        ),
         "nuclei_severity": _field(
             "nuclei_severity",
             control="select",
@@ -410,6 +737,89 @@ def setting_fields() -> Dict[str, Dict[str, Any]]:
                 {"value": "low,medium,high,critical", "label": "low through critical"},
                 {"value": "info,low,medium,high,critical", "label": "all severities"},
             ],
+        ),
+        # --- Download / mirror ---
+        "extensions": _field(
+            "extensions",
+            control="text_with_presets",
+            presets=_preset_pairs(*_DOWNLOAD_EXTENSION_PRESETS),
+        ),
+        "bm_cookie_wait_seconds": _field(
+            "bm_cookie_wait_seconds",
+            control="number_with_presets",
+            presets=_number_presets(
+                (0, "0 - body-only / no BM wait"),
+                (6, "6 - faster"),
+                (12, "12 - default"),
+                (20, "20 - patient"),
+                (30, "30 - slow targets"),
+            ),
+        ),
+        # --- Connection & auth ---
+        "proxy_url": _field(
+            "proxy_url",
+            control="text_with_presets",
+            presets=_preset_pairs(*_PROXY_URL_PRESETS),
+        ),
+        "auth_password": _field("auth_password", control="password"),
+        "login_password": _field("login_password", control="password"),
+        "api_auth_header_value": _field("api_auth_header_value", control="password"),
+        # --- Operations ---
+        "checkpoint_interval": _field(
+            "checkpoint_interval",
+            control="number_with_presets",
+            presets=_number_presets((10, "10"), (25, "25"), (50, "50 - default"), (100, "100"), (250, "250")),
+        ),
+        "disk_space_guard_mb": _field(
+            "disk_space_guard_mb",
+            control="number_with_presets",
+            presets=_number_presets(
+                (100, "100 MB"),
+                (250, "250 MB"),
+                (500, "500 MB - default"),
+                (1000, "1 GB"),
+                (2000, "2 GB"),
+            ),
+        ),
+        "schedule_interval_hours": _field(
+            "schedule_interval_hours",
+            control="number_with_presets",
+            presets=_number_presets(
+                (0, "0 - run once (default)"),
+                (1, "1 hour"),
+                (6, "6 hours"),
+                (12, "12 hours"),
+                (24, "24 hours"),
+                (168, "Weekly (168h)"),
+            ),
+        ),
+        # --- Stealth ---
+        "evasion_level": _field(
+            "evasion_level",
+            control="select",
+            options=[{"value": level, "label": level_labels.get(level, level)} for level in LEVELS],
+        ),
+        "evasion_browser": _field("evasion_browser", control="select", options=browser_opts),
+        "evasion_ua_strategy": _field(
+            "evasion_ua_strategy",
+            control="select",
+            options=_preset_pairs(*_UA_STRATEGIES),
+        ),
+        "evasion_jitter_min_ms": _field(
+            "evasion_jitter_min_ms",
+            control="number_with_presets",
+            presets=_number_presets((0, "0"), (25, "25"), (50, "50 - default"), (100, "100"), (200, "200")),
+        ),
+        "evasion_jitter_max_ms": _field(
+            "evasion_jitter_max_ms",
+            control="number_with_presets",
+            presets=_number_presets(
+                (100, "100"),
+                (250, "250"),
+                (400, "400 - default"),
+                (800, "800"),
+                (1500, "1500 - slow"),
+            ),
         ),
     }
     # Defaults for every editable key so the UI always has a human label
