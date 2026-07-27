@@ -1,0 +1,8 @@
+secret-admin-panel
+admin
+backup
+robots.txt
+soft404-seed
+wildcard-seed
+does-not-exist-abc
+xyz-missing

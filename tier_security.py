@@ -970,8 +970,23 @@ def scan_ssrf_param_candidates(url: str) -> List[Finding]:
             (
                 "ssrf",
                 "info",
-                "SSRF-prone parameter with URL value (candidate): " + ", ".join(interesting[:4]),
+                (
+                    "Passive candidate — SSRF-prone parameter with URL value. "
+                    "Validation: unverified. Active testing: not performed. "
+                    + ", ".join(interesting[:4])
+                ),
                 _ev(", ".join(interesting[:4]), label="ssrf_candidate"),
+                {
+                    "verification": "detected",
+                    "confidence": "low",
+                    "confidence_reason": "passive_candidate",
+                    "validation": "unverified",
+                    "proof": {
+                        "validation_state": "passive_candidate",
+                        "active_testing": "not_performed",
+                        "label": "Passive candidate",
+                    },
+                },
             )
         )
     return findings

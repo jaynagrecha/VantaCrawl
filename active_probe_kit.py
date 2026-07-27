@@ -10,6 +10,7 @@ auto-enabled for arbitrary public targets.
 from __future__ import annotations
 
 import hashlib
+import html
 import re
 import secrets
 import time
@@ -152,13 +153,52 @@ def _xss_names(name: str) -> bool:
 
 
 def _ssrf_names(name: str) -> bool:
+    # Intentionally excludes redirect-only params (next/continue/return) so
+    # /redirect?next= is confirmed as open redirect, never as SSRF.
     return bool(
         re.match(
             r"(?i)^(url|uri|link|src|source|dest|destination|redirect|redirect_uri|"
-            r"callback|feed|path|site|domain|host|target|fetch|proxy|next|continue|return)$",
+            r"callback|feed|path|site|domain|host|target|fetch|proxy)$",
             name,
         )
     )
+
+
+def _numeric_param(name: str) -> bool:
+    return bool(
+        re.match(
+            r"(?i)^(id|uid|user_id|pid|item|cat|category|order|sort)$",
+            name,
+        )
+    )
+
+
+def _search_param(name: str) -> bool:
+    return bool(
+        re.match(
+            r"(?i)^(q|query|search|s|keyword|term|filter|name|title|message|comment|text|content|input)$",
+            name,
+        )
+    )
+
+
+def _sql_error_match(body: str) -> Optional[re.Match]:
+    """Match SQL errors on HTML-entity-decoded visible text only."""
+    decoded = html.unescape(body or "")
+    return _SQL_ERROR_RE.search(decoded)
+
+
+def _should_replace_mutation(spec: "ProbeSpec", field: str) -> bool:
+    if spec.meta.get("replace"):
+        return True
+    if spec.kind == "xss" and spec.payload_class != "xss_reflect":
+        return True
+    if spec.kind in ("redirect", "ssrf", "ssti", "crlf", "xxe", "traversal", "traversal_diff", "rce"):
+        return True
+    # Numeric ID context → replace; search/string params → append (caller default)
+    if spec.kind in ("sqli_error", "sqli_time") and _numeric_param(field):
+        return True
+    return False
 
 
 def _file_names(name: str) -> bool:
@@ -276,13 +316,14 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
     cb = (settings.callback_base or "").rstrip("/")
     redirect_dest = f"https://{settings.redirect_proof_host}/{nonce}"
     canary_path, canary_content = resolve_traversal_canary(settings, nonce)
-    # High-entropy OOB nonce (never reuse short XSS markers for callbacks)
-    try:
-        from oob_callback import new_oob_nonce
 
-        oob_nonce = new_oob_nonce()
-    except Exception:
-        oob_nonce = secrets.token_hex(16)
+    def _fresh_oob() -> str:
+        try:
+            from oob_callback import new_oob_nonce
+
+            return new_oob_nonce()
+        except Exception:
+            return secrets.token_hex(16)
 
     specs: List[ProbeSpec] = []
 
@@ -510,36 +551,39 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
         )
 
     # --- SSRF ---
+    # Unique nonce per payload family instance (never share across probes).
     if cb:
+        ping_nonce = _fresh_oob()
+        redir_nonce = _fresh_oob()
         specs.append(
             ProbeSpec(
                 "ssrf",
-                f"{cb}/{oob_nonce}/ping",
+                f"{cb}/{ping_nonce}/ping",
                 "ssrf_callback_ping",
                 _ssrf_names,
                 "high",
                 "ssrf",
                 {
-                    "nonce": oob_nonce,
+                    "nonce": ping_nonce,
                     "callback": True,
-                    "expected_path": f"/{oob_nonce}/ping",
-                    "callback_url": f"{cb}/{oob_nonce}/ping",
+                    "expected_path": f"/{ping_nonce}/ping",
+                    "callback_url": f"{cb}/{ping_nonce}/ping",
                 },
             )
         )
         specs.append(
             ProbeSpec(
                 "ssrf",
-                f"{cb}/{oob_nonce}/redirect",
+                f"{cb}/{redir_nonce}/redirect",
                 "ssrf_callback_redirect",
                 _ssrf_names,
                 "high",
                 "ssrf",
                 {
-                    "nonce": oob_nonce,
+                    "nonce": redir_nonce,
                     "callback": True,
-                    "expected_path": f"/{oob_nonce}/redirect",
-                    "callback_url": f"{cb}/{oob_nonce}/redirect",
+                    "expected_path": f"/{redir_nonce}/redirect",
+                    "callback_url": f"{cb}/{redir_nonce}/redirect",
                 },
             )
         )
@@ -661,10 +705,11 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
         )
 
     # --- CRLF ---
+    # Use raw CRLF so httpx encodes once; pre-encoded %0d%0a would double-encode.
     specs.append(
         ProbeSpec(
             "header_injection",
-            f"%0d%0aX-VantaCrawl-Proof:%20{nonce}",
+            f"\r\nX-VantaCrawl-Proof: {nonce}",
             "crlf_header",
             lambda n: bool(re.match(r"(?i)^(q|query|search|name|url|redirect|next|file|path)$", n)),
             "high",
@@ -675,9 +720,10 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
 
     # --- XXE (lab only, OOB callback) ---
     if mode == "lab" and cb:
+        xxe_nonce = _fresh_oob()
         xxe = (
             '<?xml version="1.0"?>'
-            f'<!DOCTYPE r [<!ENTITY xxe SYSTEM "{cb}/{oob_nonce}/xxe">]>'
+            f'<!DOCTYPE r [<!ENTITY xxe SYSTEM "{cb}/{xxe_nonce}/xxe">]>'
             "<r>&xxe;</r>"
         )
         specs.append(
@@ -689,10 +735,10 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
                 "high",
                 "xxe",
                 {
-                    "nonce": oob_nonce,
+                    "nonce": xxe_nonce,
                     "callback": True,
-                    "expected_path": f"/{oob_nonce}/xxe",
-                    "callback_url": f"{cb}/{oob_nonce}/xxe",
+                    "expected_path": f"/{xxe_nonce}/xxe",
+                    "callback_url": f"{cb}/{xxe_nonce}/xxe",
                 },
             )
         )
@@ -1120,9 +1166,9 @@ async def run_active_probe_kit(
     seen: set = set()
     stats = settings.stats
     oob = settings.oob
-    from active_probe_breaker import ActiveProbeBreaker, stop_active_probes
+    from active_probe_breaker import get_shared_breaker, stop_active_probes
 
-    breaker = ActiveProbeBreaker()
+    breaker = get_shared_breaker(stats)
     if stats is not None and bool(getattr(stats, "vuln_active_probe_paused", False)):
         settings.coverage_notes = {
             "active_probe": "paused",
@@ -1199,7 +1245,24 @@ async def run_active_probe_kit(
     settings.coverage_notes = coverage
     if stats is not None:
         try:
+            prev = dict(getattr(stats, "active_probe_coverage", None) or {})
+            # Aggregate coverage counters across pages (not one finding per skip).
+            agg = dict(prev.get("aggregate") or {})
+            if not (canary_path and canary_content):
+                agg["traversal_skipped_endpoints"] = int(agg.get("traversal_skipped_endpoints") or 0) + 1
+                agg["traversal_skip_reason"] = "no applicable fixture/parameter"
+            else:
+                agg["traversal_canary_endpoints"] = int(agg.get("traversal_canary_endpoints") or 0) + 1
+            coverage["aggregate"] = agg
+            if agg.get("traversal_skipped_endpoints"):
+                coverage["message"] = (
+                    f"Traversal confirmation skipped on {agg['traversal_skipped_endpoints']} endpoints"
+                )
+                coverage["detail"] = f"Reason: {agg.get('traversal_skip_reason') or 'no applicable fixture/parameter'}"
             stats.active_probe_coverage = dict(coverage)
+            # Keep shared breaker snapshot current for JSON/SQLite export
+            if hasattr(breaker, "snapshot"):
+                stats.active_probe_breaker = breaker.snapshot()
         except Exception:
             pass
 
@@ -1293,7 +1356,15 @@ async def run_active_probe_kit(
             if method == "POST":
                 resp = await client.post(target, data=values, timeout=8, follow_redirects=follow)
             else:
-                resp = await client.get(target, params=values, timeout=8, follow_redirects=follow)
+                # Strip existing query from target — params=values is authoritative.
+                # (Also protects clients that ignore/merge params poorly.)
+                parsed_t = urlparse(target)
+                clean_target = urlunparse(
+                    (parsed_t.scheme, parsed_t.netloc, parsed_t.path, parsed_t.params, "", parsed_t.fragment)
+                )
+                resp = await client.get(
+                    clean_target, params=values, timeout=8, follow_redirects=follow
+                )
         except Exception:
             duration_ms = (time.monotonic() - t0) * 1000.0
             _ledger(
@@ -1321,7 +1392,24 @@ async def run_active_probe_kit(
         resp_class = classify_response(status, body, headers)
         if role in ("probe", "replay", "control", "baseline"):
             if breaker.note(resp_class):
-                stop_active_probes(stats, reason=breaker.reason, remaining="inconclusive")
+                # Estimate remaining probes roughly for export
+                remaining = 0
+                try:
+                    remaining = max(0, len(specs) * max(1, int(settings.max_params or 1)) // 2)
+                except Exception:
+                    remaining = 0
+                stop_active_probes(
+                    stats,
+                    reason=breaker.reason,
+                    remaining="inconclusive",
+                    remaining_probes=remaining,
+                    breaker=breaker,
+                )
+            elif stats is not None and hasattr(breaker, "snapshot"):
+                try:
+                    stats.active_probe_breaker = breaker.snapshot()
+                except Exception:
+                    pass
         _ledger(
             role=role,
             method=method,
@@ -1356,7 +1444,9 @@ async def run_active_probe_kit(
         r"(?i)^(id|uid|user_id|cat|category|item|pid|order|sort|query|q|search|filter|name)$"
     )
 
-    if not (canary_path and canary_content):
+    # Coverage skips aggregate on stats — emit a single skip note only when no
+    # stats object is present (unit-test / one-shot kit runs).
+    if not (canary_path and canary_content) and stats is None:
         add(
             "active_probe_coverage",
             "info",
@@ -1398,7 +1488,13 @@ async def run_active_probe_kit(
             )
             _, ctrl_body, ctrl_hdrs, _ = _meta(ctrl_resp)
             ctrl_class = classify_response(int(getattr(ctrl_resp, "status_code", 200) or 200), ctrl_body, ctrl_hdrs)
-            if is_contaminated(ctrl_class):
+            # Edge/rate-limit on control still feeds the shared breaker (via _send).
+            # Continue probe sends so the active-probe breaker window fills from
+            # real probe roles. Other contamination makes differentials meaningless.
+            if is_contaminated(ctrl_class) and ctrl_class not in (
+                "edge_checkpoint",
+                "rate_limit",
+            ):
                 return
         except Exception:
             ctrl_body = baseline_body
@@ -1424,26 +1520,52 @@ async def run_active_probe_kit(
                 continue
 
             trial = dict(values)
-            if spec.meta.get("replace"):
-                trial[field] = spec.payload
-            elif spec.kind == "xss" and spec.payload_class != "xss_reflect":
-                trial[field] = spec.payload
-            elif spec.kind in ("redirect", "ssrf", "ssti", "crlf", "xxe", "traversal", "traversal_diff"):
-                trial[field] = spec.payload
+            local_meta = dict(spec.meta or {})
+            payload_value = spec.payload
+            if _should_replace_mutation(spec, field):
+                trial[field] = payload_value
+            elif _search_param(field) or spec.kind in ("sqli_error", "sqli_boolean", "sqli_time"):
+                # Search/string context → append
+                trial[field] = str(trial.get(field) or "1") + payload_value
             else:
-                trial[field] = str(trial.get(field) or "1") + spec.payload
+                trial[field] = str(trial.get(field) or "1") + payload_value
 
-            if oob is not None and spec.kind in ("ssrf", "xxe") and spec.meta.get("callback"):
+            probe_id = (
+                f"{spec.payload_class}:{field}:{urlparse(target).path}:{secrets.token_hex(4)}"
+            )
+            local_meta["probe_id"] = probe_id
+
+            if oob is not None and spec.kind in ("ssrf", "xxe") and local_meta.get("callback"):
                 try:
-                    oob.register_probe(
-                        str(spec.meta.get("nonce") or nonce),
-                        probe_id=f"{spec.payload_class}:{field}",
+                    cb_base = (settings.callback_base or "").rstrip("/")
+                    fresh = oob.mint_nonce() if hasattr(oob, "mint_nonce") else secrets.token_hex(16)
+                    if spec.kind == "xxe":
+                        exp_path = f"/{fresh}/xxe"
+                        cb_url = f"{cb_base}/{fresh}/xxe" if cb_base else ""
+                        trial[field] = (
+                            '<?xml version="1.0"?>'
+                            f'<!DOCTYPE r [<!ENTITY xxe SYSTEM "{cb_url}">]>'
+                            "<r>&xxe;</r>"
+                        )
+                        payload_value = trial[field]
+                    else:
+                        suffix = "redirect" if "redirect" in spec.payload_class else "ping"
+                        exp_path = f"/{fresh}/{suffix}"
+                        cb_url = f"{cb_base}/{fresh}/{suffix}" if cb_base else ""
+                        trial[field] = cb_url
+                        payload_value = trial[field]
+                    bound = oob.register_probe(
+                        fresh,
+                        probe_id=probe_id,
                         endpoint=target,
                         parameter=field,
                         category=spec.category,
-                        expected_path=str(spec.meta.get("expected_path") or ""),
-                        callback_url=str(spec.meta.get("callback_url") or spec.payload),
-                    )
+                        expected_path=exp_path,
+                        callback_url=cb_url,
+                    ) or fresh
+                    local_meta["nonce"] = bound
+                    local_meta["expected_path"] = exp_path
+                    local_meta["callback_url"] = cb_url
                     if hasattr(oob, "status_snapshot"):
                         coverage["oob_callback"] = oob.status_snapshot(
                             probe_url_generated=True
@@ -1452,7 +1574,9 @@ async def run_active_probe_kit(
                     pass
 
             try:
-                follow = spec.kind != "redirect"
+                # Never follow redirects for SSRF/XXE/open-redirect probes —
+                # client-followed redirects self-confirm against the callback host.
+                follow = spec.kind not in ("redirect", "ssrf", "xxe", "crlf")
                 t0 = time.monotonic()
                 resp = await _send(
                     method,
@@ -1463,7 +1587,7 @@ async def run_active_probe_kit(
                     probe_class=spec.category,
                     probe_name=spec.payload_class,
                     parameter=field,
-                    payload=spec.payload,
+                    payload=payload_value,
                 )
                 elapsed_ms = float(getattr(resp, "_vc_duration_ms", 0) or 0) or (
                     (time.monotonic() - t0) * 1000.0
@@ -1487,9 +1611,14 @@ async def run_active_probe_kit(
                 browser_meta: Dict[str, Any] = {}
 
                 if spec.kind == "sqli_error":
-                    if not _SQL_ERROR_RE.search(p_body or ""):
+                    # Decode HTML entities only for SQL-error evidence matching
+                    # (never for hashing / browser interpretation).
+                    probe_err = _sql_error_match(p_body or "")
+                    if not probe_err:
                         continue
-                    if _SQL_ERROR_RE.search(baseline_body or ""):
+                    if _sql_error_match(baseline_body or ""):
+                        continue
+                    if is_contaminated(resp_class):
                         continue
                     # Reproduce (step 4)
                     resp2 = await _send(
@@ -1501,19 +1630,25 @@ async def run_active_probe_kit(
                         probe_class=spec.category,
                         probe_name=spec.payload_class,
                         parameter=field,
-                        payload=spec.payload,
+                        payload=payload_value,
                     )
                     _, body2, hdrs2, _ = _meta(resp2)
-                    if is_contaminated(classify_response(int(getattr(resp2, "status_code", 200) or 200), body2, hdrs2)):
+                    replay_class = classify_response(
+                        int(getattr(resp2, "status_code", 200) or 200), body2, hdrs2
+                    )
+                    if is_contaminated(replay_class):
                         continue
-                    if not _SQL_ERROR_RE.search(body2 or ""):
+                    replay_err = _sql_error_match(body2 or "")
+                    if not replay_err:
                         continue
                     hit = True
-                    m = _SQL_ERROR_RE.search(p_body or "")
-                    new_evidence = [(m.group(0) if m else "SQL error")[:120]]
+                    new_evidence = [(probe_err.group(0) if probe_err else "SQL error")[:120]]
                     evidence_line = f"sql_error: {new_evidence[0]}"
                     detail_bit = "differential signal (new database error, reproduced)"
                     validation_state = STATE_DIFFERENTIAL
+                    mutation_mode = "replace" if _should_replace_mutation(spec, field) else "append"
+                    compare_meta["mutation_mode"] = mutation_mode
+                    compare_meta["html_entity_decoded_for_evidence"] = True
 
                 elif spec.kind == "sqli_boolean":
                     snap = ResponseSnap(
@@ -1635,16 +1770,16 @@ async def run_active_probe_kit(
                     verification = "detected"
 
                 elif spec.kind == "xss":
-                    token = str(spec.meta.get("token") or "")
+                    token = str(local_meta.get("token") or "")
                     disp = classify_xss(
                         p_body,
                         token,
                         baseline_body,
-                        payload=spec.payload,
-                        dom_id=str(spec.meta.get("dom_id") or ""),
+                        payload=payload_value,
+                        dom_id=str(local_meta.get("dom_id") or ""),
                     )
                     if settings.browser_evaluate and (
-                        spec.meta.get("needs_browser")
+                        local_meta.get("needs_browser")
                         or (
                             disp
                             and disp.get("validation_state")
@@ -1654,9 +1789,9 @@ async def run_active_probe_kit(
                         try:
                             from active_probe_browser import build_probe_page_url
 
+                            # Reproduce the exact payload request (do not swap to a
+                            # cleaned final_url that may drop the probe query).
                             page_url = build_probe_page_url(target, method, trial)
-                            if (method or "GET").upper() == "GET":
-                                page_url = str(p_final or page_url)
                             eval_result = await settings.browser_evaluate(
                                 page_url,
                                 f"document.body.dataset.vc === '{token}'",
@@ -1664,6 +1799,10 @@ async def run_active_probe_kit(
                                 post_data=trial if (method or "GET").upper() == "POST" else None,
                                 expected_token=token,
                                 fragment="",
+                                probe_class=spec.category,
+                                probe_name=spec.payload_class,
+                                parameter=field,
+                                payload=payload_value,
                             )
                             executed = False
                             reproduced = False
@@ -1672,7 +1811,6 @@ async def run_active_probe_kit(
                                 reproduced = bool(eval_result.get("reproduced", True))
                                 browser_meta = dict(eval_result)
                             else:
-                                # Legacy bool callback — treat True as executed only
                                 executed = eval_result is True
                                 reproduced = executed
                                 browser_meta = {"executed": executed, "reproduced": reproduced}
@@ -1687,6 +1825,14 @@ async def run_active_probe_kit(
                                 new_evidence = [f"dataset.vc={token}"]
                                 evidence_line = f"browser_exec: dataset.vc={token}"
                                 disp = None
+                            elif local_meta.get("needs_browser"):
+                                # Browser path attempted but not confirmed — do not
+                                # escalate reflection to execution.
+                                if disp and disp.get("validation_state") == STATE_REFLECTED_ONLY:
+                                    pass
+                                elif not disp:
+                                    hit = False
+                                    disp = None
                         except Exception:
                             pass
                     if disp:
@@ -1706,8 +1852,8 @@ async def run_active_probe_kit(
                             )
 
                 elif spec.kind == "rce":
-                    marker = str(spec.meta.get("marker") or "")
-                    arith = str(spec.meta.get("arith") or "")
+                    marker = str(local_meta.get("marker") or "")
+                    arith = str(local_meta.get("arith") or "")
                     if marker and marker in (baseline_body or ""):
                         continue
 
@@ -1715,6 +1861,7 @@ async def run_active_probe_kit(
                         evidence = []
                         stripped = body or ""
                         for lit in (
+                            payload_value,
                             spec.payload,
                             f"expr {_ARITH_A} + {_ARITH_B}",
                             f"expr {_ARITH_A}+{_ARITH_B}",
@@ -1752,7 +1899,7 @@ async def run_active_probe_kit(
                         probe_class=spec.category,
                         probe_name=spec.payload_class,
                         parameter=field,
-                        payload=spec.payload,
+                        payload=payload_value,
                     )
                     _, body2, hdrs2, _ = _meta(resp2)
                     if is_contaminated(
@@ -1788,8 +1935,8 @@ async def run_active_probe_kit(
                         continue
 
                 elif spec.kind == "ssti":
-                    arith = str(spec.meta.get("arith") or "")
-                    raw = str(spec.meta.get("raw") or spec.payload)
+                    arith = str(local_meta.get("arith") or "")
+                    raw = str(local_meta.get("raw") or payload_value)
                     if arith not in (p_body or ""):
                         continue
                     if arith in (baseline_body or ""):
@@ -1797,7 +1944,7 @@ async def run_active_probe_kit(
 
                     def _ssti_isolated(body: str) -> bool:
                         stripped = body or ""
-                        for lit in (raw, spec.payload, str(_ARITH_A), str(_ARITH_B), f"{{{{{_ARITH_A}+{_ARITH_B}}}}}"):
+                        for lit in (raw, payload_value, spec.payload, str(_ARITH_A), str(_ARITH_B), f"{{{{{_ARITH_A}+{_ARITH_B}}}}}"):
                             if lit:
                                 stripped = stripped.replace(lit, "")
                         return arith in stripped
@@ -1814,7 +1961,7 @@ async def run_active_probe_kit(
                         probe_class=spec.category,
                         probe_name=spec.payload_class,
                         parameter=field,
-                        payload=spec.payload,
+                        payload=payload_value,
                     )
                     _, body2, hdrs2, _ = _meta(resp2)
                     if is_contaminated(
@@ -1833,16 +1980,28 @@ async def run_active_probe_kit(
                     evidence_line = f"ssti: {arith}"
 
                 elif spec.kind == "ssrf":
-                    if spec.meta.get("callback"):
+                    if local_meta.get("callback"):
                         confirmed = False
+                        oob_nonce = str(local_meta.get("nonce") or "")
+                        pid = str(local_meta.get("probe_id") or "")
                         if settings.callback_received:
                             try:
-                                confirmed = bool(
-                                    await settings.callback_received(str(spec.meta.get("nonce") or nonce))
-                                )
+                                try:
+                                    confirmed = bool(
+                                        await settings.callback_received(oob_nonce, probe_id=pid)
+                                    )
+                                except TypeError:
+                                    confirmed = bool(await settings.callback_received(oob_nonce))
                             except Exception:
                                 confirmed = False
-                        oob_nonce = str(spec.meta.get("nonce") or nonce)
+                        callback_url = str(local_meta.get("callback_url") or trial.get(field) or "")
+                        reflected = bool(
+                            oob_nonce
+                            and (
+                                oob_nonce in (p_body or "")
+                                or callback_url in (p_body or "")
+                            )
+                        )
                         if confirmed:
                             hit = True
                             severity = "high"
@@ -1865,8 +2024,27 @@ async def run_active_probe_kit(
                                     "confirmation_unavailable": False,
                                 }
                             )
+                            compare_meta["probe_id"] = pid
+                        elif reflected:
+                            # Echo of callback URL alone is never confirmation
+                            hit = True
+                            severity = "info"
+                            detail_bit = "SSRF callback URL reflected only (no correlated OOB)"
+                            validation_state = STATE_REFLECTED_ONLY
+                            confidence = "low"
+                            verification = "detected"
+                            new_evidence = [f"callback_url_redacted={redact_payload(callback_url)}"]
+                            evidence_line = "ssrf_reflected_only"
+                            compare_meta["oob"] = {
+                                "callback_configured": bool(settings.callback_base),
+                                "probe_url_generated": True,
+                                "polling_active": bool(settings.callback_received),
+                                "callback_received": False,
+                                "confirmation_unavailable": True,
+                                "reason": "reflected_only",
+                            }
                         else:
-                            # Never confirm from URL reflection — report unconfirmed probe
+                            # Probe sent; no reflection and no callback — inconclusive noise skip
                             hit = True
                             severity = "info"
                             detail_bit = (
@@ -1876,7 +2054,7 @@ async def run_active_probe_kit(
                             validation_state = STATE_INCONCLUSIVE
                             confidence = "low"
                             verification = "detected"
-                            new_evidence = [f"callback_url_redacted={redact_payload(spec.payload)}"]
+                            new_evidence = [f"callback_url_redacted={redact_payload(callback_url)}"]
                             evidence_line = "ssrf_probe_sent_unconfirmed"
                             compare_meta["oob"] = (
                                 oob.status_snapshot(probe_url_generated=True).as_dict()
@@ -1890,7 +2068,7 @@ async def run_active_probe_kit(
                                     "reason": "no correlated callback",
                                 }
                             )
-                    elif spec.meta.get("imds"):
+                    elif local_meta.get("imds"):
                         if not _imds_proof(p_body, baseline_body):
                             continue
                         hit = True
@@ -1963,9 +2141,9 @@ async def run_active_probe_kit(
                     compare_meta = cmp_
 
                 elif spec.kind == "traversal":
-                    proof = str(spec.meta.get("proof") or "")
-                    proof_re = spec.meta.get("proof_re")
-                    is_canary = bool(spec.meta.get("canary"))
+                    proof = str(local_meta.get("proof") or "")
+                    proof_re = local_meta.get("proof_re")
+                    is_canary = bool(local_meta.get("canary"))
                     ok = False
                     if proof and proof in (p_body or "") and proof not in (baseline_body or ""):
                         ok = True
@@ -1980,6 +2158,16 @@ async def run_active_probe_kit(
                     if is_canary:
                         if not (canary_path and canary_content):
                             continue
+                        # Exact fixture alignment: expected proof and payload path
+                        if proof != canary_content:
+                            continue
+                        allowed_payloads = {
+                            canary_path,
+                            canary_path.replace("/", "%2f"),
+                            canary_path.replace("/", "%252f"),
+                        }
+                        if payload_value not in allowed_payloads:
+                            continue
                         resp2 = await _send(
                             method,
                             target,
@@ -1989,7 +2177,7 @@ async def run_active_probe_kit(
                             probe_class=spec.category,
                             probe_name=spec.payload_class,
                             parameter=field,
-                            payload=spec.payload,
+                            payload=payload_value,
                         )
                         _, body2, _, _ = _meta(resp2)
                         if proof and proof not in (body2 or ""):
@@ -2001,6 +2189,8 @@ async def run_active_probe_kit(
                         confidence = "high"
                         verification = "confirmed"
                         evidence_line = ",".join(new_evidence)
+                        compare_meta["canary_path"] = canary_path
+                        compare_meta["canary_content"] = canary_content
                     else:
                         # Lab passwd marker etc.
                         hit = True
@@ -2012,7 +2202,7 @@ async def run_active_probe_kit(
                         evidence_line = ",".join(new_evidence)
 
                 elif spec.kind == "redirect":
-                    host = str(spec.meta.get("host") or "")
+                    host = str(local_meta.get("host") or "")
                     location = ""
                     for hk, hv in p_hdrs.items():
                         if str(hk).lower() == "location":
@@ -2031,8 +2221,8 @@ async def run_active_probe_kit(
                     evidence_line = f"redirect: {location or p_final}"
 
                 elif spec.kind == "crlf":
-                    hdr_name = str(spec.meta.get("header") or "").lower()
-                    hdr_val = str(spec.meta.get("value") or "")
+                    hdr_name = str(local_meta.get("header") or "").lower()
+                    hdr_val = str(local_meta.get("value") or "")
                     found = False
                     for hk, hv in p_hdrs.items():
                         if str(hk).lower() == hdr_name and hdr_val in str(hv or ""):
@@ -2052,10 +2242,16 @@ async def run_active_probe_kit(
 
                 elif spec.kind == "xxe":
                     if settings.callback_received:
+                        confirmed = False
+                        oob_nonce = str(local_meta.get("nonce") or "")
+                        pid = str(local_meta.get("probe_id") or "")
                         try:
-                            confirmed = bool(
-                                await settings.callback_received(str(spec.meta.get("nonce") or nonce))
-                            )
+                            try:
+                                confirmed = bool(
+                                    await settings.callback_received(oob_nonce, probe_id=pid)
+                                )
+                            except TypeError:
+                                confirmed = bool(await settings.callback_received(oob_nonce))
                         except Exception:
                             confirmed = False
                         if confirmed:
@@ -2065,7 +2261,7 @@ async def run_active_probe_kit(
                             validation_state = STATE_OOB_CALLBACK
                             confidence = "high"
                             verification = "confirmed"
-                            new_evidence = [f"xxe_callback={nonce}"]
+                            new_evidence = [f"xxe_callback={oob_nonce[:12]}"]
                             evidence_line = "xxe_oob"
                         else:
                             hit = True
@@ -2104,6 +2300,7 @@ async def run_active_probe_kit(
                         proof["comparison"] = compare_meta
                 if browser_meta:
                     proof["browser"] = {
+                        "generated_url": browser_meta.get("generated_url") or browser_meta.get("final_url"),
                         "final_url": browser_meta.get("final_url"),
                         "executed": browser_meta.get("executed"),
                         "reproduced": browser_meta.get("reproduced"),
@@ -2111,6 +2308,8 @@ async def run_active_probe_kit(
                         "csp_blocked": browser_meta.get("csp_blocked") or [],
                         "browser_request_id": browser_meta.get("browser_request_id"),
                         "evidence": browser_meta.get("evidence"),
+                        "observed_value": browser_meta.get("value"),
+                        "method": browser_meta.get("method"),
                     }
                 add(
                     finding_category,
@@ -2231,25 +2430,40 @@ async def run_active_probe_kit(
                 )
 
     if breaker.tripped:
-        add(
-            "active_probe_coverage",
-            "info",
-            f"Active probes paused — {breaker.reason} (remaining inconclusive)",
-            "active_probe_circuit_breaker",
-            {
-                "verification": "informational",
-                "confidence": "high",
-                "confidence_reason": "circuit_breaker",
-                "proof": {
-                    "validation_state": STATE_INCONCLUSIVE,
-                    "breaker": breaker.snapshot(),
-                },
-                "validation": "unverified",
-            },
-        )
+        # Single shared summary — never one coverage finding per page.
         if stats is not None:
             try:
-                stats.active_probe_breaker = breaker.snapshot()
+                snap = breaker.snapshot()
+                stats.active_probe_breaker = snap
+                emitted = bool(getattr(stats, "_active_probe_breaker_finding_emitted", False))
+                if not emitted:
+                    stats._active_probe_breaker_finding_emitted = True
+                    add(
+                        "active_probe_coverage",
+                        "info",
+                        (
+                            f"Active probes paused — {breaker.reason} "
+                            f"(remaining_probes={snap.get('remaining_probes', 0)} inconclusive)"
+                        ),
+                        "active_probe_circuit_breaker",
+                        {
+                            "verification": "informational",
+                            "confidence": "high",
+                            "confidence_reason": "circuit_breaker",
+                            "proof": {
+                                "validation_state": STATE_INCONCLUSIVE,
+                                "breaker": snap,
+                            },
+                            "validation": "unverified",
+                        },
+                    )
             except Exception:
                 pass
+    elif stats is not None:
+        try:
+            stats.active_probe_breaker = breaker.snapshot()
+        except Exception:
+            pass
+    # Traversal skip notices live only in stats.active_probe_coverage.aggregate —
+    # never one informational finding per endpoint.
     return findings

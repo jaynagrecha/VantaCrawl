@@ -1954,6 +1954,17 @@ async def _run_security_checks(
                         setattr(config, "vuln_active_probe", False)
                     except Exception:
                         pass
+                    # Ensure breaker snapshot is exported even if kit returned early
+                    try:
+                        from active_probe_breaker import get_shared_breaker
+
+                        br = get_shared_breaker(stats)
+                        if br.tripped and not getattr(stats, "active_probe_breaker", None):
+                            stats.active_probe_breaker = br.snapshot()
+                        elif br.tripped:
+                            stats.active_probe_breaker = br.snapshot()
+                    except Exception:
+                        pass
             # Firebase Auth/Storage abuse when JS embeds firebaseConfig
             try:
                 from exploit_probes import probe_firebase_from_body

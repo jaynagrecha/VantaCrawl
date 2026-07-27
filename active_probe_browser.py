@@ -149,6 +149,42 @@ def make_browser_evaluate(
         except Exception:
             pass
 
+    def _ledger_role(
+        role: str,
+        *,
+        page_url: str,
+        final_url: str = "",
+        status: int = 0,
+        result_state: str = "",
+        duration_ms: float = 0.0,
+        payload: str = "",
+        probe_class: str = "",
+        probe_name: str = "",
+        parameter: str = "",
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if stats is None or not hasattr(stats, "record_request"):
+            return
+        try:
+            stats.record_request(
+                phase="active_probe",
+                source="browser_evaluate",
+                url=page_url,
+                status=status,
+                final_url=final_url or page_url,
+                duration_ms=duration_ms,
+                outcome=role,
+                classification="browser_evaluate",
+                probe_role=role,
+                probe_class=probe_class,
+                probe_name=probe_name,
+                parameter=parameter,
+                result_state=result_state,
+                payload_redacted=(payload or "[browser_eval]")[:160],
+            )
+        except Exception:
+            pass
+
     def _sync_evaluate(
         page_url: str,
         js_expr: str,
@@ -157,8 +193,11 @@ def make_browser_evaluate(
         post_data: Optional[Dict[str, Any]] = None,
         fragment: str = "",
         expected_token: str = "",
+        probe_class: str = "",
+        probe_name: str = "",
+        parameter: str = "",
+        payload: str = "",
     ) -> Dict[str, Any]:
-        from html import escape
         from selenium.webdriver.support.ui import WebDriverWait
 
         driver = get_selenium_driver(proxy, user_agent=ua or "")
@@ -169,6 +208,15 @@ def make_browser_evaluate(
         reproduced = False
         value = None
         t0 = time.monotonic()
+        _ledger_role(
+            "browser_reproduction_started",
+            page_url=page_url,
+            probe_class=probe_class,
+            probe_name=probe_name,
+            parameter=parameter,
+            payload=payload,
+            result_state="started",
+        )
         try:
             try:
                 driver.execute_cdp_cmd("Network.enable", {})
@@ -232,6 +280,18 @@ def make_browser_evaluate(
             time.sleep(max(0.25, float(wait_seconds or 0)))
 
             final_url = str(getattr(driver, "current_url", None) or page_url)
+            _ledger_role(
+                "browser_page_loaded",
+                page_url=page_url,
+                final_url=final_url,
+                status=200,
+                probe_class=probe_class,
+                probe_name=probe_name,
+                parameter=parameter,
+                payload=payload,
+                result_state="page_loaded",
+            )
+
             # Clear-then-evaluate: only true if THIS probe set the marker
             try:
                 value = driver.execute_script(f"return ({js_expr});")
@@ -242,9 +302,22 @@ def make_browser_evaluate(
                         "? (document.body.dataset.vc || '') : '';"
                     )
                     executed = str(got or "") == str(expected_token)
+                    value = got if executed else value
             except Exception as exc:
                 console_errors.append(str(exc)[:300])
                 executed = False
+
+            _ledger_role(
+                "browser_marker_checked",
+                page_url=page_url,
+                final_url=final_url,
+                status=200 if executed else 0,
+                probe_class=probe_class,
+                probe_name=probe_name,
+                parameter=parameter,
+                payload=payload,
+                result_state="marker_present" if executed else "marker_absent",
+            )
 
             try:
                 for entry in driver.get_log("browser") or []:
@@ -266,6 +339,9 @@ def make_browser_evaluate(
             _clear_marker(driver)
 
         duration_ms = (time.monotonic() - t0) * 1000.0
+        outcome_role = (
+            "browser_execution_confirmed" if executed and reproduced else "browser_execution_failed"
+        )
         result = {
             "executed": bool(executed),
             "reproduced": bool(reproduced),
@@ -277,24 +353,21 @@ def make_browser_evaluate(
             "browser_request_id": f"selenium:{int(time.time() * 1000)}",
             "evidence": f"dataset_eval={'true' if executed else 'false'};reproduced={reproduced}",
             "browser_confirmation": "available",
+            "generated_url": page_url,
+            "method": method,
         }
-        if stats is not None and hasattr(stats, "record_request"):
-            try:
-                stats.record_request(
-                    phase="active_probe",
-                    source="browser_evaluate",
-                    url=page_url,
-                    status=200 if executed else 0,
-                    final_url=final_url,
-                    duration_ms=duration_ms,
-                    outcome="browser_exec_true" if executed else "browser_exec_false",
-                    classification="browser_evaluate",
-                    probe_role="browser_confirmation",
-                    result_state="browser_execution_confirmed" if executed else "negative",
-                    payload_redacted="[browser_eval]",
-                )
-            except Exception:
-                pass
+        _ledger_role(
+            outcome_role,
+            page_url=page_url,
+            final_url=final_url,
+            status=200 if executed else 0,
+            duration_ms=duration_ms,
+            probe_class=probe_class,
+            probe_name=probe_name,
+            parameter=parameter,
+            payload=payload,
+            result_state="browser_execution_confirmed" if executed else "browser_execution_failed",
+        )
         return result
 
     async def browser_evaluate(page_url: str, js_expr: str, **kwargs) -> Dict[str, Any]:
@@ -308,6 +381,10 @@ def make_browser_evaluate(
                 post_data=kwargs.get("post_data"),
                 fragment=str(kwargs.get("fragment") or ""),
                 expected_token=str(kwargs.get("expected_token") or ""),
+                probe_class=str(kwargs.get("probe_class") or ""),
+                probe_name=str(kwargs.get("probe_name") or ""),
+                parameter=str(kwargs.get("parameter") or ""),
+                payload=str(kwargs.get("payload") or ""),
             ),
         )
 
