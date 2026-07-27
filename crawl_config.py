@@ -169,6 +169,8 @@ class CrawlConfig:
     # OOB SSRF/XXE callback base, e.g. https://callback.example (empty = skip OOB confirm)
     ssrf_callback_base: str = ""
     redirect_proof_host: str = "redirect-proof.vantacrawl-lab.example"
+    # Owned lab only: target has /opt/vantacrawl-fixtures/VC_TRAVERSAL_* installed
+    traversal_fixture_installed: bool = False
     active_probe_max_params: int = 8
     active_probe_max_forms: int = 3
 

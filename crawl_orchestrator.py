@@ -1867,7 +1867,9 @@ async def _run_security_checks(
                 confidence_reason=meta.get("confidence_reason"),
             )
         if config.vuln_active_probe:
-            probe_mode = str(getattr(config, "active_probe_mode", "safe") or "safe")
+            from active_probe_kit import normalize_mode
+
+            probe_mode = normalize_mode(str(getattr(config, "active_probe_mode", "safe") or "safe"))
             for item in await run_active_vuln_probes(
                 client,
                 url,
@@ -1880,6 +1882,9 @@ async def _run_security_checks(
                 redirect_proof_host=str(
                     getattr(config, "redirect_proof_host", "")
                     or "redirect-proof.vantacrawl-lab.example"
+                ),
+                traversal_fixture_installed=bool(
+                    getattr(config, "traversal_fixture_installed", False)
                 ),
             ):
                 category, severity, detail, evidence, meta = _unpack_finding(item)

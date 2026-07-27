@@ -93,6 +93,8 @@ def _owned(job: Optional[ScanJob], user) -> ScanJob:
 
 
 def _build_config_json(body: JobCreateRequest) -> dict:
+    from active_probe_kit import normalize_mode
+
     preset = dict(MODE_PRESETS.get(body.mode, {}))
     speed = body.speed or preset.pop("speed", "balanced")
     crawl, enum, download = concurrency_for_speed(speed)
@@ -106,6 +108,10 @@ def _build_config_json(body: JobCreateRequest) -> dict:
         "mode": body.mode,
         "speed": speed,
     }
+    # Backend gate: never trust raw UI strings for probe intensity
+    merged["active_probe_mode"] = normalize_mode(str(merged.get("active_probe_mode") or "safe"))
+    if "traversal_fixture_installed" in merged:
+        merged["traversal_fixture_installed"] = bool(merged.get("traversal_fixture_installed"))
     if body.target_urls:
         merged["target_urls"] = [u.strip() for u in body.target_urls if u and str(u).strip()]
     return merged

@@ -34,8 +34,25 @@ STATE_INCONCLUSIVE = "inconclusive"
 STATE_ATTR_BREAKOUT = "attribute_breakout"
 STATE_DOM_NODE = "dom_node_injected"
 STATE_SINK_CANDIDATE = "sink_context_candidate"
+STATE_CANARY_FILE = "canary_file_confirmed"
 
 MODES = ("passive", "safe", "extended", "lab")
+
+# Lab-only payload classes — never returned by for_mode("safe"|"extended"|"passive")
+_LAB_ONLY_CLASSES = frozenset(
+    {
+        "ssrf_imds_lab",
+        "trav_passwd_lab",
+        "trav_canary",
+        "trav_canary_enc",
+        "trav_canary_dblenc",
+        "xxe_oob",
+        "sqli_lab_sleep_mysql",
+        "sqli_lab_waitfor_mssql",
+        "sqli_lab_or_true",
+        "sqli_lab_or_false",
+    }
+)
 
 # Arithmetic SSTI / RCE proof constants (deterministic)
 _ARITH_A = 7319
@@ -85,6 +102,8 @@ class ProbeModeSettings:
     callback_base: str = ""
     redirect_proof_host: str = "redirect-proof.vantacrawl-lab.example"
     traversal_fixture_root: str = "/opt/vantacrawl-fixtures"
+    # Owned-lab only: set True when VC_TRAVERSAL_* fixtures are installed on the target
+    traversal_fixture_installed: bool = False
     max_params: int = 8
     max_forms: int = 3
     # Optional: async (page_url, js_expr) -> Any for XSS browser confirm
@@ -159,8 +178,37 @@ def _template_names(name: str) -> bool:
     )
 
 
+def for_mode(
+    mode: str,
+    *,
+    nonce: Optional[str] = None,
+    callback_base: str = "",
+    redirect_proof_host: str = "redirect-proof.vantacrawl-lab.example",
+    traversal_fixture_root: str = "/opt/vantacrawl-fixtures",
+    traversal_fixture_installed: bool = False,
+) -> List[ProbeSpec]:
+    """Central backend gate: payloads for a mode. Lab classes never leak into safe."""
+    settings = ProbeModeSettings(
+        mode=normalize_mode(mode),
+        callback_base=callback_base or "",
+        redirect_proof_host=redirect_proof_host or "redirect-proof.vantacrawl-lab.example",
+        traversal_fixture_root=traversal_fixture_root or "/opt/vantacrawl-fixtures",
+        traversal_fixture_installed=bool(traversal_fixture_installed),
+    )
+    specs = build_payload_specs(settings, nonce or new_probe_nonce())
+    mode_n = normalize_mode(mode)
+    if mode_n != "lab":
+        specs = [s for s in specs if s.payload_class not in _LAB_ONLY_CLASSES]
+        for s in specs:
+            assert "169.254.169.254" not in s.payload
+            assert "/etc/passwd" not in s.payload.lower()
+            assert "SLEEP(" not in s.payload.upper()
+            assert "WAITFOR" not in s.payload.upper()
+    return specs
+
+
 def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSpec]:
-    """Mini payload set for the selected mode."""
+    """Mini payload set for the selected mode (internal; prefer for_mode)."""
     mode = normalize_mode(settings.mode)
     if mode == "passive":
         return []
@@ -169,7 +217,7 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
     rce_tok = f"VC_RCE_{nonce}"
     trav_proof = f"VC_TRAVERSAL_PROOF_{nonce}"
     trav_file = f"{settings.traversal_fixture_root.rstrip('/')}/VC_TRAVERSAL_{nonce}.txt"
-    # Relative traversal toward fixture (safe profile) — not /etc/passwd
+    # Relative traversal toward fixture (lab + fixture installed only)
     trav_payload = f"../../../../{trav_file.lstrip('/')}"
     cb = (settings.callback_base or "").rstrip("/")
     redirect_dest = f"https://{settings.redirect_proof_host}/{nonce}"
@@ -438,18 +486,54 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
         )
 
     # --- Traversal ---
+    # Safe/extended: path-normalization / differential only — never canary-file confirmed.
     specs.append(
         ProbeSpec(
             "directory_traversal",
-            trav_payload,
-            "trav_canary",
+            f"....//....//....//vc_norm_{nonce}",
+            "trav_norm_dots",
             _file_names,
-            "high",
-            "traversal",
-            {"proof": trav_proof},
+            "medium",
+            "traversal_diff",
+            {},
+        )
+    )
+    specs.append(
+        ProbeSpec(
+            "directory_traversal",
+            f"..%2f..%2f..%2fvc_norm_{nonce}",
+            "trav_norm_enc",
+            _file_names,
+            "medium",
+            "traversal_diff",
+            {},
         )
     )
     if mode in ("extended", "lab"):
+        specs.append(
+            ProbeSpec(
+                "directory_traversal",
+                f"..%252f..%252f..%252fvc_norm_{nonce}",
+                "trav_norm_dblenc",
+                _file_names,
+                "medium",
+                "traversal_diff",
+                {},
+            )
+        )
+    # Lab + installed fixture: canary file confirmation (never for safe external)
+    if mode == "lab" and settings.traversal_fixture_installed:
+        specs.append(
+            ProbeSpec(
+                "directory_traversal",
+                trav_payload,
+                "trav_canary",
+                _file_names,
+                "high",
+                "traversal",
+                {"proof": trav_proof, "canary": True},
+            )
+        )
         specs.append(
             ProbeSpec(
                 "directory_traversal",
@@ -458,10 +542,9 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
                 _file_names,
                 "high",
                 "traversal",
-                {"proof": trav_proof},
+                {"proof": trav_proof, "canary": True},
             )
         )
-    if mode == "lab":
         specs.append(
             ProbeSpec(
                 "directory_traversal",
@@ -470,9 +553,10 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
                 _file_names,
                 "high",
                 "traversal",
-                {"proof": trav_proof},
+                {"proof": trav_proof, "canary": True},
             )
         )
+    if mode == "lab":
         specs.append(
             ProbeSpec(
                 "directory_traversal",
@@ -536,7 +620,18 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
 
     # Assert Safe Active never ships risky classes
     if mode == "safe":
-        banned = {"ssrf_imds_lab", "trav_passwd_lab", "xxe_oob", "sqli_lab_sleep_mysql", "sqli_lab_waitfor_mssql"}
+        banned = {
+            "ssrf_imds_lab",
+            "trav_passwd_lab",
+            "trav_canary",
+            "trav_canary_enc",
+            "trav_canary_dblenc",
+            "xxe_oob",
+            "sqli_lab_sleep_mysql",
+            "sqli_lab_waitfor_mssql",
+            "sqli_lab_or_true",
+            "sqli_lab_or_false",
+        }
         specs = [s for s in specs if s.payload_class not in banned]
         for s in specs:
             assert "169.254.169.254" not in s.payload
@@ -545,6 +640,8 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
             assert "WAITFOR" not in s.payload.upper()
             assert "UNION SELECT" not in s.payload.upper()
             assert "DROP " not in s.payload.upper()
+            assert "VC_TRAVERSAL_PROOF" not in s.payload
+            assert "/opt/vantacrawl-fixtures" not in s.payload
 
     return specs
 
@@ -631,6 +728,10 @@ def compare_response_pair(
 ) -> Dict[str, Any]:
     """Multi-signal true/false comparison — a one-off length delta is not enough.
 
+    Valid boolean signal requires:
+      baseline ≈ true, baseline differs consistently from false,
+      true/false difference reproduces, and content divergence beyond status/length alone.
+
     Returns dict with signals + verdict in {negative, differential_signal, probable, inconclusive}.
     """
     tb = _strip_literals(true_snap.body, *ignore) if ignore else true_snap.body
@@ -646,7 +747,7 @@ def compare_response_pair(
     # Meaningful content divergence (not tiny length jitter alone)
     content_diff = hash_diff and (sim < 0.97 or len_delta >= 32 or dom_diff)
 
-    signals = {
+    signals: Dict[str, Any] = {
         "status_diff": status_diff,
         "final_url_diff": url_diff,
         "normalized_hash_diff": hash_diff,
@@ -657,16 +758,39 @@ def compare_response_pair(
         "false_hash": fh,
     }
 
-    # Baseline gate: at least one side must differ from baseline
-    vs_base = True
+    # Required shape: baseline ≈ true AND baseline differs from false
     if baseline is not None:
-        bh = probe_hash(_strip_literals(baseline.body, *ignore) if ignore else baseline.body)
-        vs_base = th != bh or fh != bh
-        signals["differs_from_baseline"] = vs_base
-    if not vs_base:
-        return {**signals, "verdict": STATE_NEGATIVE, "score": 0}
+        bb = _strip_literals(baseline.body, *ignore) if ignore else baseline.body
+        bh = probe_hash(bb)
+        sim_bt = text_similarity(bb, tb)
+        sim_bf = text_similarity(bb, fb)
+        len_bt = abs(len(bb) - len(tb))
+        len_bf = abs(len(bb) - len(fb))
+        baseline_approx_true = (th == bh) or (sim_bt >= 0.92 and len_bt < max(48, int(0.1 * max(len(bb), 1))))
+        false_status_diff = int(baseline.status or 0) != int(false_snap.status or 0)
+        false_url_diff = (baseline.final_url or "").split("?")[0] != (false_snap.final_url or "").split("?")[0]
+        baseline_differs_false = (fh != bh) and (
+            sim_bf < 0.92 or len_bf >= 24 or false_status_diff or false_url_diff
+            or (baseline.dom_fingerprint() != false_snap.dom_fingerprint())
+        )
+        signals["baseline_approx_true"] = baseline_approx_true
+        signals["baseline_differs_from_false"] = baseline_differs_false
+        signals["baseline_true_similarity"] = round(sim_bt, 4)
+        signals["baseline_false_similarity"] = round(sim_bf, 4)
+        signals["differs_from_baseline"] = th != bh or fh != bh
+        if not baseline_approx_true or not baseline_differs_false:
+            return {**signals, "verdict": STATE_NEGATIVE, "score": 0}
+    else:
+        # Without baseline we cannot satisfy baseline≈true — refuse confirmation-grade verdicts
+        return {**signals, "verdict": STATE_INCONCLUSIVE, "score": 0}
 
-    # Length-only / status-only one-shot → not enough
+    if not content_diff and not (status_diff and hash_diff):
+        # One different status or length alone is insufficient
+        if status_diff and not hash_diff:
+            return {**signals, "verdict": STATE_NEGATIVE, "score": 0}
+        if len_delta and not hash_diff:
+            return {**signals, "verdict": STATE_NEGATIVE, "score": 0}
+
     score = 0
     if content_diff:
         score += 2
@@ -688,10 +812,13 @@ def compare_response_pair(
         signals["reproducible"] = reproducible
         if reproducible:
             score += 2
+        else:
+            # Required: true/false difference must reproduce
+            return {**signals, "verdict": STATE_INCONCLUSIVE, "score": score}
 
-    if score >= 4 and content_diff and (reproducible or (status_diff and hash_diff)):
+    if score >= 4 and content_diff and reproducible:
         verdict = STATE_DIFFERENTIAL
-    elif score >= 3 and content_diff:
+    elif score >= 3 and content_diff and reproducible:
         verdict = STATE_PROBABLE
     elif score >= 2 and content_diff and reproducible:
         verdict = STATE_PROBABLE
@@ -892,7 +1019,14 @@ async def run_active_probe_kit(
         return []
 
     nonce = new_probe_nonce()
-    specs = build_payload_specs(settings, nonce)
+    specs = for_mode(
+        mode,
+        nonce=nonce,
+        callback_base=settings.callback_base,
+        redirect_proof_host=settings.redirect_proof_host,
+        traversal_fixture_root=settings.traversal_fixture_root,
+        traversal_fixture_installed=settings.traversal_fixture_installed,
+    )
     findings: List[Any] = []
     seen: set = set()
 
@@ -955,6 +1089,7 @@ async def run_active_probe_kit(
                 "ssrf",
                 "rce",
                 "traversal",
+                "traversal_diff",
                 "ssti",
             ) and not baseline_ok:
                 continue
@@ -964,7 +1099,7 @@ async def run_active_probe_kit(
                 trial[field] = spec.payload
             elif spec.kind == "xss" and spec.payload_class != "xss_reflect":
                 trial[field] = spec.payload
-            elif spec.kind in ("redirect", "ssrf", "ssti", "crlf", "xxe", "traversal"):
+            elif spec.kind in ("redirect", "ssrf", "ssti", "crlf", "xxe", "traversal", "traversal_diff"):
                 trial[field] = spec.payload
             else:
                 trial[field] = str(trial.get(field) or "1") + spec.payload
@@ -1139,40 +1274,49 @@ async def run_active_probe_kit(
                     arith = str(spec.meta.get("arith") or "")
                     if marker and marker in (baseline_body or ""):
                         continue
-                    # Reflection of full payload is not execution
-                    if spec.payload in (p_body or "") and marker and marker in p_body:
-                        # If only appears as part of reflected command string, skip
-                        if f"printf {marker}" in p_body or f"echo {marker}" in p_body:
-                            if arith and arith in p_body and arith not in (baseline_body or ""):
-                                pass  # math proof wins
-                            else:
-                                continue
-                    exec_hit = False
-                    if arith and arith in (p_body or "") and arith not in (baseline_body or ""):
-                        if spec.payload not in p_body:  # result without raw expr reflection-only
-                            exec_hit = True
-                            new_evidence = [f"arith_result={arith}"]
-                        elif bodies_differ(baseline_body, p_body) and arith in p_body:
-                            # expr reflected AND result present
-                            if f"expr {_ARITH_A}" in p_body and p_body.count(arith) >= 1:
-                                # require result outside the payload echo — simple heuristic
-                                stripped = p_body.replace(spec.payload, "")
-                                if arith in stripped:
-                                    exec_hit = True
-                                    new_evidence = [f"arith_result={arith}"]
-                    if marker and marker in (p_body or ""):
-                        if f"printf {marker}" not in p_body and f"echo {marker}" not in p_body:
-                            if not re.search(r"(?is)<!--[^>]*" + re.escape(marker), p_body) or p_body.count(marker) > 1:
-                                exec_hit = True
-                                new_evidence = [f"marker={marker}"]
-                    if not exec_hit:
+
+                    def _rce_isolated(body: str) -> Tuple[bool, List[str]]:
+                        """Calculated output / marker must be isolated from reflected operands."""
+                        evidence: List[str] = []
+                        stripped = body or ""
+                        for lit in (
+                            spec.payload,
+                            f"expr {_ARITH_A} + {_ARITH_B}",
+                            f"expr {_ARITH_A}+{_ARITH_B}",
+                            str(_ARITH_A),
+                            str(_ARITH_B),
+                            f"printf {marker}",
+                            f"echo {marker}",
+                        ):
+                            if lit:
+                                stripped = stripped.replace(lit, "")
+                        if arith and arith in stripped and arith not in (baseline_body or ""):
+                            evidence.append(f"arith_result={arith}")
+                        if marker and marker in stripped and marker not in (baseline_body or ""):
+                            if f"printf {marker}" not in (body or "") and f"echo {marker}" not in (body or ""):
+                                evidence.append(f"marker={marker}")
+                        return bool(evidence), evidence
+
+                    ok, new_evidence = _rce_isolated(p_body)
+                    if not ok:
+                        continue
+                    # Reproduce
+                    resp2 = await _send(method, target, trial, follow=True)
+                    _, body2, hdrs2, _ = _meta(resp2)
+                    if is_contaminated(
+                        classify_response(int(getattr(resp2, "status_code", 200) or 200), body2, hdrs2)
+                    ):
+                        continue
+                    ok2, ev2 = _rce_isolated(body2)
+                    if not ok2:
                         continue
                     hit = True
                     severity = "critical"
-                    detail_bit = "confirmed server-side behavior (command output / arith)"
+                    detail_bit = "confirmed server-side behavior (command output / arith, reproduced)"
                     validation_state = STATE_SERVER_EXEC
                     confidence = "high"
                     verification = "confirmed"
+                    new_evidence = new_evidence or ev2
                     evidence_line = ",".join(new_evidence)
 
                 elif spec.kind == "ssti":
@@ -1182,20 +1326,28 @@ async def run_active_probe_kit(
                         continue
                     if arith in (baseline_body or ""):
                         continue
-                    if raw in (p_body or "") and p_body.count(arith) == 0:
+
+                    def _ssti_isolated(body: str) -> bool:
+                        stripped = body or ""
+                        for lit in (raw, spec.payload, str(_ARITH_A), str(_ARITH_B), f"{{{{{_ARITH_A}+{_ARITH_B}}}}}"):
+                            if lit:
+                                stripped = stripped.replace(lit, "")
+                        return arith in stripped
+
+                    if not _ssti_isolated(p_body):
                         continue
-                    # Raw expression reflected without evaluation → negative
-                    if raw in p_body and arith not in p_body.replace(raw, ""):
+                    # Reproduce
+                    resp2 = await _send(method, target, trial, follow=True)
+                    _, body2, hdrs2, _ = _meta(resp2)
+                    if is_contaminated(
+                        classify_response(int(getattr(resp2, "status_code", 200) or 200), body2, hdrs2)
+                    ):
                         continue
-                    # Confirm evaluation: 7603 present, expression preferably absent or also evaluated
-                    stripped = p_body.replace(raw, "")
-                    if arith not in stripped and raw in p_body:
-                        continue
-                    if arith not in p_body:
+                    if not _ssti_isolated(body2):
                         continue
                     hit = True
                     severity = "high"
-                    detail_bit = "confirmed server-side behavior (SSTI arithmetic evaluated)"
+                    detail_bit = "confirmed server-side behavior (SSTI arithmetic evaluated, reproduced)"
                     validation_state = STATE_SERVER_EXEC
                     confidence = "high"
                     verification = "confirmed"
@@ -1236,9 +1388,60 @@ async def run_active_probe_kit(
                         new_evidence = ["imds_metadata_token"]
                         evidence_line = "ssrf_imds"
 
+                elif spec.kind == "traversal_diff":
+                    # Safe external: path normalization / differential only — never confirmed
+                    if not bodies_differ(baseline_body, p_body, ignore=(spec.payload,)):
+                        continue
+                    resp2 = await _send(method, target, trial, follow=True)
+                    s2, b2, h2, f2 = _meta(resp2)
+                    if is_contaminated(classify_response(s2, b2, h2)):
+                        continue
+                    if not bodies_differ(baseline_body, b2, ignore=(spec.payload,)):
+                        continue
+                    # Require more than a one-off length delta
+                    base_snap = ResponseSnap(
+                        status=baseline_status, body=baseline_body, final_url=baseline_final
+                    )
+                    probe_snap = ResponseSnap(status=p_status, body=p_body, final_url=p_final)
+                    rep_snap = ResponseSnap(status=s2, body=b2, final_url=f2)
+                    # Reuse boolean comparator shape: treat baseline as "true", probe as "false"
+                    cmp_ = compare_response_pair(
+                        base_snap,
+                        probe_snap,
+                        baseline=base_snap,
+                        ignore=(spec.payload,),
+                        repeated_false=rep_snap,
+                    )
+                    # baseline≈true is tautological here; require baseline differs from probe + repro
+                    if not cmp_.get("baseline_differs_from_false"):
+                        continue
+                    if not cmp_.get("reproducible"):
+                        continue
+                    if (cmp_.get("verdict") or STATE_NEGATIVE) in (STATE_NEGATIVE, STATE_INCONCLUSIVE):
+                        # Soften: accept probable-grade content diff with repro even if score gate is strict
+                        if not (
+                            cmp_.get("normalized_hash_diff")
+                            and cmp_.get("reproducible")
+                            and (cmp_.get("content_length_delta", 0) >= 24 or cmp_.get("text_similarity", 1) < 0.92)
+                        ):
+                            continue
+                    hit = True
+                    severity = "medium"
+                    validation_state = STATE_DIFFERENTIAL
+                    detail_bit = "path-normalization / differential traversal signal (not canary-confirmed)"
+                    confidence = "medium"
+                    verification = "detected"
+                    new_evidence = [
+                        f"hash_diff={cmp_.get('normalized_hash_diff')}",
+                        f"repro={cmp_.get('reproducible')}",
+                    ]
+                    evidence_line = "traversal_diff"
+                    compare_meta = cmp_
+
                 elif spec.kind == "traversal":
                     proof = str(spec.meta.get("proof") or "")
                     proof_re = spec.meta.get("proof_re")
+                    is_canary = bool(spec.meta.get("canary"))
                     ok = False
                     if proof and proof in (p_body or "") and proof not in (baseline_body or ""):
                         ok = True
@@ -1250,13 +1453,31 @@ async def run_active_probe_kit(
                         new_evidence = ["passwd_marker"]
                     if not ok:
                         continue
-                    hit = True
-                    severity = spec.default_severity
-                    detail_bit = "confirmed server-side behavior (traversal canary/proof)"
-                    validation_state = STATE_SERVER_EXEC
-                    confidence = "high"
-                    verification = "confirmed"
-                    evidence_line = ",".join(new_evidence)
+                    # Canary file confirmation only for owned lab with installed fixture
+                    if is_canary:
+                        if mode != "lab" or not settings.traversal_fixture_installed:
+                            continue
+                        # Reproduce canary once
+                        resp2 = await _send(method, target, trial, follow=True)
+                        _, body2, _, _ = _meta(resp2)
+                        if proof and proof not in (body2 or ""):
+                            continue
+                        hit = True
+                        severity = "high"
+                        detail_bit = "canary file confirmed (lab fixture)"
+                        validation_state = STATE_CANARY_FILE
+                        confidence = "high"
+                        verification = "confirmed"
+                        evidence_line = ",".join(new_evidence)
+                    else:
+                        # Lab passwd marker etc.
+                        hit = True
+                        severity = spec.default_severity
+                        detail_bit = "confirmed server-side behavior (traversal proof)"
+                        validation_state = STATE_SERVER_EXEC
+                        confidence = "high"
+                        verification = "confirmed"
+                        evidence_line = ",".join(new_evidence)
 
                 elif spec.kind == "redirect":
                     host = str(spec.meta.get("host") or "")
@@ -1348,7 +1569,12 @@ async def run_active_probe_kit(
                         "validation": (
                             "confirmed"
                             if validation_state
-                            in (STATE_SERVER_EXEC, STATE_BROWSER_EXEC, STATE_OOB_CALLBACK)
+                            in (
+                                STATE_SERVER_EXEC,
+                                STATE_BROWSER_EXEC,
+                                STATE_OOB_CALLBACK,
+                                STATE_CANARY_FILE,
+                            )
                             else "unverified"
                         ),
                     },

@@ -2241,6 +2241,7 @@ async def run_active_vuln_probes(
     mode: str = "safe",
     callback_base: str = "",
     redirect_proof_host: str = "redirect-proof.vantacrawl-lab.example",
+    traversal_fixture_installed: bool = False,
     browser_evaluate=None,
     callback_received=None,
 ) -> List[Finding]:
@@ -2260,6 +2261,7 @@ async def run_active_vuln_probes(
             mode=mode_n,
             callback_base=callback_base or "",
             redirect_proof_host=redirect_proof_host or "redirect-proof.vantacrawl-lab.example",
+            traversal_fixture_installed=bool(traversal_fixture_installed),
             max_params=max_params,
             max_forms=max_forms,
             browser_evaluate=browser_evaluate,

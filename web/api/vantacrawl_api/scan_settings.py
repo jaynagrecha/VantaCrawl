@@ -155,6 +155,10 @@ _HUMAN = {
         "Open-redirect proof host",
         "Controlled external host used to confirm open redirects.",
     ),
+    "traversal_fixture_installed": (
+        "Traversal lab fixture installed",
+        "Lab only: target has VantaCrawl traversal canary files installed. Enables canary_file_confirmed.",
+    ),
     "secret_scan": ("Secret scan", "Hunt for API keys and credentials in content."),
     "secret_validate_live": (
         "Live secret validation",
@@ -537,6 +541,7 @@ SETTING_GROUPS: List[Dict[str, Any]] = [
             "active_probe_mode",
             "ssrf_callback_base",
             "redirect_proof_host",
+            "traversal_fixture_installed",
             "secret_scan",
             "secret_validate_live",
             "secret_validate_max",

@@ -261,6 +261,9 @@ def config_to_report_meta(config) -> Dict[str, Any]:
         "active_probe_mode": getattr(config, "active_probe_mode", "safe"),
         "ssrf_callback_base": getattr(config, "ssrf_callback_base", "") or "",
         "redirect_proof_host": getattr(config, "redirect_proof_host", "") or "",
+        "traversal_fixture_installed": bool(
+            getattr(config, "traversal_fixture_installed", False)
+        ),
         "secret_scan": getattr(config, "secret_scan", True),
         "secret_validate_live": getattr(config, "secret_validate_live", False),
         "secret_org_hints": getattr(config, "secret_org_hints", "") or "",
