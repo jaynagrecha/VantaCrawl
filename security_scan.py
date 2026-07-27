@@ -1094,7 +1094,19 @@ _TRAVERSAL_FILE_PARAM_RE = re.compile(
 _XSS_PAYLOAD_RE = re.compile(
     r"(?i)(<\s*script|<\s*img|<\s*svg|<\s*iframe|onerror\s*=|onload\s*=|javascript:)"
 )
-_SQL_PAYLOAD_RE = re.compile(r"[\"'`;]|--|/\*|\bunion\b|\bselect\b", re.I)
+_SQL_PAYLOAD_RE = re.compile(
+    r"[\"'`;]|--(?:\s|$)|/\*|"
+    r"\bunion\s+select\b|"
+    r"\bselect\b.+\bfrom\b|"
+    r"\bor\s+['\"]?\d+['\"]?\s*=\s*['\"]?\d+",
+    re.I,
+)
+
+# Active SSRF: require cloud-metadata *proof tokens*, not mere reflection of the probe IP/URL.
+_SSRF_METADATA_PROOF_RE = re.compile(
+    r"(?i)(ami-[0-9a-f]{8,}|\"?instance-id\"?\s*[:=]|computeMetadata|"
+    r"metadata\.google\.internal|project-id\"?\s*[:=])"
+)
 _ANALYTICS_SCRIPT_RE = re.compile(
     r"(?i)(google-analytics|googletagmanager|gtag\(|fbq\(|analytics\.js|"
     r"hotjar|segment\.com|mixpanel|clarity\.ms|newrelic|datadoghq|"
@@ -1870,15 +1882,75 @@ def _active_match_evidence(category: str, body: str, payload: str, marker: str, 
             return _text_evidence(marker, label=f"rce_echo@offset_{idx}")
         return _text_evidence(marker, label="rce_echo")
     if category == "ssrf":
-        m = re.search(
-            r"(?i)(ami-[0-9a-f]{8,}|instance-id|meta-data/|computeMetadata|"
-            r"metadata\.google|169\.254\.169\.254)",
-            text,
-        )
+        m = _SSRF_METADATA_PROOF_RE.search(text)
         if m:
-            return _match_evidence(m, text, label="ssrf_body")
+            return _match_evidence(m, text, label="ssrf_metadata_proof")
         return _text_evidence(payload, label="ssrf_payload")
     return _text_evidence(payload or marker, label="probe")
+
+
+def _sql_error_new_vs_baseline(body: str, baseline: str) -> bool:
+    """True only when a SQL error appears after the probe and was absent in baseline."""
+    if not SQL_ERROR_RE.search(body or ""):
+        return False
+    if SQL_ERROR_RE.search(baseline or ""):
+        return False
+    return True
+
+
+def _ssrf_metadata_proof_new(body: str, baseline: str) -> bool:
+    """True only for cloud-metadata proof tokens that were not already in baseline.
+
+    Reflecting the probe IP/URL in an 'Invalid URL: …' error is not proof.
+    """
+    if not _SSRF_METADATA_PROOF_RE.search(body or ""):
+        return False
+    if _SSRF_METADATA_PROOF_RE.search(baseline or ""):
+        return False
+    return True
+
+
+def _xss_raw_reflection(body: str, marker: str, baseline: str) -> Tuple[bool, str]:
+    """Return (hit, severity). Raw HTML marker reflection only; encoded-only ignored."""
+    text = body or ""
+    base = baseline or ""
+    if marker not in text:
+        return False, ""
+    if marker in base:
+        return False, ""
+    # Prefer high when marker lands in a script/event sink; otherwise medium (reflection only).
+    idx = text.find(marker)
+    window = text[max(0, idx - 80) : idx + len(marker) + 80] if idx >= 0 else ""
+    if re.search(r"(?is)<script\b", window) or re.search(
+        r"(?is)\bon\w+\s*=\s*['\"][^'\"]*" + re.escape(marker),
+        text,
+    ):
+        return True, "high"
+    return True, "medium"
+
+
+def _rce_executed_not_reflected(body: str, marker: str, payload: str, baseline: str) -> bool:
+    """Marker must appear as execution output, not as a reflected shell command string."""
+    text = body or ""
+    if marker not in text:
+        return False
+    if marker in (baseline or ""):
+        return False
+    # Full command reflection (`;echo marker` or `echo marker`) is not execution proof
+    if payload and payload in text:
+        return False
+    if f"echo {marker}" in text.lower():
+        return False
+    return True
+
+
+def _traversal_proof_new(body: str, baseline: str) -> bool:
+    proof = re.search(r"(?i)(root:x:0:0:|/bin/(?:ba)?sh\b)", body or "")
+    if not proof:
+        return False
+    if re.search(r"(?i)(root:x:0:0:|/bin/(?:ba)?sh\b)", baseline or ""):
+        return False
+    return True
 
 
 async def run_active_vuln_probes(
@@ -1892,8 +1964,8 @@ async def run_active_vuln_probes(
 ) -> List[Finding]:
     """Send minimal safe payloads on GET params and forms (authorized testing only).
 
-    Compares probe responses against a baseline request to cut WAF/generic-error FPs.
-    Each finding includes the exact matched pattern / marker as evidence.
+    Confirmed hits require differential evidence vs a successful baseline response
+    (except XSS reflection of a unique marker). Each finding includes matched evidence.
     """
     from urllib.parse import parse_qsl, urlparse
 
@@ -1915,14 +1987,12 @@ async def run_active_vuln_probes(
             "sql_injection",
             "'",
             "high",
-            lambda body, _payload, _marker: bool(SQL_ERROR_RE.search(body)),
             lambda name: bool(sql_names.match(name)),
         ),
         (
             "xss",
             xss_marker,
-            "high",
-            lambda body, _payload, marker: marker in body,
+            "medium",
             lambda name: bool(
                 re.match(
                     r"(?i)^(q|query|search|s|keyword|term|name|title|message|comment|text|content|input)$",
@@ -1934,32 +2004,18 @@ async def run_active_vuln_probes(
             "directory_traversal",
             "../../../../etc/passwd",
             "critical",
-            lambda body, _payload, _marker: bool(re.search(r"(?i)(root:x:0:0:|/bin/(?:ba)?sh\b)", body)),
             lambda name: bool(re.match(r"(?i)^(file|path|folder|dir|document|template|include|doc)$", name)),
         ),
         (
             "rce",
             f";echo {rce_marker}",
             "critical",
-            lambda body, _payload, marker: marker in body and "echo" not in body.lower()[:40],
             lambda name: bool(re.match(r"(?i)^(cmd|command|exec|execute|run|shell)$", name)),
         ),
         (
             "ssrf",
-            # Metadata URL — connection-refused alone is a common app error FP
             "http://169.254.169.254/latest/meta-data/",
             "high",
-            lambda body, baseline, _marker: bool(
-                re.search(
-                    r"(?i)(ami-[0-9a-f]{8,}|instance-id|meta-data/|computeMetadata|"
-                    r"metadata\.google|169\.254\.169\.254)",
-                    body or "",
-                )
-            )
-            and not re.search(
-                r"(?i)(ami-[0-9a-f]{8,}|instance-id|computeMetadata)",
-                baseline or "",
-            ),
             lambda name: bool(SSRF_PARAM_RE.match(name)),
         ),
     )
@@ -1973,10 +2029,20 @@ async def run_active_vuln_probes(
         return await client.post(target, data=data, timeout=8, follow_redirects=True)
 
     async def _run_probes_on_field(
-        method: str, target: str, field_name: str, values: dict, source: str, baseline_body: str
+        method: str,
+        target: str,
+        field_name: str,
+        values: dict,
+        source: str,
+        baseline_body: str,
+        *,
+        baseline_ok: bool,
     ):
-        for category, payload, severity, detector, name_ok in probe_defs:
+        for category, payload, severity, name_ok in probe_defs:
             if not name_ok(field_name):
+                continue
+            # Differential categories need a real baseline; never confirm on failed baseline fetch
+            if category in ("sql_injection", "ssrf", "rce", "directory_traversal") and not baseline_ok:
                 continue
             trial = dict(values)
             trial[field_name] = str(trial.get(field_name) or "1") + payload
@@ -1986,30 +2052,41 @@ async def run_active_vuln_probes(
                 else:
                     response = await _send_get(target, trial)
                 body = response.text or ""
-                # Require response to differ from baseline (length or content) for non-XSS
-                if category != "xss" and baseline_body:
-                    if body.strip() == baseline_body.strip():
+                if category != "xss" and baseline_ok:
+                    if body.strip() == (baseline_body or "").strip():
                         continue
-                    if abs(len(body) - len(baseline_body)) < 8 and category in ("sql_injection", "ssrf"):
-                        # Tiny delta often means generic soft-error — still allow SQL_ERROR_RE hit
-                        if category == "sql_injection" and not SQL_ERROR_RE.search(body):
-                            continue
-                marker = rce_marker if category == "rce" else (xss_marker if category == "xss" else payload)
-                if category == "ssrf":
-                    hit = detector(body, baseline_body, marker)
-                else:
-                    hit = detector(body, payload, marker)
+
+                hit = False
+                out_severity = severity
+                if category == "sql_injection":
+                    hit = _sql_error_new_vs_baseline(body, baseline_body)
+                elif category == "xss":
+                    hit, out_severity = _xss_raw_reflection(body, xss_marker, baseline_body)
+                elif category == "directory_traversal":
+                    hit = _traversal_proof_new(body, baseline_body)
+                elif category == "rce":
+                    hit = _rce_executed_not_reflected(body, rce_marker, payload, baseline_body)
+                elif category == "ssrf":
+                    hit = _ssrf_metadata_proof_new(body, baseline_body)
+
                 if hit:
-                    # XSS must not already be in baseline
-                    if category == "xss" and marker in (baseline_body or ""):
-                        continue
+                    marker = (
+                        rce_marker
+                        if category == "rce"
+                        else (xss_marker if category == "xss" else payload)
+                    )
                     evidence = _active_match_evidence(
                         category, body, payload, marker, baseline_body
                     )
+                    detail_bit = (
+                        "reflection (not proven executable sink)"
+                        if category == "xss" and out_severity == "medium"
+                        else "probe confirmed"
+                    )
                     add(
                         category,
-                        severity,
-                        f"Active {category} probe confirmed on {source} '{field_name}' at {target}",
+                        out_severity,
+                        f"Active {category} {detail_bit} on {source} '{field_name}' at {target}",
                         evidence,
                     )
             except Exception:
@@ -2019,11 +2096,15 @@ async def run_active_vuln_probes(
     pairs = parse_qsl(parsed.query, keep_blank_values=True)
     if pairs:
         values = {name: value for name, value in pairs}
+        baseline_ok = False
+        baseline_body = ""
         try:
             baseline_resp = await _send_get(url, values)
             baseline_body = baseline_resp.text or ""
+            baseline_ok = True
         except Exception:
             baseline_body = ""
+            baseline_ok = False
         # Prioritize interesting param names first
         ordered = sorted(
             pairs,
@@ -2036,7 +2117,15 @@ async def run_active_vuln_probes(
             ),
         )
         for name, _value in ordered[:max_params]:
-            await _run_probes_on_field("GET", url, name, values, "query param", baseline_body)
+            await _run_probes_on_field(
+                "GET",
+                url,
+                name,
+                values,
+                "query param",
+                baseline_body,
+                baseline_ok=baseline_ok,
+            )
             # Active open-redirect: confirm Location / refresh points at probe host
             if OPEN_REDIRECT_PARAM_RE.match(name):
                 trial = dict(values)
@@ -2067,16 +2156,28 @@ async def run_active_vuln_probes(
             if not fields:
                 continue
             values = {field: "test" for field in form.get("fields", []) if field}
+            baseline_ok = False
+            baseline_body = ""
             try:
                 if method == "POST":
                     baseline_resp = await _send_post(action, values)
                 else:
                     baseline_resp = await _send_get(action, values)
                 baseline_body = baseline_resp.text or ""
+                baseline_ok = True
             except Exception:
                 baseline_body = ""
+                baseline_ok = False
             for field in fields:
-                await _run_probes_on_field(method, action, field, values, "form field", baseline_body)
+                await _run_probes_on_field(
+                    method,
+                    action,
+                    field,
+                    values,
+                    "form field",
+                    baseline_body,
+                    baseline_ok=baseline_ok,
+                )
 
     # GraphQL introspection confirmation (POST)
     findings.extend(await confirm_graphql_introspection(client, url))
