@@ -105,6 +105,23 @@ services:
         value: /opt/render/project/src/.cache/vantacrawl-chrome
     # Disk is live on the web service above (10 GB at /opt/render/project/src/web/data).
 
+  # Intentionally vulnerable scan target (generic public name).
+  # Stdlib-only Python app under vuln_playground/ — edit sinks freely.
+  # Free plan spins down after idle; first request may cold-start.
+  - type: web
+    name: horizon-catalog
+    runtime: python
+    plan: starter
+    region: oregon
+    healthCheckPath: /healthz
+    buildCommand: "pip install -r vuln_playground/requirements.txt"
+    startCommand: "cd vuln_playground && python -m waitress --host=0.0.0.0 --port=$PORT --threads=8 wsgi:app"
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.3"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+
   # Optional dedicated scan worker — DO NOT run alongside EMBED_WORKER=true.
   # Render disks cannot be shared across services, so reports/uploads would land on
   # the worker's ephemeral FS instead of the API disk. Re-enable only after reports
