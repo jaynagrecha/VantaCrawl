@@ -924,6 +924,8 @@ def compare_response_pair(
     }
 
     # Required shape: baseline ≈ true AND baseline differs from false
+    # Also accept inverted OR-injection polarity: baseline ≈ false AND true differs
+    # from baseline (Horizon /sqli/blind returns "not found" for id=1).
     if baseline is not None:
         bb = _strip_literals(baseline.body, *ignore) if ignore else baseline.body
         bh = probe_hash(bb)
@@ -934,17 +936,29 @@ def compare_response_pair(
         baseline_approx_true = (th == bh) or (sim_bt >= 0.92 and len_bt < max(48, int(0.1 * max(len(bb), 1))))
         false_status_diff = int(baseline.status or 0) != int(false_snap.status or 0)
         false_url_diff = (baseline.final_url or "").split("?")[0] != (false_snap.final_url or "").split("?")[0]
+        true_status_diff = int(baseline.status or 0) != int(true_snap.status or 0)
+        true_url_diff = (baseline.final_url or "").split("?")[0] != (true_snap.final_url or "").split("?")[0]
         baseline_differs_false = (fh != bh) and (
             sim_bf < 0.92 or len_bf >= 24 or false_status_diff or false_url_diff
             or (baseline.dom_fingerprint() != false_snap.dom_fingerprint())
         )
+        baseline_approx_false = (fh == bh) or (sim_bf >= 0.92 and len_bf < max(48, int(0.1 * max(len(bb), 1))))
+        baseline_differs_true = (th != bh) and (
+            sim_bt < 0.92 or len_bt >= 24 or true_status_diff or true_url_diff
+            or (baseline.dom_fingerprint() != true_snap.dom_fingerprint())
+        )
         signals["baseline_approx_true"] = baseline_approx_true
         signals["baseline_differs_from_false"] = baseline_differs_false
+        signals["baseline_approx_false"] = baseline_approx_false
+        signals["baseline_differs_from_true"] = baseline_differs_true
         signals["baseline_true_similarity"] = round(sim_bt, 4)
         signals["baseline_false_similarity"] = round(sim_bf, 4)
         signals["differs_from_baseline"] = th != bh or fh != bh
-        if not baseline_approx_true or not baseline_differs_false:
+        classic = baseline_approx_true and baseline_differs_false
+        inverted = baseline_approx_false and baseline_differs_true and hash_diff
+        if not classic and not inverted:
             return {**signals, "verdict": STATE_NEGATIVE, "score": 0}
+        signals["boolean_polarity"] = "classic" if classic else "inverted"
     else:
         # Without baseline we cannot satisfy baseline≈true — refuse confirmation-grade verdicts
         return {**signals, "verdict": STATE_INCONCLUSIVE, "score": 0}
