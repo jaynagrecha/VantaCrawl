@@ -3,10 +3,22 @@
 from __future__ import annotations
 
 import html
-from typing import Dict
+from typing import Dict, Optional
 
 from http_util import page, send
 from registry import register
+
+
+def _dom_clobber_inject_raw(params: Dict[str, str]) -> Optional[str]:
+    """Return attacker HTML when an injection param is present.
+
+    Accepts ``html`` plus VantaCrawl XSS probe names (``q``, ``content``, …) so a
+    Lab scan can exercise the sink without scanner changes.
+    """
+    for key in ("html", "q", "content", "message", "comment", "text", "input"):
+        if key in params:
+            return params.get(key) or ""
+    return None
 
 
 @register(
@@ -40,11 +52,12 @@ def xss_postmessage(handler, params: Dict[str, str], *, head_only: bool = False)
 def xss_dom_clobber(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
     # Reflect unsanitized HTML so attackers can inject <a id=defaultConfig href=…>
     # or <form id=defaultConfig><input name=url value=…>. Shorthand ?href=/ ?url=
-    # builds a clobbering anchor when html= is omitted.
+    # builds a clobbering anchor when html=/q= is omitted.
     # Default points at a same-origin proof script so the full clobber→sink→exec
     # chain is demonstrable without an external host or broken cid: scheme.
-    if "html" in params:
-        raw = params.get("html") or ""
+    injected = _dom_clobber_inject_raw(params)
+    if injected is not None:
+        raw = injected
     else:
         href = params.get("href") or params.get("url") or "/fixtures/dom-clobber-proof.js"
         raw = f'<a id="defaultConfig" href="{href}">x</a>'
@@ -81,10 +94,10 @@ def xss_dom_clobber(handler, params: Dict[str, str], *, head_only: bool = False)
         "  document.body.appendChild(s);\n"
         "})();\n"
         "</script>"
-        "<p>Inject via <code>?html=&lt;a id=defaultConfig href=…&gt;</code> "
-        "or <code>?href=/fixtures/dom-clobber-proof.js</code>. "
+        "<p>Inject via <code>?html=&lt;a id=defaultConfig href=…&gt;</code>, "
+        "<code>?q=…</code>, or <code>?href=/fixtures/dom-clobber-proof.js</code>. "
         "Proof: <code>document.body.dataset.domClobberExecuted === 'true'</code>. "
-        "<a href='?html=test&amp;href=/fixtures/dom-clobber-proof.js'>seed params</a></p>",
+        "<a href='?q=test&amp;href=/fixtures/dom-clobber-proof.js'>seed params</a></p>",
     )
     send(handler, 200, body, head_only=head_only)
 
@@ -99,23 +112,20 @@ def xss_dom_clobber(handler, params: Dict[str, str], *, head_only: bool = False)
 def xss_dom_clobber_safe(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
     """Negative control: same clobber markup is present; never assigned to script.src.
 
-    Custom ``html=`` is shown as text (present for inspection) so Lab XSS probes that
-    only prove HTML injection do not false-confirm this control. The live sink always
-    carries the clobbering ``<a id=defaultConfig>`` (href escaped) so
-    ``window.defaultConfig`` is still clobbered without a script-loading sink.
+    Injection params (``html``, ``q``, …) are shown as text so Lab XSS probes do not
+    false-confirm this control. The live sink always carries the clobbering
+    ``<a id=defaultConfig>`` (href escaped) so ``window.defaultConfig`` is still
+    clobbered without a script-loading sink.
     """
     href = params.get("href") or params.get("url") or "/fixtures/dom-clobber-proof.js"
     # Live clobber anchor — identical structure to the vulnerable default, but href
     # is attribute-escaped so breakout XSS cannot execute on the control.
     clobber = f'<a id="defaultConfig" href="{html.escape(href, quote=True)}">x</a>'
     injected = ""
-    if "html" in params:
+    shown = _dom_clobber_inject_raw(params)
+    if shown is not None:
         # Same attacker string is present on the page, but not parsed as DOM/JS.
-        injected = (
-            "<pre id='injected'>"
-            f"{html.escape(params.get('html') or '')}"
-            "</pre>"
-        )
+        injected = f"<pre id='injected'>{html.escape(shown)}</pre>"
     # Multi-line script: a // comment on a single-line <script> would eat "})();".
     body = page(
         "DOM clobber safe",
@@ -141,7 +151,7 @@ def xss_dom_clobber_safe(handler, params: Dict[str, str], *, head_only: bool = F
         "</script>"
         "<p>Control: clobber HTML is present and retained, but never reaches "
         "<code>script.src</code>. "
-        "<a href='?html=test&amp;href=/fixtures/dom-clobber-proof.js'>seed params</a></p>",
+        "<a href='?q=test&amp;href=/fixtures/dom-clobber-proof.js'>seed params</a></p>",
     )
     send(handler, 200, body, head_only=head_only)
 
