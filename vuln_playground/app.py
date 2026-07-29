@@ -190,7 +190,7 @@ class PlaygroundHandler(BaseHTTPRequestHandler):
 
         parts = [p for p in path.split("/") if p]
         qs = parse_qs(urlparse(self.path).query)
-        if len(parts) >= 3 and parts[0] == "oob" and parts[2] in ("ping", "redirect"):
+        if len(parts) >= 3 and parts[0] == "oob" and parts[2] in ("ping", "redirect", "proof.js"):
             nonce = parts[1]
             scan_id = (qs.get("scan_id") or [""])[0]
             probe_id = (qs.get("probe_id") or [""])[0]
@@ -204,6 +204,34 @@ class PlaygroundHandler(BaseHTTPRequestHandler):
                     "scan_id": scan_id,
                     "probe_id": probe_id,
                 }
+            if parts[2] == "proof.js":
+                # Scanner-owned executable proof for DOM-clobber Lab confirmation.
+                # Sets a nonce-derived dataset marker; also records this GET as an OOB hit.
+                import json as _json
+
+                key = f"vcDc_{nonce[:12]}"
+                key_js = _json.dumps(key)
+                nonce_js = _json.dumps(nonce)
+                scan_js = _json.dumps(scan_id)
+                probe_js = _json.dumps(probe_id)
+                js = (
+                    f"try{{document.documentElement.dataset[{key_js}]={nonce_js};}}"
+                    f"catch(e){{}}"
+                    f"try{{document.body.dataset[{key_js}]={nonce_js};}}"
+                    f"catch(e){{}}"
+                    f"try{{fetch('/oob/'+{nonce_js}+'/ping?scan_id='+encodeURIComponent({scan_js})"
+                    f"+'&probe_id='+encodeURIComponent({probe_js}));}}catch(e){{}}"
+                )
+                return send(
+                    self,
+                    200,
+                    js.encode("utf-8"),
+                    headers={
+                        "Content-Type": "application/javascript; charset=utf-8",
+                        "Cache-Control": "no-store",
+                    },
+                    head_only=head_only,
+                )
             if parts[2] == "redirect":
                 # Intentionally weak: Location to a same-host benign page.
                 # Scanners must not treat client-followed redirects as OOB proof.

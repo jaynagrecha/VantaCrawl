@@ -32,57 +32,54 @@ def xss_postmessage(handler, params: Dict[str, str], *, head_only: bool = False)
 
 @register(
     "/xss/dom-clobber",
-    title="DOM clobbering",
+    title="DOM clobbering (script.src sink)",
     family="xss",
     expected="named anchors/forms clobber globals used as config; script.src sink executes proof",
-    tags=["active", "browser"],
+    tags=["active", "browser", "dom-clobber"],
 )
 def xss_dom_clobber(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
-    # Reflect unsanitized HTML so attackers can inject <a id=defaultConfig href=…>
-    # or <form id=defaultConfig><input name=url value=…>. Shorthand ?href=/ ?url=
-    # builds a clobbering anchor when html= is omitted.
-    # Default points at a same-origin proof script so the full clobber→sink→exec
-    # chain is demonstrable without an external host or broken cid: scheme.
+    # Realistic injection surface: unsanitized ``html`` query (not a scanner allowlist alias).
+    # Default demo uses a same-origin proof script so opening the URL alone demonstrates
+    # clobber → sink → exec. Scanners must discover the property name dynamically.
     if "html" in params:
         raw = params.get("html") or ""
     else:
         href = params.get("href") or params.get("url") or "/fixtures/dom-clobber-proof.js"
         raw = f'<a id="defaultConfig" href="{href}">x</a>'
-    # Valid JS only inside <script> — victim opens the URL and the sink runs automatically.
     body = page(
         "DOM clobber",
         f"<div id='sink'>{raw}</div>"
         "<p id='retained'></p>"
         "<p id='status'></p>"
-        "<script>"
-        "(function () {"
-        "  var cfg = window.defaultConfig || { href: '/safe' };"
-        "  var resolved = '/safe';"
-        "  if (cfg && typeof cfg.href === 'string' && cfg.href) {"
-        "    resolved = cfg.href;"
-        "  } else if (cfg && typeof cfg.url === 'string' && cfg.url) {"
-        "    resolved = cfg.url;"
-        "  } else if (cfg && cfg.url && typeof cfg.url.value === 'string') {"
-        "    resolved = cfg.url.value;"
-        "  }"
-        "  var retained = document.getElementById('retained');"
-        "  if (retained) retained.textContent = 'cfg.url=' + resolved;"
-        "  var s = document.createElement('script');"
-        "  s.src = resolved;"
-        "  s.onload = function () {"
-        "    var st = document.getElementById('status');"
-        "    if (st && !st.textContent) st.textContent = 'script execution confirmed';"
-        "  };"
-        "  s.onerror = function () {"
-        "    var st = document.getElementById('status');"
-        "    if (st) st.textContent = 'script load attempted';"
-        "  };"
-        "  document.body.appendChild(s);"
-        "})();"
+        "<script>\n"
+        "(function () {\n"
+        "  var cfg = window.defaultConfig || { href: '/safe' };\n"
+        "  var resolved = '/safe';\n"
+        "  if (cfg && typeof cfg.href === 'string' && cfg.href) {\n"
+        "    resolved = cfg.href;\n"
+        "  } else if (cfg && typeof cfg.url === 'string' && cfg.url) {\n"
+        "    resolved = cfg.url;\n"
+        "  } else if (cfg && cfg.url && typeof cfg.url.value === 'string') {\n"
+        "    resolved = cfg.url.value;\n"
+        "  }\n"
+        "  var retained = document.getElementById('retained');\n"
+        "  if (retained) retained.textContent = 'cfg.url=' + resolved;\n"
+        "  var s = document.createElement('script');\n"
+        "  s.src = resolved;\n"
+        "  s.onload = function () {\n"
+        "    var st = document.getElementById('status');\n"
+        "    if (st && !st.textContent) st.textContent = 'script execution confirmed';\n"
+        "  };\n"
+        "  s.onerror = function () {\n"
+        "    var st = document.getElementById('status');\n"
+        "    if (st) st.textContent = 'script load attempted';\n"
+        "  };\n"
+        "  document.body.appendChild(s);\n"
+        "})();\n"
         "</script>"
-        "<p>Inject via <code>?html=&lt;a id=defaultConfig href=…&gt;</code> "
-        "or <code>?href=/fixtures/dom-clobber-proof.js</code>. "
-        "Proof: <code>document.body.dataset.domClobberExecuted === 'true'</code>.</p>",
+        "<p>Inject via <code>?html=&lt;a id=… href=…&gt;</code>. "
+        "Victim opens the URL — no click required. "
+        "<a href='?html=x'>seed</a></p>",
     )
     send(handler, 200, body, head_only=head_only)
 
@@ -92,38 +89,132 @@ def xss_dom_clobber(handler, params: Dict[str, str], *, head_only: bool = False)
     title="DOM clobber reflection-only control",
     family="xss",
     expected="same clobber HTML retained/displayed but never assigned to script.src",
-    tags=["control", "fp-guard", "browser"],
+    tags=["control", "fp-guard", "browser", "dom-clobber"],
 )
 def xss_dom_clobber_safe(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
-    """Negative control: identical clobber injection, no script-loading sink."""
+    """Negative control: live clobber HTML may be present; never reaches script.src."""
     if "html" in params:
         raw = params.get("html") or ""
     else:
         href = params.get("href") or params.get("url") or "/fixtures/dom-clobber-proof.js"
         raw = f'<a id="defaultConfig" href="{href}">x</a>'
+    # Multi-line script: a // comment on a single-line <script> would eat "})();".
     body = page(
         "DOM clobber safe",
         f"<div id='sink'>{raw}</div>"
         "<p id='retained'></p>"
         "<p id='status'>no script sink</p>"
-        "<script>"
-        "(function () {"
-        "  var cfg = window.defaultConfig || { href: '/safe' };"
-        "  var resolved = '/safe';"
-        "  if (cfg && typeof cfg.href === 'string' && cfg.href) {"
-        "    resolved = cfg.href;"
-        "  } else if (cfg && typeof cfg.url === 'string' && cfg.url) {"
-        "    resolved = cfg.url;"
-        "  } else if (cfg && cfg.url && typeof cfg.url.value === 'string') {"
-        "    resolved = cfg.url.value;"
-        "  }"
-        "  var retained = document.getElementById('retained');"
-        "  if (retained) retained.textContent = 'cfg.url=' + resolved;"
-        "  // Intentionally no createElement('script') / script.src assignment."
-        "})();"
+        "<script>\n"
+        "(function () {\n"
+        "  var cfg = window.defaultConfig || { href: '/safe' };\n"
+        "  var resolved = '/safe';\n"
+        "  if (cfg && typeof cfg.href === 'string' && cfg.href) {\n"
+        "    resolved = cfg.href;\n"
+        "  } else if (cfg && typeof cfg.url === 'string' && cfg.url) {\n"
+        "    resolved = cfg.url;\n"
+        "  } else if (cfg && cfg.url && typeof cfg.url.value === 'string') {\n"
+        "    resolved = cfg.url.value;\n"
+        "  }\n"
+        "  var retained = document.getElementById('retained');\n"
+        "  if (retained) retained.textContent = 'cfg.url=' + resolved;\n"
+        "  /* Intentionally no createElement('script') / script.src assignment. */\n"
+        "})();\n"
         "</script>"
         "<p>Control: clobber HTML may be present and retained, but never reaches "
         "<code>script.src</code>.</p>",
+    )
+    send(handler, 200, body, head_only=head_only)
+
+
+@register(
+    "/xss/dom-clobber/app-settings",
+    title="DOM clobber appSettings → script.src",
+    family="xss",
+    expected="window.appSettings clobbered; script.src sink",
+    tags=["active", "browser", "dom-clobber"],
+)
+def xss_dom_clobber_app_settings(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
+    """Different property shape than /xss/dom-clobber — scanners must discover appSettings."""
+    if "html" in params:
+        raw = params.get("html") or ""
+    else:
+        href = params.get("href") or "/fixtures/dom-clobber-proof.js"
+        raw = f'<a id="appSettings" href="{href}">x</a>'
+    body = page(
+        "DOM clobber appSettings",
+        f"<div id='sink'>{raw}</div><p id='status'></p>"
+        "<script>\n"
+        "(function () {\n"
+        "  var settings = window.appSettings || { href: '/safe' };\n"
+        "  var src = (settings && settings.href) ? settings.href : '/safe';\n"
+        "  var s = document.createElement('script');\n"
+        "  s.src = src;\n"
+        "  document.body.appendChild(s);\n"
+        "})();\n"
+        "</script>",
+    )
+    send(handler, 200, body, head_only=head_only)
+
+
+@register(
+    "/xss/dom-clobber/widget-cfg",
+    title="DOM clobber widgetCfg.url → fetch",
+    family="xss",
+    expected="form named-property clobber; fetch sink (network proof)",
+    tags=["active", "browser", "dom-clobber"],
+)
+def xss_dom_clobber_widget_cfg(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
+    """Nested form clobber consumed by fetch — controlled_request_confirmed path."""
+    if "html" in params:
+        raw = params.get("html") or ""
+    else:
+        raw = (
+            '<form id="widgetCfg">'
+            '<input name="url" value="/fixtures/dom-clobber-proof.js">'
+            "</form>"
+        )
+    body = page(
+        "DOM clobber widgetCfg",
+        f"<div id='sink'>{raw}</div><p id='status'></p>"
+        "<script>\n"
+        "(function () {\n"
+        "  var cfg = window.widgetCfg || {};\n"
+        "  var u = '/safe';\n"
+        "  if (cfg && cfg.url && typeof cfg.url.value === 'string') u = cfg.url.value;\n"
+        "  else if (cfg && typeof cfg.url === 'string') u = cfg.url;\n"
+        "  fetch(u).then(function () {\n"
+        "    var st = document.getElementById('status');\n"
+        "    if (st) st.textContent = 'fetch attempted';\n"
+        "  }).catch(function () {});\n"
+        "})();\n"
+        "</script>",
+    )
+    send(handler, 200, body, head_only=head_only)
+
+
+@register(
+    "/xss/dom-clobber/media-embed",
+    title="DOM clobber mediaTarget → iframe.src",
+    family="xss",
+    expected="iframe.src sink from clobbered href",
+    tags=["active", "browser", "dom-clobber"],
+)
+def xss_dom_clobber_media(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
+    if "html" in params:
+        raw = params.get("html") or ""
+    else:
+        href = params.get("href") or "/fixtures/dom-clobber-proof.js"
+        raw = f'<a id="mediaTarget" href="{href}">x</a>'
+    body = page(
+        "DOM clobber mediaTarget",
+        f"<div id='sink'>{raw}</div><iframe id='frame' name='frame'></iframe>"
+        "<script>\n"
+        "(function () {\n"
+        "  var t = window.mediaTarget || { href: 'about:blank' };\n"
+        "  var f = document.getElementById('frame');\n"
+        "  if (f && t && t.href) f.src = t.href;\n"
+        "})();\n"
+        "</script>",
     )
     send(handler, 200, body, head_only=head_only)
 
