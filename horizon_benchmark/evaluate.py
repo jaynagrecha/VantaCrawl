@@ -756,10 +756,208 @@ def evaluate_stats(
         )
     )
 
+    entire = evaluate_entire_catalog(stats=stats, mode=mode, manifest=manifest)
+
     return {
         "mode": mode,
         "rows": rows,
         "summary": summary,
         "assessment_complete": assessment_complete,
         "coverage_gaps": gaps,
+        "entire_catalog": entire,
+        "product_claim": (
+            "VantaCrawl has a generic DOM-clobber verifier and a generic verification "
+            "framework. Individual family capabilities are reported according to their "
+            "implementation and live-validation maturity. Horizon Catalog measures "
+            "supported-active recall separately from passive/manual and unsupported coverage."
+        ),
+    }
+
+
+def _failure_stage_for_row(row: Dict[str, Any]) -> str:
+    if row.get("support_classification") == "unsupported" or row.get("bucket") == BUCKET_UNSUPPORTED:
+        return "unsupported"
+    if row.get("status") == "skipped_mode":
+        return "mode_excluded"
+    if not row.get("discovered"):
+        return "not_discovered"
+    if row.get("bucket") == BUCKET_SUPPORTED and not row.get("parameter_extracted") and row.get("mandatory"):
+        # parameter may be empty for inventory rows
+        if row.get("expected_result_state") and not row.get("probe_sent"):
+            return "not_parameterized"
+    if not row.get("probe_sent") and row.get("bucket") == BUCKET_SUPPORTED and row.get("classification") == "vulnerable":
+        if row.get("mandatory") or row.get("expected_result_state"):
+            return "not_scheduled" if row.get("discovered") else "not_discovered"
+        return "not_scheduled"
+    if row.get("result_state") == "confirmation_unavailable":
+        return "prerequisite_missing"
+    if row.get("mismatch") == "false_positive_confirmed_on_control":
+        return "negative_control_failed"
+    if row.get("status") == "fail" and row.get("result_state") and row.get("expected_result_state"):
+        return "result_state_mismatch"
+    if row.get("status") == "coverage_gap":
+        return str(row.get("root_cause_stage") or "probe_not_sent")
+    return ""
+
+
+def evaluate_entire_catalog(
+    *,
+    stats: Any,
+    mode: str,
+    manifest: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Row for every Horizon fixture with honest status — never inflate recall."""
+    from horizon_benchmark.inventory import build_fixture_inventory
+    from verifiers.contract import map_fixture_status
+
+    manifest = manifest or load_manifest()
+    inventory = build_fixture_inventory()
+    by_path = {str(r.get("path")): r for r in inventory.get("fixtures") or []}
+
+    matrix = []
+    for fix in manifest.get("routes") or []:
+        row = evaluate_fixture_against_stats(fix, stats=stats, mode=mode)
+        inv = by_path.get(str(fix.get("path"))) or {}
+        support = inv.get("support_classification") or (
+            "unsupported"
+            if fix.get("bucket") == BUCKET_UNSUPPORTED
+            else ("passive_manual" if fix.get("bucket") == BUCKET_PASSIVE else "supported_active")
+        )
+        conf_unavail = (
+            row.get("result_state") == "confirmation_unavailable"
+            or row.get("mismatch") == "confirmation_unavailable_not_true_positive"
+        )
+        honest = map_fixture_status(
+            bucket=str(fix.get("bucket") or ""),
+            classification=str(fix.get("classification") or ""),
+            discovered=bool(row.get("discovered")),
+            probe_sent=bool(row.get("probe_sent")),
+            result_state=str(row.get("result_state") or ""),
+            expected_result_state=str(row.get("expected_result_state") or ""),
+            must_not_confirm=bool(fix.get("must_not_confirm")),
+            match=bool(row.get("status") == "pass"),
+            confirmation_unavailable=bool(conf_unavail),
+        )
+        failure = _failure_stage_for_row({**row, "support_classification": support, "bucket": fix.get("bucket")})
+        ev = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+        matrix.append(
+            {
+                "fixture_id": inv.get("fixture_id") or f"hz:{fix.get('path')}",
+                "family": row.get("family"),
+                "url_method": f"{fix.get('method', 'GET')} {fix.get('path')}",
+                "path": fix.get("path"),
+                "discovered": row.get("discovered"),
+                "input_modelled": bool(row.get("parameter_extracted") or inv.get("input_channels")),
+                "scheduled": bool(row.get("probe_family_selected") or row.get("probe_sent")),
+                "probe_sent": row.get("probe_sent"),
+                "form_submitted": bool(ev.get("method_actual") == "POST" or (ev.get("submitted_fields") or {})),
+                "browser_used": bool(ev.get("browser_used"))
+                or str(row.get("result_state") or "").startswith("browser_"),
+                "callback_used": "oob" in str(row.get("result_state") or "")
+                or bool(ev.get("callback_used")),
+                "baseline_captured": int(ev.get("baseline_count") or 0) > 0,
+                "negative_control_run": int(ev.get("control_count") or 0) > 0,
+                "replay_run": int(ev.get("replay_count") or 0) > 0,
+                "result_state": row.get("result_state") or "",
+                "finding_emitted": bool(row.get("finding_emitted")),
+                "expected_state": row.get("expected_result_state") or "",
+                "match": row.get("status") == "pass",
+                "status": row.get("status"),
+                "failure_stage": failure,
+                "evidence": row.get("evidence"),
+                "verifier_capability": inv.get("verifier_capability_id") or "",
+                "support_classification": support,
+                "capability_maturity": inv.get("capability_maturity") or "",
+                "honest_status": honest,
+                "reason_if_unsupported_manual": inv.get("missing_capability") or "",
+                # Scanner result_state is never rewritten here — only reported.
+                "scanner_result_state_preserved": True,
+            }
+        )
+
+    inv_summary = inventory.get("summary") or {}
+    supported_active_rows = [r for r in matrix if r["support_classification"] == "supported_active"]
+    # Supported-active TP recall uses mandatory expected-state matches only (anti-inflation)
+    mandatory_vuln = [
+        r
+        for r in matrix
+        if r["support_classification"] == "supported_active"
+        and (by_path.get(str(r.get("path"))) or {}).get("mandatory")
+        and (by_path.get(str(r.get("path"))) or {}).get("classification") == "vulnerable"
+    ]
+    # Fall back to rows that have expected_state set
+    if not mandatory_vuln:
+        mandatory_vuln = [
+            r
+            for r in supported_active_rows
+            if r.get("expected_state")
+            and (by_path.get(str(r.get("path"))) or {}).get("classification") != "control"
+        ]
+    tp_ok = sum(1 for r in mandatory_vuln if r.get("match") and r.get("honest_status") == "actively_verified")
+    # Include expected non-exec matches that evaluate as pass
+    tp_ok = sum(1 for r in mandatory_vuln if r.get("match"))
+    controls = [
+        r
+        for r in matrix
+        if (by_path.get(str(r.get("path"))) or {}).get("must_not_confirm")
+        or (by_path.get(str(r.get("path"))) or {}).get("classification") == "control"
+    ]
+    fp = sum(1 for r in controls if r.get("result_state") in (
+        "browser_execution_confirmed",
+        "server_execution_confirmed",
+        "oob_callback_confirmed",
+        "execution_confirmed",
+        "canary_file_confirmed",
+        "state_change_confirmed",
+    ))
+
+    headline = {
+        "catalog_fixtures": inv_summary.get("catalog_fixtures") or len(matrix),
+        "supported_active": inv_summary.get("supported_active"),
+        "passively_manual_assessable": inv_summary.get("passive_manual"),
+        "unsupported": inv_summary.get("unsupported"),
+        "mode": mode,
+        "supported_active_tp_recall": {
+            "numerator": tp_ok,
+            "denominator": max(len(mandatory_vuln), 1) if mandatory_vuln else 0,
+            "rate": round(tp_ok / max(len(mandatory_vuln), 1), 4) if mandatory_vuln else None,
+            "note": "Mandatory vulnerable fixtures with matching expected result_state only",
+        },
+        "live_validated_tp_recall": {
+            "numerator": sum(
+                1
+                for r in matrix
+                if (by_path.get(str(r.get("path"))) or {}).get("capability_maturity") == "live_validated"
+                and r.get("match")
+                and r.get("honest_status") == "actively_verified"
+            ),
+            "denominator": sum(
+                1
+                for r in matrix
+                if (by_path.get(str(r.get("path"))) or {}).get("capability_maturity") == "live_validated"
+                and (by_path.get(str(r.get("path"))) or {}).get("classification") == "vulnerable"
+            ),
+            "note": "Published live recall — live_validated maturity only; excludes contract_only/registered_adapter/executable_unvalidated",
+        },
+        "capability_maturity_counts": inv_summary.get("capability_maturity_counts") or {},
+        "live_recall_denominator": inv_summary.get("live_recall_denominator") or 0,
+        "negative_control_fp_rate": {
+            "numerator": fp,
+            "denominator": max(len(controls), 1),
+            "rate": round(fp / max(len(controls), 1), 4),
+        },
+        "confirmation_unavailable_count": sum(
+            1 for r in matrix if r.get("honest_status") == "confirmation_unavailable"
+        ),
+        "missed_fixture_count": sum(1 for r in matrix if r.get("honest_status") == "missed_fixture"),
+        "product_claim": (
+            "VantaCrawl has a generic DOM-clobber verifier and a generic verification "
+            "framework. Individual family capabilities are reported according to their "
+            "implementation and live-validation maturity."
+        ),
+    }
+    return {
+        "headline": headline,
+        "matrix": matrix,
+        "inventory_summary": inv_summary,
     }
