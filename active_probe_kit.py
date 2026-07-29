@@ -1068,20 +1068,27 @@ def _html_escape(s: str) -> str:
 
 
 def _xss_live_event_markup(text: str, token: str) -> bool:
-    """True when an event-handler attribute exists as real HTML (not entity-encoded)."""
+    """True when an event-handler appears as live HTML/attribute (not entity-encoded)."""
     if not token:
         return False
-    # Require a real open-tag (raw '<') carrying on* = ...token — &lt;svg onload=... does not match.
-    return bool(
-        re.search(
-            rf"(?is)<[a-z][a-z0-9:_-]*\b[^>]*\bon[a-z]+\s*=\s*(['\"])[^'\"]*{re.escape(token)}[^'\"]*\1",
-            text or "",
-        )
-        or re.search(
-            rf"(?is)<[a-z][a-z0-9:_-]*\b[^>]*\bon[a-z]+\s*=\s*[^\s>]*{re.escape(token)}",
-            text or "",
-        )
-    )
+    body = text or ""
+    # Real open-tag carrying on* = ...token
+    if re.search(
+        rf"(?is)<[a-z][a-z0-9:_-]*\b[^>]*\bon[a-z]+\s*=[^>]*{re.escape(token)}",
+        body,
+    ):
+        return True
+    # Attribute-context injection: onfocus/onload present with token nearby,
+    # not sitting inside an HTML-entity-escaped blob (&lt;…&gt;).
+    for m in re.finditer(
+        rf"(?is)\bon(?:load|focus|error|click|mouseover)\s*=[^&<\n]{{0,160}}{re.escape(token)}",
+        body,
+    ):
+        prefix = body[max(0, m.start() - 24) : m.start()].lower()
+        if "&lt;" in prefix or "&#60;" in prefix:
+            continue
+        return True
+    return False
 
 
 def _xss_payload_structure_inert(text: str, payload: str, token: str) -> bool:
@@ -1098,17 +1105,17 @@ def _xss_payload_structure_inert(text: str, payload: str, token: str) -> bool:
     )
     if not structural:
         return False
-    # Live markup would expose an unescaped event handler or injected node with the token.
+    # Live markup / live attribute handlers → not inert.
     if _xss_live_event_markup(body, token):
         return False
     if re.search(rf"(?is)<b\b[^>]*\bid=['\"]?{re.escape(token)}", body):
         return False
     if re.search(rf"(?is)<script\b[^>]*>[^<]{{0,200}}{re.escape(token)}", body):
         return False
-    # Entity-encoded open tags around the payload structure → inert encoding control.
+    # Entity-encoded open tags → inert encoding control.
     if "&lt;" in body.lower() or "&#60;" in body.lower():
         return True
-    # Structural payload sent but no live HTML nodes created with the token.
+    # Structural payload sent but no live handler/node with the token.
     return token in body
 
 
@@ -1153,8 +1160,9 @@ def classify_xss(body: str, token: str, baseline: str, *, payload: str = "", dom
             "verification": "detected",
         }
 
-    if re.search(r"(?is)<script\b[^>]*>[^<]{0,200}" + re.escape(token), text) or _xss_live_event_markup(
-        text, token
+    if re.search(r"(?is)<script\b[^>]*>[^<]{0,200}" + re.escape(token), text) or re.search(
+        rf"(?is)<[a-z][a-z0-9:_-]*\b[^>]*\bon[a-z]+\s*=[^>]*{re.escape(token)}",
+        text,
     ):
         return {
             "severity": "medium",
@@ -1166,7 +1174,7 @@ def classify_xss(body: str, token: str, baseline: str, *, payload: str = "", dom
         }
 
     if "onload=" in payload or "onfocus=" in payload or "onerror=" in payload:
-        # Only escalate when the handler exists as live HTML — not when merely entity-encoded.
+        # Only escalate when the handler exists as live HTML/attribute — not when entity-encoded.
         if _xss_live_event_markup(text, token):
             return {
                 "severity": "medium",

@@ -224,10 +224,24 @@ async def verify_dom_clobber_on_url(
         seen = set()
         discovered_names = [n for n in discovered_names if not (n in seen or seen.add(n))]
 
+    seeded_generic = False
     if not discovered_names:
-        # Generic HTML-injection seed names — not route-specific aliases.
-        # Lets safe/control pages without linked ?param= seeds still be probed.
-        discovered_names = ["html", "q", "content", "body", "data", "template", "fragment"]
+        # Generic HTML-injection seed names — only when the page looks like an
+        # HTML/DOM injection surface (sink markers / documented html query).
+        # Avoid spraying every unrelated URL with synthetic params.
+        import re
+
+        low = (baseline_body or "").lower()
+        sink_like = bool(
+            re.search(r"""\bid=["']?(sink|status|retained|target)\b""", low)
+            or "defaultconfig" in low
+            or "innerhtml" in low
+            or re.search(r"[?&]html=", low)
+            or "clobber" in low
+        )
+        if sink_like:
+            discovered_names = ["html", "q", "content", "body", "data", "template", "fragment"]
+            seeded_generic = True
 
     injections = await discover_html_injection_params(
         client, url, discovered_names, max_params=max_params
@@ -259,6 +273,7 @@ async def verify_dom_clobber_on_url(
                 result_state=state,
                 payload_redacted=(payload_redacted or "")[:160],
                 scan_id=str(scan_id or ""),
+                target_selection_reason="parameter_semantic_match",
             )
         except Exception:
             pass
@@ -302,9 +317,12 @@ async def verify_dom_clobber_on_url(
                         },
                     )
                 )
-        if not findings and not injections:
-            # Seeded params produced no reflection — executed negative control / gap probe.
-            seed_param = discovered_names[0] if discovered_names else "html"
+        if not findings and injections:
+            # Had injection attempts but only absent reflections — already covered.
+            pass
+        elif not findings and not injections and seeded_generic and discovered_names:
+            # Generic sink-surface seeds produced no reflection — record executed negative.
+            seed_param = discovered_names[0]
             _ledger_dom(
                 page_url=_with_param(url, seed_param, "vc_seed"),
                 parameter=seed_param,
@@ -568,6 +586,7 @@ async def verify_dom_clobber_on_url(
                             parameter=param,
                             result_state=state,
                             payload_redacted=payload.html[:160],
+                            target_selection_reason="parameter_semantic_match",
                         )
                     except Exception:
                         pass
