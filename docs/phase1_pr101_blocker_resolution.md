@@ -1,13 +1,16 @@
 # Phase-1 PR #101 blocker resolution
 
 **Branch:** `cursor/phase1-xss-gate-metrics-32cd`  
-**Do not merge** until an independent final audit re-runs.
+**Do not merge** until an independent final audit re-runs.  
+**Do not begin Phase 2.**
 
 ## Blockers addressed
 
 ### 1. Provenance identity (`scan_id` empty on ledger)
 
-**Root cause:** `crawl_orchestrator` called `run_active_vuln_probes` without `scan_id`. `CrawlStats.scan_id` was only assigned during report finalization, so every active-probe ledger row was written with `scan_id=""` and `candidate_id` prefixed `scan:`. Provenance later used the job UUID.
+**Root cause:** `crawl_orchestrator` called `run_active_vuln_probes` without `scan_id`. `CrawlStats.scan_id` was only assigned during report finalization, so active-probe ledger rows were written with `scan_id=""` and `candidate_id` prefixed `scan:`. Provenance later used the job UUID.
+
+**Residual after first fix tip `4de75e2`:** CSRF (`exploit_probes.probe_csrf`) and a second DOM-clobber ledger writer omitted `scan_id`, leaving 54/1175 active-probe rows empty. Lab job `8117ed46-…` confirmed functional gates still passed while the identity invariant failed.
 
 **Fix path:**
 
@@ -16,8 +19,8 @@ POST /api/jobs
 → worker runner  (CrawlStats.scan_id = job.id)
 → crawl_orchestrator  (ensure stats/config scan_id; pass scan_id= into probes)
 → security_scan.run_active_vuln_probes  (resolve arg → stats → once-only UUID; set ProbeModeSettings.scan_id)
-→ active_probe_kit  (refuse missing identity; candidate_id = {scan_id}:cand:{path}:{family})
-→ request_ledger  (every active_probe row carries scan_id)
+→ active_probe_kit / exploit_probes / dom_clobber.verify
+→ CrawlStats.record_request  (auto-binds stats.scan_id onto every active_probe row)
 → finalize_phase1_runtime  (same sid; provenance cites confirming ledger candidate_id)
 ```
 
@@ -45,7 +48,7 @@ POST /api/jobs
 
 Fresh production Lab job against `https://horizon-catalog.onrender.com/` must show:
 
-- every active-probe ledger `scan_id` == job UUID
+- every active-probe ledger `scan_id` == job UUID (zero empty)
 - provenance `scan_id` / `candidate_id` match confirming ledger rows
 - reflected XSS confirmed; encoded terminal_negative; DOM-clobber vuln confirmed; safe not browser-confirmed
 - negative-control FP 0/7
