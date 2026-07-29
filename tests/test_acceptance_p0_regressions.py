@@ -189,7 +189,9 @@ class _LabClient:
                     "VC_RCE_",
                     "sqli",  # unused
                     "' AND ",
+                    "' OR ",
                     "1 AND 1",
+                    "1 OR 1",
                     "printf ",
                     "echo ",
                     "expr ",
@@ -199,6 +201,7 @@ class _LabClient:
                     "169.254",
                     "/oob/",
                     "redirect-proof.vantacrawl",
+                    "oob-unconfigured.invalid",
                 )
             ) or (joined.strip() in ("'", '"', "')", "'--", "' #"))
             if not active:

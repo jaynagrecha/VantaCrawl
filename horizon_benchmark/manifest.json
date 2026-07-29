@@ -232,13 +232,13 @@
         "extended",
         "lab"
       ],
-      "expected_result_state": "inconclusive",
-      "expected_severity": "info",
-      "expected_validation": "unverified",
+      "expected_result_state": "oob_callback_confirmed",
+      "expected_severity": "high",
+      "expected_validation": "confirmed",
       "must_not_confirm": false,
       "mandatory": true,
       "linked": true,
-      "notes": "Probe must be sent. OOB confirmation only when callback receiver configured; without OOB, result_state may be inconclusive/reflected_only \u2014 never silent skip.",
+      "notes": "True-positive proof is oob_callback_confirmed only. Probe must still be sent without an OOB receiver; actual confirmation_unavailable is a verification coverage gap (routed/attempted), never a true positive and never silent skip.",
       "title": "SSRF server-side fetch",
       "catalog_expected": "ssrf oob_callback_confirmed when callback URL is fetched",
       "catalog_tags": [
@@ -482,6 +482,33 @@
       "catalog_expected": "no open_redirect confirmation",
       "catalog_tags": [
         "control"
+      ]
+    },
+    {
+      "path": "/csrf/action",
+      "method": "POST",
+      "parameter": "email",
+      "family": "csrf",
+      "probe_family": "csrf",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "execution_confirmed",
+      "expected_severity": "medium",
+      "expected_validation": "confirmed",
+      "must_not_confirm": false,
+      "mandatory": true,
+      "linked": true,
+      "notes": "POST the form and verify the expected email state-change. Token absence alone is not confirmation. Do not generalise to destructive production forms.",
+      "title": "State-changing POST without CSRF token",
+      "catalog_expected": "csrf candidate (passive/active depending on mode)",
+      "catalog_tags": [
+        "passive",
+        "post"
       ]
     },
     {
@@ -1090,31 +1117,6 @@
       "catalog_tags": [
         "passive",
         "active"
-      ],
-      "notes": ""
-    },
-    {
-      "path": "/csrf/action",
-      "method": "GET",
-      "parameter": "",
-      "family": "csrf",
-      "probe_family": "csrf",
-      "classification": "vulnerable",
-      "bucket": "passive_manual",
-      "modes": [
-        "passive"
-      ],
-      "expected_result_state": "",
-      "expected_severity": "info",
-      "expected_validation": "unverified",
-      "must_not_confirm": false,
-      "mandatory": false,
-      "linked": true,
-      "title": "State-changing POST without CSRF token",
-      "catalog_expected": "csrf candidate (passive/active depending on mode)",
-      "catalog_tags": [
-        "passive",
-        "post"
       ],
       "notes": ""
     },
@@ -3752,10 +3754,10 @@
       "notes": ""
     }
   ],
-  "mandatory_supported_count": 18,
+  "mandatory_supported_count": 19,
   "counts": {
-    "supported_required": 49,
-    "passive_manual": 89,
+    "supported_required": 50,
+    "passive_manual": 88,
     "unsupported": 12
   }
 }

@@ -159,17 +159,33 @@ class PlaygroundHandler(BaseHTTPRequestHandler):
         send(self, 200, body, head_only=head_only)
 
     def _oob(self, path: str, head_only: bool = False) -> None:
-        # /oob/<nonce>/ping  or  /oob/poll?nonce=
+        # /oob/<nonce>/ping|/redirect  or  /oob/poll[/<nonce>]?nonce=
+        from urllib.parse import parse_qs
+
         parts = [p for p in path.split("/") if p]
-        if len(parts) >= 3 and parts[0] == "oob" and parts[2] == "ping":
+        qs = parse_qs(urlparse(self.path).query)
+        if len(parts) >= 3 and parts[0] == "oob" and parts[2] in ("ping", "redirect"):
             nonce = parts[1]
+            scan_id = (qs.get("scan_id") or [""])[0]
+            probe_id = (qs.get("probe_id") or [""])[0]
             with _OOB_LOCK:
                 _OOB_HITS[nonce] = {
                     "nonce": nonce,
                     "path": path,
+                    "callback_type": parts[2],
                     "source_ip": self.client_address[0],
                     "ua": self.headers.get("User-Agent") or "",
+                    "scan_id": scan_id,
+                    "probe_id": probe_id,
                 }
+            if parts[2] == "redirect":
+                # Intentionally weak: Location to a same-host benign page.
+                # Scanners must not treat client-followed redirects as OOB proof.
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             return send(
                 self,
                 200,
@@ -178,23 +194,24 @@ class PlaygroundHandler(BaseHTTPRequestHandler):
                 head_only=head_only,
             )
         if path == "/oob/poll" or path.startswith("/oob/poll"):
-            from urllib.parse import parse_qs
-
-            qs = parse_qs(urlparse(self.path).query)
             nonce = (qs.get("nonce") or [""])[0]
+            if not nonce and len(parts) >= 3 and parts[0] == "oob" and parts[1] == "poll":
+                nonce = parts[2]
             with _OOB_LOCK:
                 hit = _OOB_HITS.get(nonce)
             if hit:
                 import json
 
-                body = json.dumps(
-                    {
-                        "confirmed": True,
-                        "nonce": nonce,
-                        "interactions": [hit],
-                        "scan_id": "playground",
-                    }
-                ).encode("utf-8")
+                payload = {
+                    "confirmed": True,
+                    "nonce": nonce,
+                    "interactions": [hit],
+                }
+                if hit.get("scan_id"):
+                    payload["scan_id"] = hit.get("scan_id")
+                if hit.get("probe_id"):
+                    payload["probe_id"] = hit.get("probe_id")
+                body = json.dumps(payload).encode("utf-8")
             else:
                 import json
 

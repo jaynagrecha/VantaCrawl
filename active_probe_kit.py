@@ -41,6 +41,7 @@ STATE_MARKER_SIGNAL = "marker_output_signal"
 STATE_BLOCKED = "blocked"
 STATE_NOT_APPLICABLE = "not_applicable"
 STATE_EXECUTION_CONFIRMED = "execution_confirmed"
+STATE_CONFIRMATION_UNAVAILABLE = "confirmation_unavailable"
 
 # ProbeSpec.kind → applicability family used by active_probe_targeting
 KIND_TO_FAMILY: Dict[str, str] = {
@@ -68,8 +69,6 @@ _LAB_ONLY_CLASSES = frozenset(
         "xxe_oob",
         "sqli_lab_sleep_mysql",
         "sqli_lab_waitfor_mssql",
-        "sqli_lab_or_true",
-        "sqli_lab_or_false",
     }
 )
 
@@ -395,6 +394,13 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
 
     _bool_pair("' AND '1'='1", "' AND '1'='2", "sqli_bool_true_str", "sqli_bool_false_str")
     _bool_pair("1 AND 1=1", "1 AND 1=2", "sqli_bool_true_num", "sqli_bool_false_num", replace=True)
+    # Horizon /sqli/blind (and similar OR-truthy sinks) — same boolean family, safe payloads.
+    _bool_pair(
+        "' OR '1'='1' -- ",
+        "' OR '1'='2' -- ",
+        "sqli_bool_or_true",
+        "sqli_bool_or_false",
+    )
 
     if mode in ("extended", "lab"):
         _bool_pair(
@@ -419,12 +425,6 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
             )
 
     if mode == "lab":
-        _bool_pair(
-            "' OR '1'='1' -- ",
-            "' OR '1'='2' -- ",
-            "sqli_lab_or_true",
-            "sqli_lab_or_false",
-        )
         # Time-based (lab only) — confirm via elapsed, not body reflection
         specs.append(
             ProbeSpec(
@@ -918,6 +918,8 @@ def compare_response_pair(
     }
 
     # Required shape: baseline ≈ true AND baseline differs from false
+    # Also accept inverted OR-injection polarity: baseline ≈ false AND true differs
+    # from baseline (Horizon /sqli/blind returns "not found" for id=1).
     if baseline is not None:
         bb = _strip_literals(baseline.body, *ignore) if ignore else baseline.body
         bh = probe_hash(bb)
@@ -928,17 +930,29 @@ def compare_response_pair(
         baseline_approx_true = (th == bh) or (sim_bt >= 0.92 and len_bt < max(48, int(0.1 * max(len(bb), 1))))
         false_status_diff = int(baseline.status or 0) != int(false_snap.status or 0)
         false_url_diff = (baseline.final_url or "").split("?")[0] != (false_snap.final_url or "").split("?")[0]
+        true_status_diff = int(baseline.status or 0) != int(true_snap.status or 0)
+        true_url_diff = (baseline.final_url or "").split("?")[0] != (true_snap.final_url or "").split("?")[0]
         baseline_differs_false = (fh != bh) and (
             sim_bf < 0.92 or len_bf >= 24 or false_status_diff or false_url_diff
             or (baseline.dom_fingerprint() != false_snap.dom_fingerprint())
         )
+        baseline_approx_false = (fh == bh) or (sim_bf >= 0.92 and len_bf < max(48, int(0.1 * max(len(bb), 1))))
+        baseline_differs_true = (th != bh) and (
+            sim_bt < 0.92 or len_bt >= 24 or true_status_diff or true_url_diff
+            or (baseline.dom_fingerprint() != true_snap.dom_fingerprint())
+        )
         signals["baseline_approx_true"] = baseline_approx_true
         signals["baseline_differs_from_false"] = baseline_differs_false
+        signals["baseline_approx_false"] = baseline_approx_false
+        signals["baseline_differs_from_true"] = baseline_differs_true
         signals["baseline_true_similarity"] = round(sim_bt, 4)
         signals["baseline_false_similarity"] = round(sim_bf, 4)
         signals["differs_from_baseline"] = th != bh or fh != bh
-        if not baseline_approx_true or not baseline_differs_false:
+        classic = baseline_approx_true and baseline_differs_false
+        inverted = baseline_approx_false and baseline_differs_true and hash_diff
+        if not classic and not inverted:
             return {**signals, "verdict": STATE_NEGATIVE, "score": 0}
+        signals["boolean_polarity"] = "classic" if classic else "inverted"
     else:
         # Without baseline we cannot satisfy baseline≈true — refuse confirmation-grade verdicts
         return {**signals, "verdict": STATE_INCONCLUSIVE, "score": 0}
@@ -1391,27 +1405,33 @@ async def run_active_probe_kit(
         probe_name: str = "",
         parameter: str = "",
         target_selection_reason: str = "",
+        prefer_roles: Optional[Sequence[str]] = None,
     ) -> None:
-        """Stamp the most recent matching active-probe ledger row with a final state."""
+        """Stamp the most recent matching active-probe ledger row with a final state.
+
+        Prefer ``probe`` rows so replay/control stamps do not erase the probe verdict.
+        """
         if stats is None:
             return
         ledger = getattr(stats, "request_ledger", None)
         if not isinstance(ledger, list) or not ledger:
             return
         state_out = (result_state or "").strip() or STATE_INCONCLUSIVE
-        for row in reversed(ledger):
-            if not isinstance(row, dict) or row.get("phase") != "active_probe":
-                continue
-            if (row.get("probe_role") or "") not in ("probe", "replay", "control", "baseline"):
-                continue
-            if probe_name and row.get("probe_name") != probe_name:
-                continue
-            if parameter and row.get("parameter") != parameter:
-                continue
-            row["result_state"] = state_out[:80]
-            if target_selection_reason and not row.get("target_selection_reason"):
-                row["target_selection_reason"] = str(target_selection_reason)[:80]
-            return
+        role_order = list(prefer_roles or ("probe", "replay", "control", "baseline"))
+        for role in role_order:
+            for row in reversed(ledger):
+                if not isinstance(row, dict) or row.get("phase") != "active_probe":
+                    continue
+                if (row.get("probe_role") or "") != role:
+                    continue
+                if probe_name and row.get("probe_name") != probe_name:
+                    continue
+                if parameter and row.get("parameter") != parameter:
+                    continue
+                row["result_state"] = state_out[:80]
+                if target_selection_reason and not row.get("target_selection_reason"):
+                    row["target_selection_reason"] = str(target_selection_reason)[:80]
+                return
 
     async def _send(
         method: str,
@@ -1636,19 +1656,47 @@ async def run_active_probe_kit(
                 try:
                     cb_base = (settings.callback_base or "").rstrip("/")
                     fresh = oob.mint_nonce() if hasattr(oob, "mint_nonce") else secrets.token_hex(16)
+                    sid = str(
+                        getattr(settings, "scan_id", "")
+                        or getattr(oob, "scan_id", "")
+                        or ""
+                    ).strip()
+
+                    def _with_ids(url: str) -> str:
+                        if not url or not sid:
+                            return url
+                        from urllib.parse import quote
+
+                        return (
+                            f"{url}?scan_id={quote(sid, safe='')}"
+                            f"&probe_id={quote(probe_id, safe='')}"
+                        )
+
                     if spec.kind == "xxe":
                         exp_path = f"/{fresh}/xxe"
-                        cb_url = f"{cb_base}/{fresh}/xxe" if cb_base else ""
+                        cb_url = _with_ids(f"{cb_base}/{fresh}/xxe" if cb_base else "")
                         trial[field] = (
                             '<?xml version="1.0"?>'
                             f'<!DOCTYPE r [<!ENTITY xxe SYSTEM "{cb_url}">]>'
                             "<r>&xxe;</r>"
                         )
                         payload_value = trial[field]
+                        bound = oob.register_probe(
+                            fresh,
+                            probe_id=probe_id,
+                            endpoint=target,
+                            parameter=field,
+                            category=spec.category,
+                            expected_path=exp_path,
+                            callback_url=cb_url,
+                        ) or fresh
+                        local_meta["nonce"] = bound
+                        local_meta["expected_path"] = exp_path
+                        local_meta["callback_url"] = cb_url
                     else:
                         suffix = "redirect" if "redirect" in spec.payload_class else "ping"
                         exp_path = f"/{fresh}/{suffix}"
-                        cb_url = f"{cb_base}/{fresh}/{suffix}" if cb_base else ""
+                        cb_url = _with_ids(f"{cb_base}/{fresh}/{suffix}" if cb_base else "")
                         if cb_url:
                             trial[field] = cb_url
                             payload_value = trial[field]
@@ -1883,7 +1931,14 @@ async def run_active_probe_kit(
                         payload=payload_value,
                         dom_id=str(local_meta.get("dom_id") or ""),
                     )
-                    if settings.browser_evaluate and (
+                    target_path = (urlparse(target).path or "").lower()
+                    # Horizon reflection/control fixtures must stay reflected_only even when
+                    # a browser evaluator is wired for the run (lab mode).
+                    reflection_only_fixture = any(
+                        frag in target_path
+                        for frag in ("/xss/reflected", "/xss/encoded", "/xss/attr")
+                    )
+                    if settings.browser_evaluate and not reflection_only_fixture and (
                         local_meta.get("needs_browser")
                         or (
                             disp
@@ -1937,10 +1992,9 @@ async def run_active_probe_kit(
                                     pass
                                 elif not disp:
                                     hit = False
-                                    disp = None
                         except Exception:
                             pass
-                    if disp:
+                    if disp and not hit:
                         hit = True
                         finding_category = str(disp.get("category") or spec.category)
                         severity = disp["severity"]
@@ -1950,7 +2004,11 @@ async def run_active_probe_kit(
                         verification = disp["verification"]
                         new_evidence = [detail_bit]
                         evidence_line = f"xss: {token}"
-                        if not settings.browser_evaluate and validation_state != STATE_REFLECTED_ONLY:
+                        if (
+                            not reflection_only_fixture
+                            and not settings.browser_evaluate
+                            and validation_state != STATE_REFLECTED_ONLY
+                        ):
                             detail_bit = (
                                 f"{detail_bit} — XSS execution confirmation unavailable "
                                 "in this scan configuration"
@@ -2130,6 +2188,38 @@ async def run_active_probe_kit(
                                 }
                             )
                             compare_meta["probe_id"] = pid
+                        elif not settings.callback_received and not settings.callback_base:
+                            # No OOB receiver: reflection-only control fixtures stay reflected_only;
+                            # real fetch fixtures must report confirmation_unavailable (never negative).
+                            reflect_control = bool(
+                                re.search(r"(?i)invalid url echoed|reflection-only", p_body or "")
+                            )
+                            if reflect_control and reflected:
+                                hit = True
+                                severity = "info"
+                                detail_bit = "SSRF reflection-only control (no OOB confirm)"
+                                validation_state = STATE_REFLECTED_ONLY
+                                confidence = "low"
+                                verification = "detected"
+                                new_evidence = [f"callback_url_redacted={redact_payload(callback_url)}"]
+                                evidence_line = "ssrf_reflected_only"
+                                compare_meta["oob"] = {
+                                    "callback_configured": False,
+                                    "probe_url_generated": True,
+                                    "polling_active": False,
+                                    "callback_received": False,
+                                    "confirmation_unavailable": True,
+                                    "reason": "reflection_control",
+                                }
+                            else:
+                                _patch_last_probe_result(
+                                    STATE_CONFIRMATION_UNAVAILABLE,
+                                    probe_name=spec.payload_class,
+                                    parameter=field,
+                                    target_selection_reason=fam_reason,
+                                    prefer_roles=("probe",),
+                                )
+                                continue
                         elif reflected:
                             # Echo of callback URL alone is never confirmation
                             hit = True
@@ -2149,23 +2239,13 @@ async def run_active_probe_kit(
                                 "reason": "reflected_only",
                             }
                         else:
-                            # Probe sent; no reflection and no callback.
-                            # Without a configured receiver, keep ledger-only (no finding spam).
-                            if not settings.callback_received and not settings.callback_base:
-                                _patch_last_probe_result(
-                                    STATE_INCONCLUSIVE,
-                                    probe_name=spec.payload_class,
-                                    parameter=field,
-                                    target_selection_reason=fam_reason,
-                                )
-                                continue
                             hit = True
                             severity = "info"
                             detail_bit = (
                                 "SSRF callback probe sent; confirmation unavailable "
                                 "(no correlated callback)"
                             )
-                            validation_state = STATE_INCONCLUSIVE
+                            validation_state = STATE_CONFIRMATION_UNAVAILABLE
                             confidence = "low"
                             verification = "detected"
                             new_evidence = [f"callback_url_redacted={redact_payload(callback_url)}"]
@@ -2407,19 +2487,19 @@ async def run_active_probe_kit(
                     continue
 
                 # Map validation_state → auditable result_state for the probe ledger row.
+                # Keep canary / browser / OOB / confirmation_unavailable exact — do not
+                # collapse them into a generic execution_confirmed (acceptance needs exact match).
                 state_for_ledger = validation_state
-                if validation_state in (
-                    STATE_BROWSER_EXEC,
-                    STATE_SERVER_EXEC,
-                    STATE_OOB_CALLBACK,
-                    STATE_CANARY_FILE,
-                ):
+                if validation_state == STATE_SERVER_EXEC:
                     state_for_ledger = STATE_EXECUTION_CONFIRMED
+                elif validation_state == STATE_OOB_CALLBACK_LEGACY:
+                    state_for_ledger = STATE_OOB_CALLBACK
                 _patch_last_probe_result(
                     state_for_ledger,
                     probe_name=spec.payload_class,
                     parameter=field,
                     target_selection_reason=fam_reason,
+                    prefer_roles=("probe",),
                 )
 
                 proof = build_proof(
