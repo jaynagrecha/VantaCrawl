@@ -318,6 +318,22 @@ async def run_all_modes(
         (out_dir / f"matrix_{mode}.json").write_text(
             json.dumps(mode_result, indent=2, default=str) + "\n", encoding="utf-8"
         )
+        entire = mode_result.get("entire_catalog") or {}
+        if entire:
+            (out_dir / f"entire_catalog_{mode}.json").write_text(
+                json.dumps(entire, indent=2, default=str) + "\n", encoding="utf-8"
+            )
+            headline = entire.get("headline") or {}
+            print(
+                f"entire-catalog mode={mode} "
+                f"fixtures={headline.get('catalog_fixtures')} "
+                f"supported_active={headline.get('supported_active')} "
+                f"passive_manual={headline.get('passively_manual_assessable')} "
+                f"unsupported={headline.get('unsupported')} "
+                f"tp={headline.get('supported_active_tp_recall')} "
+                f"fp={headline.get('negative_control_fp_rate')}",
+                flush=True,
+            )
         summary = mode_result.get("summary") or {}
         print(
             f"mode={mode} assessment_complete={mode_result.get('assessment_complete')} "
