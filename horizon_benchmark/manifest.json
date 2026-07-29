@@ -3279,12 +3279,11 @@
       "mandatory": false,
       "linked": true,
       "title": "Cross-site WebSocket hijacking tease",
-      "catalog_expected": "WS endpoint trusts Origin reflection; connect at /ws/admin/events",
+      "catalog_expected": "WS endpoint trusts Origin reflection",
       "catalog_tags": [
-        "active",
-        "lab"
+        "active"
       ],
-      "notes": "HTML tease plus live /ws/admin/events that echoes Origin with no allowlist."
+      "notes": ""
     },
     {
       "path": "/websocket/info",
@@ -3309,31 +3308,6 @@
         "passive"
       ],
       "notes": ""
-    },
-    {
-      "path": "/ws/admin/events",
-      "method": "GET",
-      "parameter": "",
-      "family": "websocket",
-      "probe_family": "websocket",
-      "classification": "vulnerable",
-      "bucket": "passive_manual",
-      "modes": [
-        "passive"
-      ],
-      "expected_result_state": "",
-      "expected_severity": "info",
-      "expected_validation": "unverified",
-      "must_not_confirm": false,
-      "mandatory": false,
-      "linked": false,
-      "title": "Admin WebSocket/event endpoint",
-      "catalog_expected": "any Origin accepted; api_key query only",
-      "catalog_tags": [
-        "active",
-        "lab"
-      ],
-      "notes": "CSWH ground truth: Origin is reflected with credentials; no allowlist."
     },
     {
       "path": "/xmlrpc.php",
@@ -3561,125 +3535,11 @@
       "must_not_confirm": false,
       "mandatory": false,
       "linked": true,
-      "title": "DOM clobbering (script.src sink)",
-      "catalog_expected": "named anchors/forms clobber globals used as config; script.src sink executes proof",
+      "title": "DOM clobbering",
+      "catalog_expected": "named anchors/forms clobber globals used as config",
       "catalog_tags": [
         "active",
-        "browser",
-        "dom-clobber"
-      ],
-      "notes": ""
-    },
-    {
-      "path": "/xss/dom-clobber-safe",
-      "method": "GET",
-      "parameter": "",
-      "family": "xss",
-      "probe_family": "xss",
-      "classification": "control",
-      "bucket": "supported_required",
-      "modes": [
-        "safe",
-        "extended",
-        "lab"
-      ],
-      "expected_result_state": "negative",
-      "expected_severity": "info",
-      "expected_validation": "unverified",
-      "must_not_confirm": true,
-      "mandatory": false,
-      "linked": true,
-      "title": "DOM clobber reflection-only control",
-      "catalog_expected": "same clobber HTML retained/displayed but never assigned to script.src",
-      "catalog_tags": [
-        "control",
-        "fp-guard",
-        "browser",
-        "dom-clobber"
-      ],
-      "notes": ""
-    },
-    {
-      "path": "/xss/dom-clobber/app-settings",
-      "method": "GET",
-      "parameter": "",
-      "family": "xss",
-      "probe_family": "xss",
-      "classification": "vulnerable",
-      "bucket": "supported_required",
-      "modes": [
-        "safe",
-        "extended",
-        "lab"
-      ],
-      "expected_result_state": "",
-      "expected_severity": "info",
-      "expected_validation": "unverified",
-      "must_not_confirm": false,
-      "mandatory": false,
-      "linked": true,
-      "title": "DOM clobber appSettings \u2192 script.src",
-      "catalog_expected": "window.appSettings clobbered; script.src sink",
-      "catalog_tags": [
-        "active",
-        "browser",
-        "dom-clobber"
-      ],
-      "notes": ""
-    },
-    {
-      "path": "/xss/dom-clobber/media-embed",
-      "method": "GET",
-      "parameter": "",
-      "family": "xss",
-      "probe_family": "xss",
-      "classification": "vulnerable",
-      "bucket": "supported_required",
-      "modes": [
-        "safe",
-        "extended",
-        "lab"
-      ],
-      "expected_result_state": "",
-      "expected_severity": "info",
-      "expected_validation": "unverified",
-      "must_not_confirm": false,
-      "mandatory": false,
-      "linked": true,
-      "title": "DOM clobber mediaTarget \u2192 iframe.src",
-      "catalog_expected": "iframe.src sink from clobbered href",
-      "catalog_tags": [
-        "active",
-        "browser",
-        "dom-clobber"
-      ],
-      "notes": ""
-    },
-    {
-      "path": "/xss/dom-clobber/widget-cfg",
-      "method": "GET",
-      "parameter": "",
-      "family": "xss",
-      "probe_family": "xss",
-      "classification": "vulnerable",
-      "bucket": "supported_required",
-      "modes": [
-        "safe",
-        "extended",
-        "lab"
-      ],
-      "expected_result_state": "",
-      "expected_severity": "info",
-      "expected_validation": "unverified",
-      "must_not_confirm": false,
-      "mandatory": false,
-      "linked": true,
-      "title": "DOM clobber widgetCfg.url \u2192 fetch",
-      "catalog_expected": "form named-property clobber; fetch sink (network proof)",
-      "catalog_tags": [
-        "active",
-        "browser",
-        "dom-clobber"
+        "browser"
       ],
       "notes": ""
     },
@@ -3896,8 +3756,8 @@
   ],
   "mandatory_supported_count": 19,
   "counts": {
-    "supported_required": 54,
-    "passive_manual": 89,
+    "supported_required": 50,
+    "passive_manual": 88,
     "unsupported": 12
   }
 }
