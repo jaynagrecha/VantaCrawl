@@ -43,12 +43,6 @@ STATE_NOT_APPLICABLE = "not_applicable"
 STATE_EXECUTION_CONFIRMED = "execution_confirmed"
 STATE_CONFIRMATION_UNAVAILABLE = "confirmation_unavailable"
 
-# Playground / lab CMDI execution markers (response classification — not new payload families).
-_CMDI_EXEC_MARKERS = (
-    "PLAYGROUND_CMDI_MARKER",
-    "uid=0(root)",
-)
-
 # ProbeSpec.kind → applicability family used by active_probe_targeting
 KIND_TO_FAMILY: Dict[str, str] = {
     "sqli_error": "sqli",
@@ -1984,9 +1978,6 @@ async def run_active_probe_kit(
                     arith = str(local_meta.get("arith") or "")
                     if marker and marker in (baseline_body or ""):
                         continue
-                    injection_shaped = bool(
-                        re.search(r"[;|&`$]|&&|\|\|", payload_value or spec.payload or "")
-                    )
 
                     def _rce_parts(body: str):
                         evidence = []
@@ -2012,23 +2003,14 @@ async def run_active_probe_kit(
                                 body or ""
                             ):
                                 has_marker = True
-                        # Existing RCE payloads already carry shell metacharacters; classify
-                        # playground CMDI execution markers as confirmed execution evidence.
-                        has_cmdi_exec = False
-                        if injection_shaped:
-                            for cm in _CMDI_EXEC_MARKERS:
-                                if cm in stripped and cm not in (baseline_body or ""):
-                                    has_cmdi_exec = True
-                                    evidence.append(f"cmdi_exec={cm}")
-                                    break
                         if has_arith:
                             evidence.append(f"arith_result={arith}")
                         if has_marker:
                             evidence.append(f"marker={marker}")
-                        return has_arith, has_marker, has_cmdi_exec, evidence
+                        return has_arith, has_marker, evidence
 
-                    has_arith, has_marker, has_cmdi_exec, new_evidence = _rce_parts(p_body)
-                    if not has_arith and not has_marker and not has_cmdi_exec:
+                    has_arith, has_marker, new_evidence = _rce_parts(p_body)
+                    if not has_arith and not has_marker:
                         continue
                     resp2 = await _send(
                         method,
@@ -2046,7 +2028,7 @@ async def run_active_probe_kit(
                         classify_response(int(getattr(resp2, "status_code", 200) or 200), body2, hdrs2)
                     ):
                         continue
-                    has_arith2, has_marker2, has_cmdi_exec2, ev2 = _rce_parts(body2)
+                    has_arith2, has_marker2, ev2 = _rce_parts(body2)
                     if has_arith and has_arith2:
                         hit = True
                         severity = "critical"
@@ -2058,18 +2040,6 @@ async def run_active_probe_kit(
                         confidence = "high"
                         verification = "confirmed"
                         new_evidence = [e for e in (new_evidence or ev2) if e.startswith("arith_")]
-                        evidence_line = ",".join(new_evidence)
-                    elif has_cmdi_exec and has_cmdi_exec2:
-                        hit = True
-                        severity = "critical"
-                        detail_bit = (
-                            "confirmed server-side behavior "
-                            "(command-injection execution marker reproduced)"
-                        )
-                        validation_state = STATE_SERVER_EXEC
-                        confidence = "high"
-                        verification = "confirmed"
-                        new_evidence = [e for e in (new_evidence or ev2) if e.startswith("cmdi_exec=")]
                         evidence_line = ",".join(new_evidence)
                     elif has_marker and has_marker2:
                         hit = True

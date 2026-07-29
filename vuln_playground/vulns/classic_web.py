@@ -88,7 +88,15 @@ def cmdi_ping(handler, params: Dict[str, str], *, head_only: bool = False) -> No
     cmdline = f"ping -c 1 {host}"
     injected = any(ch in host for ch in ";|&`$(){}") or "&&" in host or "||" in host
     if injected:
-        out = f"$ {cmdline}\nPLAYGROUND_CMDI_MARKER\nuid=0(root) gid=0(root)\n"
+        # Simulate printf/echo of scanner nonce markers when present in the injected command.
+        # Catalog-local labels remain for humans; scanners must confirm via nonce/arith only.
+        echoed = re.findall(r"VC_RCE_[A-Za-z0-9_]+", host)
+        arith = re.search(r"expr\s+(\d+)\s*\+\s*(\d+)", host)
+        lines = [f"$ {cmdline}", "PLAYGROUND_CMDI_MARKER", "uid=0(root) gid=0(root)"]
+        lines.extend(echoed)
+        if arith:
+            lines.append(str(int(arith.group(1)) + int(arith.group(2))))
+        out = "\n".join(lines) + "\n"
     else:
         out = f"$ {cmdline}\nPING {host}: 1 packets transmitted"
     send(handler, 200, page("Command injection", f"<pre>{html.escape(out)}</pre>"), head_only=head_only)

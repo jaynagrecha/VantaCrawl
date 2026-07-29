@@ -250,14 +250,14 @@ def supported_mandatory_fixtures() -> List[Dict[str, Any]]:
             classification="vulnerable",
             bucket=BUCKET_SUPPORTED,
             modes=safe_ext_lab,
-            expected_result_state="confirmation_unavailable",
-            expected_severity="info",
-            expected_validation="unverified",
+            expected_result_state="oob_callback_confirmed",
+            expected_severity="high",
+            expected_validation="confirmed",
             mandatory=True,
             notes=(
-                "Probe must be sent. Without OOB callback receiver the final state must be "
-                "confirmation_unavailable (never silent skip / never negative). "
-                "OOB success uses oob_callback_confirmed."
+                "True-positive proof is oob_callback_confirmed only. Probe must still be sent "
+                "without an OOB receiver; actual confirmation_unavailable is a verification "
+                "coverage gap (routed/attempted), never a true positive and never silent skip."
             ),
         ),
         _entry(

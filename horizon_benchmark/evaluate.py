@@ -378,6 +378,14 @@ def evaluate_fixture_against_stats(
             status = "fail"
             mismatch = "empty_result_state"
             root_cause_stage = "response_classification"
+        elif (
+            expected_state in ("oob_callback_confirmed", "out_of_band_callback_confirmed")
+            and result_state == "confirmation_unavailable"
+        ):
+            # Routed and attempted, but OOB proof unavailable — coverage gap, not a TP.
+            status = "coverage_gap"
+            mismatch = "confirmation_unavailable_not_true_positive"
+            root_cause_stage = "oob_unavailable"
         elif not _states_match(expected_state, result_state):
             status = "fail"
             mismatch = f"expected_{expected_state}_got_{result_state or 'empty'}"
@@ -545,9 +553,21 @@ def summarize_matrix(rows: List[Dict[str, Any]], gaps: List[Dict[str, Any]]) -> 
     mandatory = [r for r in supported if r.get("mandatory")]
     controls = [r for r in supported if r.get("must_not_confirm")]
     vulnerables = [r for r in supported if r.get("classification") == "vulnerable"]
+    coverage_gaps_rows = [r for r in supported if r.get("status") == "coverage_gap"]
+    confirmation_unavailable = [
+        r
+        for r in supported
+        if r.get("result_state") == "confirmation_unavailable"
+        or r.get("mismatch") == "confirmation_unavailable_not_true_positive"
+    ]
 
     def _true_positive_recall(group: List[Dict[str, Any]]) -> float:
-        """Vulnerable fixtures whose expected result_state exactly matches actual."""
+        """Vulnerable fixtures whose expected result_state exactly matches actual.
+
+        confirmation_unavailable / coverage_gap never counts as a true positive.
+        Those rows stay in the denominator so recall cannot be inflated by rewriting
+        the expected state to match an incomplete verification.
+        """
         vulns = [r for r in group if r.get("classification") == "vulnerable"]
         if not vulns:
             return 1.0
@@ -570,7 +590,11 @@ def summarize_matrix(rows: List[Dict[str, Any]], gaps: List[Dict[str, Any]]) -> 
     )
     routing_cov = round(routing_ok / max(len(vulnerables), 1), 4)
 
-    verification_ok = sum(1 for r in vulnerables if r.get("verification_completed"))
+    verification_ok = sum(
+        1
+        for r in vulnerables
+        if r.get("verification_completed") and r.get("status") == "pass"
+    )
     verification_cov = round(verification_ok / max(len(vulnerables), 1), 4)
 
     emission_ok = sum(
@@ -585,7 +609,6 @@ def summarize_matrix(rows: List[Dict[str, Any]], gaps: List[Dict[str, Any]]) -> 
                 "reflected_only",
                 "differential_signal",
                 "execution_confirmed",
-                "confirmation_unavailable",
                 "negative",
                 "browser_execution_confirmed",
                 "canary_file_confirmed",
@@ -611,6 +634,18 @@ def summarize_matrix(rows: List[Dict[str, Any]], gaps: List[Dict[str, Any]]) -> 
         "mandatory_total": len(mandatory),
         "mandatory_pass": sum(1 for r in mandatory if r.get("status") == "pass"),
         "mandatory_fail": sum(1 for r in mandatory if r.get("status") == "fail"),
+        "mandatory_coverage_gap": sum(1 for r in mandatory if r.get("status") == "coverage_gap"),
+        "confirmation_unavailable_count": len(confirmation_unavailable),
+        "confirmation_unavailable": [
+            {
+                "path": r["path"],
+                "family": r["family"],
+                "result_state": r.get("result_state"),
+                "expected_result_state": r.get("expected_result_state"),
+                "mismatch": r.get("mismatch"),
+            }
+            for r in confirmation_unavailable
+        ],
         "false_positives": [
             {
                 "path": r["path"],
@@ -634,6 +669,17 @@ def summarize_matrix(rows: List[Dict[str, Any]], gaps: List[Dict[str, Any]]) -> 
             }
             for r in vulnerables
             if r.get("status") == "fail"
+        ],
+        "verification_coverage_gaps": [
+            {
+                "path": r["path"],
+                "family": r["family"],
+                "root_cause_stage": r.get("root_cause_stage"),
+                "mismatch": r.get("mismatch"),
+                "expected_result_state": r.get("expected_result_state"),
+                "result_state": r.get("result_state"),
+            }
+            for r in coverage_gaps_rows
         ],
         "missed_fixtures": [
             {
@@ -695,10 +741,12 @@ def evaluate_stats(
         g for g in gaps if g.get("mandatory") and g.get("reason") not in ("mode_excluded",)
     ]
     # Assessment complete only when every mandatory fixture matches expected state
-    # (or was explicitly interrupted) — soft partials no longer count.
+    # (or was explicitly mode-excluded). Soft partials and confirmation_unavailable
+    # coverage gaps do not count as complete true-positive assessment.
     assessment_complete = (
         len(untested_mandatory) == 0
         and summary["mandatory_fail"] == 0
+        and summary.get("mandatory_coverage_gap", 0) == 0
         and summary["negative_control_false_positive_rate"] == 0.0
         and not bool(getattr(stats, "vuln_active_probe_paused", False))
         and all(
