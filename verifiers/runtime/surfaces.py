@@ -48,15 +48,18 @@ def _stable_id(path: str, family: str, parameter: str = "") -> str:
 
 
 def _controlish(url: str, probe_name: str = "", result_state: str = "", tags: Optional[Set[str]] = None) -> bool:
-    """Generic control detection — probe roles/tags only, no catalog path hardcodes."""
+    """Generic control detection — probe roles/tags only, no catalog path hardcodes.
+
+    Note: ``fp-guard`` alone does **not** mark a surface as a control — that tag
+    means the fixture has FP-guard semantics, not that it is a negative control.
+    """
     name = (probe_name or "").lower()
     tagset = {str(t).lower() for t in (tags or set())}
-    if "control" in tagset or "fp-guard" in tagset:
+    if "control" in tagset:
         return True
     if "control" in name or "nonce_control" in name or name.endswith("_safe"):
         return True
     u = (url or "").rstrip("/").lower()
-    # Generic naming: leaf segment "safe" is a common negative-control convention
     leaf = u.rsplit("/", 1)[-1] if u else ""
     if leaf == "safe" or u.endswith("/safe"):
         return True
@@ -311,6 +314,9 @@ def discover_surfaces_from_stats(
                     surf.input_channels = sorted(set(surf.input_channels) | {"form"})
 
     for finding in findings:
+        # Findings are not authoritative for Phase-1 surface invention — noisy
+        # categories (e.g. speculative dom_clobber) must not create candidates.
+        # Only enrich an already-known catalog/ledger surface's parameter hint.
         if not isinstance(finding, dict):
             continue
         cat = str(finding.get("category") or finding.get("family") or "")
@@ -320,7 +326,14 @@ def discover_surfaces_from_stats(
         url = str(finding.get("url") or "")
         if not url:
             continue
-        upsert(url=url, family=fam, classification="vulnerable")
+        path = _path_of(url)
+        cid = _stable_id(path, fam)
+        existing = by_key.get(cid)
+        if existing is None:
+            continue
+        param = str(finding.get("param") or finding.get("parameter") or "")
+        if param and not existing.parameter:
+            existing.parameter = param
 
     surfaces = list(by_key.values())
     _ = mode

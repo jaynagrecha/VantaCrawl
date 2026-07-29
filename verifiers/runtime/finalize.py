@@ -47,6 +47,7 @@ _STATE_RANK = {
     "canary_file_confirmed": 90,
     "controlled_request_confirmed": 85,
     "html_injection_confirmed": 40,
+    "html_injection": 28,
     "differential_signal": 35,
     "reflected_only": 30,
     "clobbered_value_consumed": 25,

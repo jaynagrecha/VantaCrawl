@@ -48,6 +48,7 @@ INCONCLUSIVE_COMPLETED_STATES = frozenset(
         "reflected_only",
         "differential_signal",  # non-terminal by family contract unless elevated
         "html_injection_confirmed",
+        "html_injection",
         "inconclusive",
         "confirmation_unavailable",
         "probable",
