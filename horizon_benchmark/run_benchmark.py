@@ -122,44 +122,37 @@ async def _extract_forms(client: httpx.AsyncClient, url: str) -> List[Dict[str, 
 
 def _best_result_state_for_url(stats: CrawlStats, url: str, findings: List[Any]) -> tuple[str, Dict[str, Any], bool]:
     """Pick the strongest scanner-produced result_state for a surface URL."""
-    from verifiers.contract import is_actively_confirmed
-    from horizon_benchmark.lifecycle import TERMINAL_PROOF_STATES
-
     path = urlparse_path(url)
     best = ""
     best_ev: Dict[str, Any] = {}
     emitted = False
+    # Higher = stronger. Terminal proofs must outrank reflection/negative.
     rank = {
-        s: 100 + i
-        for i, s in enumerate(
-            [
-                "browser_execution_confirmed",
-                "controlled_request_confirmed",
-                "oob_callback_confirmed",
-                "canary_file_confirmed",
-                "server_execution_confirmed",
-                "execution_confirmed",
-                "state_change_confirmed",
-                "differential_signal",
-                "reflected_only",
-                "html_injection_confirmed",
-                "clobbered_value_consumed",
-                "confirmation_unavailable",
-                "negative",
-                "inconclusive",
-                "probe_sent",
-            ]
-        )
+        "browser_execution_confirmed": 900,
+        "controlled_request_confirmed": 890,
+        "oob_callback_confirmed": 880,
+        "canary_file_confirmed": 870,
+        "server_execution_confirmed": 860,
+        "execution_confirmed": 850,
+        "state_change_confirmed": 840,
+        "differential_signal": 500,
+        "html_injection_confirmed": 400,
+        "clobbered_value_consumed": 350,
+        "reflected_only": 300,
+        "confirmation_unavailable": 200,
+        "inconclusive": 150,
+        "negative": 100,
+        "probe_sent": 50,
     }
 
     def consider(state: str, ev: Optional[Dict[str, Any]] = None) -> None:
         nonlocal best, best_ev
-        st = str(state or "")
+        st = str(state or "").strip()
         if not st:
             return
         if rank.get(st, 0) >= rank.get(best, -1):
             best = st
-            if ev:
+            if isinstance(ev, dict) and ev:
                 best_ev = ev
 
     for item in findings or []:
@@ -184,9 +177,23 @@ def _best_result_state_for_url(stats: CrawlStats, url: str, findings: List[Any])
         if row.get("phase") != "active_probe":
             continue
         ru = str(row.get("url") or "")
-        if path and path not in ru and ru.rstrip("/") != url.rstrip("/"):
+        if path:
+            if path not in ru:
+                continue
+        elif ru.rstrip("/") != url.rstrip("/"):
             continue
         consider(str(row.get("result_state") or ""), row if isinstance(row, dict) else {})
+
+    # Prefer evaluate-style family evidence on the ledger when findings were weak
+    if best in ("", "probe_sent", "negative", "reflected_only", "html_injection_confirmed"):
+        for row in getattr(stats, "request_ledger", []) or []:
+            if row.get("phase") != "active_probe" or row.get("probe_role") not in ("probe", "replay", None, ""):
+                # still allow any probe role with a strong state
+                pass
+            ru = str(row.get("url") or "")
+            if path and path not in ru:
+                continue
+            consider(str(row.get("result_state") or ""), row if isinstance(row, dict) else {})
 
     if not best and findings:
         best = "probe_sent"
@@ -440,6 +447,45 @@ async def run_mode(
                     continue
 
     result = evaluate_stats(stats, mode=mode_n, manifest=manifest)
+
+    # Canonicalize lifecycle terminal states from evaluate_stats rows (same ledger logic).
+    eval_by_path = {str(r.get("path")): r for r in (result.get("rows") or [])}
+    rank = {
+        "browser_execution_confirmed": 900,
+        "controlled_request_confirmed": 890,
+        "oob_callback_confirmed": 880,
+        "canary_file_confirmed": 870,
+        "server_execution_confirmed": 860,
+        "execution_confirmed": 850,
+        "state_change_confirmed": 840,
+        "differential_signal": 500,
+        "html_injection_confirmed": 400,
+        "clobbered_value_consumed": 350,
+        "reflected_only": 300,
+        "confirmation_unavailable": 200,
+        "inconclusive": 150,
+        "negative": 100,
+        "probe_sent": 50,
+    }
+    for row in lifecycle:
+        if row.get("schedule_status") != ATTEMPTED:
+            continue
+        evrow = eval_by_path.get(str(row.get("path") or ""))
+        if not evrow:
+            continue
+        est = str(evrow.get("result_state") or "")
+        cur = str(row.get("terminal_result_state") or "")
+        if rank.get(est, 0) >= rank.get(cur, -1) and est:
+            ev = evrow.get("evidence") if isinstance(evrow.get("evidence"), dict) else {}
+            apply_probe_outcome(
+                row,
+                probe_sent=bool(evrow.get("probe_sent") or row.get("probe_sent")),
+                result_state=est,
+                finding_emitted=bool(evrow.get("finding_emitted") or row.get("finding_emitted")),
+                evidence=ev,
+                browser_used=bool(row.get("browser_used")),
+                callback_used=bool(row.get("callback_used")) or "oob" in est,
+            )
 
     # Legacy mandatory-subset recall (explicitly labelled — not overall supported-active).
     mandatory = mandatory_for_mode(manifest, mode_n)
