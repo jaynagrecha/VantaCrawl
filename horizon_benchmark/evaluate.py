@@ -766,8 +766,9 @@ def evaluate_stats(
         "coverage_gaps": gaps,
         "entire_catalog": entire,
         "product_claim": (
-            "VantaCrawl dynamically discovers and verifies supported vulnerability classes "
-            "using family-specific evidence contracts. Horizon Catalog measures "
+            "VantaCrawl has a generic DOM-clobber verifier and a generic verification "
+            "framework. Individual family capabilities are reported according to their "
+            "implementation and live-validation maturity. Horizon Catalog measures "
             "supported-active recall separately from passive/manual and unsupported coverage."
         ),
     }
@@ -866,6 +867,7 @@ def evaluate_entire_catalog(
                 "evidence": row.get("evidence"),
                 "verifier_capability": inv.get("verifier_capability_id") or "",
                 "support_classification": support,
+                "capability_maturity": inv.get("capability_maturity") or "",
                 "honest_status": honest,
                 "reason_if_unsupported_manual": inv.get("missing_capability") or "",
                 # Scanner result_state is never rewritten here — only reported.
@@ -921,6 +923,24 @@ def evaluate_entire_catalog(
             "rate": round(tp_ok / max(len(mandatory_vuln), 1), 4) if mandatory_vuln else None,
             "note": "Mandatory vulnerable fixtures with matching expected result_state only",
         },
+        "live_validated_tp_recall": {
+            "numerator": sum(
+                1
+                for r in matrix
+                if (by_path.get(str(r.get("path"))) or {}).get("capability_maturity") == "live_validated"
+                and r.get("match")
+                and r.get("honest_status") == "actively_verified"
+            ),
+            "denominator": sum(
+                1
+                for r in matrix
+                if (by_path.get(str(r.get("path"))) or {}).get("capability_maturity") == "live_validated"
+                and (by_path.get(str(r.get("path"))) or {}).get("classification") == "vulnerable"
+            ),
+            "note": "Published live recall — live_validated maturity only; excludes contract_only/registered_adapter/executable_unvalidated",
+        },
+        "capability_maturity_counts": inv_summary.get("capability_maturity_counts") or {},
+        "live_recall_denominator": inv_summary.get("live_recall_denominator") or 0,
         "negative_control_fp_rate": {
             "numerator": fp,
             "denominator": max(len(controls), 1),
@@ -931,9 +951,9 @@ def evaluate_entire_catalog(
         ),
         "missed_fixture_count": sum(1 for r in matrix if r.get("honest_status") == "missed_fixture"),
         "product_claim": (
-            "VantaCrawl dynamically discovers and verifies supported vulnerability classes "
-            "using family-specific evidence contracts. Horizon Catalog measures "
-            "supported-active recall separately from passive/manual and unsupported coverage."
+            "VantaCrawl has a generic DOM-clobber verifier and a generic verification "
+            "framework. Individual family capabilities are reported according to their "
+            "implementation and live-validation maturity."
         ),
     }
     return {

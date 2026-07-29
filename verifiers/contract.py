@@ -86,9 +86,11 @@ FAILURE_STAGES = (
 )
 
 PRODUCT_CLAIM = (
-    "VantaCrawl dynamically discovers and verifies supported vulnerability classes "
-    "using family-specific evidence contracts. Horizon Catalog measures "
-    "supported-active recall separately from passive/manual and unsupported coverage."
+    "VantaCrawl has a generic DOM-clobber verifier and a generic verification "
+    "framework. Individual family capabilities are reported according to their "
+    "implementation and live-validation maturity. Horizon Catalog measures "
+    "supported-active recall separately from passive/manual and unsupported "
+    "coverage; published live recall counts only live_validated fixtures."
 )
 
 
