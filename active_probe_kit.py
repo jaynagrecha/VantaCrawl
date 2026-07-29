@@ -1067,6 +1067,51 @@ def _html_escape(s: str) -> str:
     )
 
 
+def _xss_live_event_markup(text: str, token: str) -> bool:
+    """True when an event-handler attribute exists as real HTML (not entity-encoded)."""
+    if not token:
+        return False
+    # Require a real open-tag (raw '<') carrying on* = ...token — &lt;svg onload=... does not match.
+    return bool(
+        re.search(
+            rf"(?is)<[a-z][a-z0-9:_-]*\b[^>]*\bon[a-z]+\s*=\s*(['\"])[^'\"]*{re.escape(token)}[^'\"]*\1",
+            text or "",
+        )
+        or re.search(
+            rf"(?is)<[a-z][a-z0-9:_-]*\b[^>]*\bon[a-z]+\s*=\s*[^\s>]*{re.escape(token)}",
+            text or "",
+        )
+    )
+
+
+def _xss_payload_structure_inert(text: str, payload: str, token: str) -> bool:
+    """True when the probe payload's HTML/event structure was HTML-encoded (inert)."""
+    pl = payload or ""
+    body = text or ""
+    if not pl or not token:
+        return False
+    structural = bool(
+        re.search(r"(?i)<(?:svg|img|script|iframe|math|body|input|b)\b", pl)
+        or "onload=" in pl
+        or "onfocus=" in pl
+        or "onerror=" in pl
+    )
+    if not structural:
+        return False
+    # Live markup would expose an unescaped event handler or injected node with the token.
+    if _xss_live_event_markup(body, token):
+        return False
+    if re.search(rf"(?is)<b\b[^>]*\bid=['\"]?{re.escape(token)}", body):
+        return False
+    if re.search(rf"(?is)<script\b[^>]*>[^<]{{0,200}}{re.escape(token)}", body):
+        return False
+    # Entity-encoded open tags around the payload structure → inert encoding control.
+    if "&lt;" in body.lower() or "&#60;" in body.lower():
+        return True
+    # Structural payload sent but no live HTML nodes created with the token.
+    return token in body
+
+
 def classify_xss(body: str, token: str, baseline: str, *, payload: str = "", dom_id: str = "") -> Optional[Dict[str, str]]:
     text = body or ""
     base = baseline or ""
@@ -1080,6 +1125,10 @@ def classify_xss(body: str, token: str, baseline: str, *, payload: str = "", dom
                 continue
             return True
         return False
+
+    # Encoded / inert structural payloads (e.g. &lt;svg onload=...&gt;) → negative, not attr breakout.
+    if _xss_payload_structure_inert(text, payload, token):
+        return None
 
     # Encoded-only (e.g. &lt;VCXSS_a81f&gt;) → not vulnerable
     if not _raw_token_present(text) and not (dom_id and re.search(rf'(?is)<b\b[^>]*\bid=["\']?{re.escape(dom_id)}', text)):
@@ -1104,9 +1153,8 @@ def classify_xss(body: str, token: str, baseline: str, *, payload: str = "", dom
             "verification": "detected",
         }
 
-    if re.search(r"(?is)<script\b[^>]*>[^<]{0,200}" + re.escape(token), text) or re.search(
-        r"(?is)\bon\w+\s*=\s*['\"][^'\"]{0,80}" + re.escape(token),
-        text,
+    if re.search(r"(?is)<script\b[^>]*>[^<]{0,200}" + re.escape(token), text) or _xss_live_event_markup(
+        text, token
     ):
         return {
             "severity": "medium",
@@ -1117,8 +1165,9 @@ def classify_xss(body: str, token: str, baseline: str, *, payload: str = "", dom
             "verification": "detected",
         }
 
-    if "onload=" in payload or "onfocus=" in payload:
-        if _raw_token_present(text):
+    if "onload=" in payload or "onfocus=" in payload or "onerror=" in payload:
+        # Only escalate when the handler exists as live HTML — not when merely entity-encoded.
+        if _xss_live_event_markup(text, token):
             return {
                 "severity": "medium",
                 "detail_bit": "medium-confidence XSS candidate (attribute/event context; not browser-confirmed)",
@@ -1346,6 +1395,10 @@ async def run_active_probe_kit(
         result_state: str = "",
         values: Optional[dict] = None,
         target_selection_reason: str = "",
+        probe_id: str = "",
+        nonce: str = "",
+        candidate_id: str = "",
+        scan_id: str = "",
     ) -> None:
         if stats is None or not hasattr(stats, "record_request"):
             return
@@ -1396,6 +1449,10 @@ async def run_active_probe_kit(
                 payload_redacted=redact_payload(payload),
                 result_state=state_out,
                 target_selection_reason=reason_out,
+                probe_id=str(probe_id or "")[:160],
+                nonce=str(nonce or "")[:80],
+                candidate_id=str(candidate_id or "")[:200],
+                scan_id=str(scan_id or getattr(settings, "scan_id", "") or "")[:120],
             )
         except Exception:
             pass
@@ -1407,10 +1464,14 @@ async def run_active_probe_kit(
         parameter: str = "",
         target_selection_reason: str = "",
         prefer_roles: Optional[Sequence[str]] = None,
+        target_url: str = "",
+        probe_id: str = "",
     ) -> None:
         """Stamp the most recent matching active-probe ledger row with a final state.
 
         Prefer ``probe`` rows so replay/control stamps do not erase the probe verdict.
+        Binding requires matching URL path (and probe_id when present) so browser
+        confirmation for one candidate cannot overwrite another candidate's row.
         """
         if stats is None:
             return
@@ -1419,6 +1480,11 @@ async def run_active_probe_kit(
             return
         state_out = (result_state or "").strip() or STATE_INCONCLUSIVE
         role_order = list(prefer_roles or ("probe", "replay", "control", "baseline"))
+        want_path = (urlparse(target_url).path or "").rstrip("/") if target_url else ""
+
+        def _row_path(row: dict) -> str:
+            return (urlparse(str(row.get("url") or row.get("final_url") or "")).path or "").rstrip("/")
+
         for role in role_order:
             for row in reversed(ledger):
                 if not isinstance(row, dict) or row.get("phase") != "active_probe":
@@ -1429,9 +1495,28 @@ async def run_active_probe_kit(
                     continue
                 if parameter and row.get("parameter") != parameter:
                     continue
+                if want_path and _row_path(row) != want_path:
+                    continue
+                if probe_id:
+                    row_pid = str(row.get("probe_id") or "")
+                    if row_pid and row_pid != probe_id:
+                        continue
+                # Never let a stronger foreign confirmation overwrite an existing
+                # terminal confirmation belonging to a different probe_id/path.
+                prev = str(row.get("result_state") or "")
+                if (
+                    prev == STATE_BROWSER_EXEC
+                    and state_out == STATE_BROWSER_EXEC
+                    and probe_id
+                    and str(row.get("probe_id") or "")
+                    and str(row.get("probe_id") or "") != probe_id
+                ):
+                    continue
                 row["result_state"] = state_out[:80]
                 if target_selection_reason and not row.get("target_selection_reason"):
                     row["target_selection_reason"] = str(target_selection_reason)[:80]
+                if probe_id and not row.get("probe_id"):
+                    row["probe_id"] = str(probe_id)[:160]
                 return
 
     async def _send(
@@ -1447,6 +1532,9 @@ async def run_active_probe_kit(
         payload: str = "",
         result_state: str = "",
         target_selection_reason: str = "",
+        probe_id: str = "",
+        nonce: str = "",
+        candidate_id: str = "",
     ):
         t0 = time.monotonic()
         try:
@@ -1480,6 +1568,9 @@ async def run_active_probe_kit(
                 result_state=result_state or STATE_BASELINE_FAILED,
                 values=values,
                 target_selection_reason=target_selection_reason,
+                probe_id=probe_id,
+                nonce=nonce,
+                candidate_id=candidate_id,
             )
             raise
         duration_ms = (time.monotonic() - t0) * 1000.0
@@ -1537,6 +1628,9 @@ async def run_active_probe_kit(
             result_state=result_state or default_state or STATE_INCONCLUSIVE,
             values=values,
             target_selection_reason=target_selection_reason,
+            probe_id=probe_id,
+            nonce=nonce,
+            candidate_id=candidate_id,
         )
         try:
             setattr(resp, "_vc_duration_ms", duration_ms)
@@ -1640,6 +1734,15 @@ async def run_active_probe_kit(
             trial = dict(values)
             local_meta = dict(spec.meta or {})
             payload_value = spec.payload
+            # Per-candidate XSS probe nonce — never reuse a kit-wide token across probes.
+            if spec.kind == "xss":
+                old_tok = str(local_meta.get("token") or "")
+                probe_tok = f"VCXSS_{secrets.token_hex(4)}"
+                if old_tok:
+                    payload_value = str(payload_value).replace(old_tok, probe_tok)
+                    if str(local_meta.get("dom_id") or "") == old_tok:
+                        local_meta["dom_id"] = probe_tok
+                local_meta["token"] = probe_tok
             if _should_replace_mutation(spec, field):
                 trial[field] = payload_value
             elif _search_param(field) or spec.kind in ("sqli_error", "sqli_boolean", "sqli_time"):
@@ -1652,6 +1755,17 @@ async def run_active_probe_kit(
                 f"{spec.payload_class}:{field}:{urlparse(target).path}:{secrets.token_hex(4)}"
             )
             local_meta["probe_id"] = probe_id
+            candidate_id = (
+                f"{getattr(settings, 'scan_id', '') or 'scan'}:"
+                f"cand:{urlparse(target).path}:{KIND_TO_FAMILY.get(spec.kind) or spec.category}:{field}"
+            )
+            local_meta["candidate_id"] = candidate_id
+            probe_nonce = str(
+                local_meta.get("token")
+                or local_meta.get("nonce")
+                or local_meta.get("marker")
+                or ""
+            )
 
             if oob is not None and spec.kind in ("ssrf", "xxe") and local_meta.get("callback"):
                 try:
@@ -1736,6 +1850,9 @@ async def run_active_probe_kit(
                     parameter=field,
                     payload=payload_value,
                     target_selection_reason=fam_reason,
+                    probe_id=probe_id,
+                    nonce=probe_nonce,
+                    candidate_id=candidate_id,
                 )
                 elapsed_ms = float(getattr(resp, "_vc_duration_ms", 0) or 0) or (
                     (time.monotonic() - t0) * 1000.0
@@ -1749,6 +1866,8 @@ async def run_active_probe_kit(
                         probe_name=spec.payload_class,
                         parameter=field,
                         target_selection_reason=fam_reason,
+                        target_url=target,
+                        probe_id=probe_id,
                     )
                     continue
 
@@ -1932,21 +2051,23 @@ async def run_active_probe_kit(
                         payload=payload_value,
                         dom_id=str(local_meta.get("dom_id") or ""),
                     )
-                    target_path = (urlparse(target).path or "").lower()
-                    # Horizon reflection/control fixtures must stay reflected_only even when
-                    # a browser evaluator is wired for the run (lab mode).
-                    reflection_only_fixture = any(
-                        frag in target_path
-                        for frag in ("/xss/reflected", "/xss/encoded", "/xss/attr")
-                    )
-                    if settings.browser_evaluate and not reflection_only_fixture and (
-                        local_meta.get("needs_browser")
-                        or (
-                            disp
-                            and disp.get("validation_state")
-                            in (STATE_ATTR_BREAKOUT, STATE_SINK_CANDIDATE)
-                        )
-                    ):
+                    # Browser confirmation is generic — never gate on fixture path names.
+                    # Require reflection/live-markup evidence first so encoded/inert
+                    # controls do not inherit browser attempts or foreign markers.
+                    # Reflection alone stays reflected_only; only current-probe nonce
+                    # execution may produce browser_execution_confirmed.
+                    browser_candidate = False
+                    if settings.browser_evaluate:
+                        if disp and disp.get("validation_state") in (
+                            STATE_ATTR_BREAKOUT,
+                            STATE_SINK_CANDIDATE,
+                        ):
+                            browser_candidate = True
+                        elif local_meta.get("needs_browser") and disp is not None:
+                            # needs_browser payloads still need some HTTP reflection
+                            # (reflected_only / html_injection / sink) before browser.
+                            browser_candidate = True
+                    if browser_candidate:
                         try:
                             from active_probe_browser import build_probe_page_url
 
@@ -1964,18 +2085,26 @@ async def run_active_probe_kit(
                                 probe_name=spec.payload_class,
                                 parameter=field,
                                 payload=payload_value,
+                                scan_id=str(getattr(settings, "scan_id", "") or ""),
+                                candidate_id=candidate_id,
+                                probe_id=probe_id,
+                                nonce=token,
+                                target_url=target,
+                                target_parameter=field,
                             )
                             executed = False
                             reproduced = False
+                            correlation_ok = True
                             if isinstance(eval_result, dict):
                                 executed = eval_result.get("executed") is True
                                 reproduced = bool(eval_result.get("reproduced", True))
+                                correlation_ok = eval_result.get("correlation_ok", True) is not False
                                 browser_meta = dict(eval_result)
                             else:
                                 executed = eval_result is True
                                 reproduced = executed
                                 browser_meta = {"executed": executed, "reproduced": reproduced}
-                            if executed and reproduced:
+                            if executed and reproduced and correlation_ok:
                                 hit = True
                                 finding_category = "xss"
                                 severity = "high"
@@ -2006,8 +2135,7 @@ async def run_active_probe_kit(
                         new_evidence = [detail_bit]
                         evidence_line = f"xss: {token}"
                         if (
-                            not reflection_only_fixture
-                            and not settings.browser_evaluate
+                            not settings.browser_evaluate
                             and validation_state != STATE_REFLECTED_ONLY
                         ):
                             detail_bit = (
@@ -2219,6 +2347,8 @@ async def run_active_probe_kit(
                                     parameter=field,
                                     target_selection_reason=fam_reason,
                                     prefer_roles=("probe",),
+                                    target_url=target,
+                                    probe_id=probe_id,
                                 )
                                 continue
                         elif reflected:
@@ -2484,6 +2614,8 @@ async def run_active_probe_kit(
                         probe_name=spec.payload_class,
                         parameter=field,
                         target_selection_reason=fam_reason,
+                        target_url=target,
+                        probe_id=probe_id,
                     )
                     continue
 
@@ -2501,6 +2633,8 @@ async def run_active_probe_kit(
                     parameter=field,
                     target_selection_reason=fam_reason,
                     prefer_roles=("probe",),
+                    target_url=target,
+                    probe_id=probe_id,
                 )
 
                 proof = build_proof(
@@ -2532,9 +2666,19 @@ async def run_active_probe_kit(
                         "console_errors": browser_meta.get("console_errors") or [],
                         "csp_blocked": browser_meta.get("csp_blocked") or [],
                         "browser_request_id": browser_meta.get("browser_request_id"),
+                        "browser_context_id": browser_meta.get("browser_context_id"),
                         "evidence": browser_meta.get("evidence"),
                         "observed_value": browser_meta.get("value"),
                         "method": browser_meta.get("method"),
+                        "scan_id": browser_meta.get("scan_id"),
+                        "candidate_id": browser_meta.get("candidate_id"),
+                        "probe_id": browser_meta.get("probe_id"),
+                        "nonce": browser_meta.get("nonce"),
+                        "marker_before": browser_meta.get("marker_before"),
+                        "marker_after": browser_meta.get("marker_after"),
+                        "correlation_ok": browser_meta.get("correlation_ok"),
+                        "correlation_reason": browser_meta.get("correlation_reason"),
+                        "correlation_decision": browser_meta.get("correlation_decision"),
                     }
                 # Only browser/server/OOB/canary proof may be validation=confirmed.
                 # Attribute/event XSS candidates stay unverified.
@@ -2566,6 +2710,8 @@ async def run_active_probe_kit(
                     probe_name=spec.payload_class,
                     parameter=field,
                     target_selection_reason=fam_reason,
+                    target_url=target,
+                    probe_id=probe_id,
                 )
                 continue
 

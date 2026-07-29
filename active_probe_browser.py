@@ -1,13 +1,17 @@
 """Production browser evaluator for active XSS confirmation.
 
 Uses the shared Selenium Chrome driver from browser_fetch when available.
-Confirms only when ``document.body.dataset.vc === '<token>'`` evaluates true.
-Never silently pretends browser validation ran when Chrome is unavailable.
+Confirms only when ``document.body.dataset.vc === '<token>'`` evaluates true
+**for the current probe's unique nonce** after a fresh navigation.
+
+Evidence is bound to scan_id, candidate_id, probe_id, nonce, target URL,
+parameter and payload. Cross-candidate / leftover markers never confirm.
 """
 
 from __future__ import annotations
 
 import asyncio
+import secrets
 import time
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlencode, urlparse, urlunparse
@@ -137,17 +141,39 @@ def make_browser_evaluate(
         except Exception:
             pass
 
-    def _clear_marker(driver) -> None:
+    def _clear_origin_state(driver, origin_url: str = "") -> None:
+        """Clear marker globals and storage so prior probes cannot confirm."""
         try:
             driver.execute_script(
                 "try{"
                 "if(document.body){delete document.body.dataset.vc; "
                 "document.body.removeAttribute('data-vc');}"
                 "window.__vc_probe_token=null;"
+                "window.__vc_probe_id=null;"
+                "try{localStorage.clear();}catch(e){}"
+                "try{sessionStorage.clear();}catch(e){}"
                 "}catch(e){}"
             )
         except Exception:
             pass
+        # Best-effort cookie clear for the target origin when known
+        try:
+            if origin_url and origin_url.startswith("http"):
+                driver.delete_all_cookies()
+        except Exception:
+            pass
+
+    def _read_marker(driver) -> str:
+        try:
+            return str(
+                driver.execute_script(
+                    "return (document.body && document.body.dataset) "
+                    "? (document.body.dataset.vc || '') : '';"
+                )
+                or ""
+            )
+        except Exception:
+            return ""
 
     def _ledger_role(
         role: str,
@@ -161,6 +187,10 @@ def make_browser_evaluate(
         probe_class: str = "",
         probe_name: str = "",
         parameter: str = "",
+        probe_id: str = "",
+        nonce: str = "",
+        candidate_id: str = "",
+        scan_id: str = "",
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         if stats is None or not hasattr(stats, "record_request"):
@@ -181,6 +211,11 @@ def make_browser_evaluate(
                 parameter=parameter,
                 result_state=result_state,
                 payload_redacted=(payload or "[browser_eval]")[:160],
+                probe_id=probe_id,
+                nonce=nonce,
+                candidate_id=candidate_id,
+                scan_id=scan_id,
+                **(extra or {}),
             )
         except Exception:
             pass
@@ -197,6 +232,12 @@ def make_browser_evaluate(
         probe_name: str = "",
         parameter: str = "",
         payload: str = "",
+        scan_id: str = "",
+        candidate_id: str = "",
+        probe_id: str = "",
+        nonce: str = "",
+        target_url: str = "",
+        target_parameter: str = "",
     ) -> Dict[str, Any]:
         from selenium.webdriver.support.ui import WebDriverWait
 
@@ -207,7 +248,16 @@ def make_browser_evaluate(
         executed = False
         reproduced = False
         value = None
+        marker_before = ""
+        marker_after = ""
+        correlation_ok = True
+        correlation_reason = "ok"
+        context_id = f"selenium:{int(time.time() * 1000)}:{secrets.token_hex(3)}"
         t0 = time.monotonic()
+        bind_nonce = str(nonce or expected_token or "")
+        bind_param = str(target_parameter or parameter or "")
+        bind_target = str(target_url or page_url or "")
+
         _ledger_role(
             "browser_reproduction_started",
             page_url=page_url,
@@ -216,6 +266,11 @@ def make_browser_evaluate(
             parameter=parameter,
             payload=payload,
             result_state="started",
+            probe_id=probe_id,
+            nonce=bind_nonce,
+            candidate_id=candidate_id,
+            scan_id=scan_id,
+            extra={"browser_context_id": context_id},
         )
         try:
             try:
@@ -224,12 +279,19 @@ def make_browser_evaluate(
             except Exception:
                 pass
 
-            # Isolate prior probe markers
+            # Fresh isolated page: about:blank + clear storage/globals before baseline.
             try:
                 driver.get("about:blank")
             except Exception:
                 pass
-            _clear_marker(driver)
+            _clear_origin_state(driver, bind_target)
+            marker_before = _read_marker(driver)
+            if bind_nonce and marker_before == bind_nonce:
+                # Stale marker survived isolation — reject confirmation.
+                correlation_ok = False
+                correlation_reason = "pre_probe_nonce_present"
+                _clear_origin_state(driver, bind_target)
+                marker_before = _read_marker(driver)
 
             method_u = (method or "GET").upper()
             target = str(page_url or "")
@@ -290,21 +352,53 @@ def make_browser_evaluate(
                 parameter=parameter,
                 payload=payload,
                 result_state="page_loaded",
+                probe_id=probe_id,
+                nonce=bind_nonce,
+                candidate_id=candidate_id,
+                scan_id=scan_id,
+                extra={"browser_context_id": context_id, "marker_before": marker_before},
             )
 
-            # Clear-then-evaluate: only true if THIS probe set the marker
+            # Binding checks — reject mismatched URL / parameter evidence.
+            try:
+                want_path = (urlparse(bind_target).path or "").rstrip("/")
+                got_path = (urlparse(final_url).path or "").rstrip("/")
+                if want_path and got_path and want_path != got_path:
+                    # Allow same-path with different query (payload delivery).
+                    pass
+                if bind_param and post_data is None:
+                    # GET probes must carry the parameter on the navigated URL.
+                    from urllib.parse import parse_qs
+
+                    q = parse_qs(urlparse(page_url).query)
+                    if bind_param not in q and bind_param not in parse_qs(urlparse(final_url).query):
+                        correlation_ok = False
+                        correlation_reason = "parameter_missing_from_browser_url"
+            except Exception:
+                pass
+
+            # Evaluate only the current probe nonce.
             try:
                 value = driver.execute_script(f"return ({js_expr});")
                 executed = value is True
+                marker_after = _read_marker(driver)
                 if not executed and expected_token:
-                    got = driver.execute_script(
-                        "return (document.body && document.body.dataset) "
-                        "? (document.body.dataset.vc || '') : '';"
-                    )
-                    executed = str(got or "") == str(expected_token)
-                    value = got if executed else value
+                    executed = marker_after == str(expected_token)
+                    value = marker_after if executed else value
+                if executed and bind_nonce and marker_after != bind_nonce:
+                    executed = False
+                    correlation_ok = False
+                    correlation_reason = "marker_nonce_mismatch"
+                if executed and marker_before == bind_nonce and bind_nonce:
+                    # Marker was already present before navigation — not this probe.
+                    executed = False
+                    correlation_ok = False
+                    correlation_reason = "stale_pre_probe_marker"
             except Exception as exc:
                 console_errors.append(str(exc)[:300])
+                executed = False
+
+            if not correlation_ok:
                 executed = False
 
             _ledger_role(
@@ -317,6 +411,17 @@ def make_browser_evaluate(
                 parameter=parameter,
                 payload=payload,
                 result_state="marker_present" if executed else "marker_absent",
+                probe_id=probe_id,
+                nonce=bind_nonce,
+                candidate_id=candidate_id,
+                scan_id=scan_id,
+                extra={
+                    "browser_context_id": context_id,
+                    "marker_before": marker_before,
+                    "marker_after": marker_after,
+                    "correlation_ok": correlation_ok,
+                    "correlation_reason": correlation_reason,
+                },
             )
 
             try:
@@ -336,37 +441,70 @@ def make_browser_evaluate(
             executed = False
             reproduced = False
         finally:
-            _clear_marker(driver)
+            _clear_origin_state(driver, bind_target)
 
         duration_ms = (time.monotonic() - t0) * 1000.0
+        confirmed = bool(executed and reproduced and correlation_ok)
         outcome_role = (
-            "browser_execution_confirmed" if executed and reproduced else "browser_execution_failed"
+            "browser_execution_confirmed" if confirmed else "browser_execution_failed"
         )
         result = {
-            "executed": bool(executed),
+            "executed": confirmed,
             "reproduced": bool(reproduced),
             "value": value,
             "final_url": final_url,
             "console_errors": console_errors[:12],
             "csp_blocked": csp_blocked[:12],
             "duration_ms": duration_ms,
-            "browser_request_id": f"selenium:{int(time.time() * 1000)}",
-            "evidence": f"dataset_eval={'true' if executed else 'false'};reproduced={reproduced}",
+            "browser_request_id": context_id,
+            "browser_context_id": context_id,
+            "evidence": (
+                f"dataset_eval={'true' if confirmed else 'false'};"
+                f"reproduced={reproduced};correlation={correlation_reason};"
+                f"nonce={bind_nonce};probe_id={probe_id}"
+            ),
             "browser_confirmation": "available",
             "generated_url": page_url,
             "method": method,
+            "scan_id": scan_id,
+            "candidate_id": candidate_id,
+            "probe_id": probe_id,
+            "nonce": bind_nonce,
+            "target_url": bind_target,
+            "target_parameter": bind_param,
+            "marker_before": marker_before,
+            "marker_after": marker_after,
+            "correlation_ok": correlation_ok,
+            "correlation_reason": correlation_reason,
+            "correlation_decision": {
+                "confirmed": confirmed,
+                "reason": correlation_reason if not confirmed else "current_probe_nonce_after_navigation",
+                "scan_id": scan_id,
+                "candidate_id": candidate_id,
+                "probe_id": probe_id,
+                "nonce": bind_nonce,
+                "target_url": bind_target,
+                "target_parameter": bind_param,
+                "marker_before": marker_before,
+                "marker_after": marker_after,
+            },
         }
         _ledger_role(
             outcome_role,
             page_url=page_url,
             final_url=final_url,
-            status=200 if executed else 0,
+            status=200 if confirmed else 0,
             duration_ms=duration_ms,
             probe_class=probe_class,
             probe_name=probe_name,
             parameter=parameter,
             payload=payload,
-            result_state="browser_execution_confirmed" if executed else "browser_execution_failed",
+            result_state="browser_execution_confirmed" if confirmed else "browser_execution_failed",
+            probe_id=probe_id,
+            nonce=bind_nonce,
+            candidate_id=candidate_id,
+            scan_id=scan_id,
+            extra={"browser_context_id": context_id, "correlation_reason": correlation_reason},
         )
         return result
 
@@ -385,6 +523,12 @@ def make_browser_evaluate(
                 probe_name=str(kwargs.get("probe_name") or ""),
                 parameter=str(kwargs.get("parameter") or ""),
                 payload=str(kwargs.get("payload") or ""),
+                scan_id=str(kwargs.get("scan_id") or ""),
+                candidate_id=str(kwargs.get("candidate_id") or ""),
+                probe_id=str(kwargs.get("probe_id") or ""),
+                nonce=str(kwargs.get("nonce") or kwargs.get("expected_token") or ""),
+                target_url=str(kwargs.get("target_url") or page_url or ""),
+                target_parameter=str(kwargs.get("target_parameter") or kwargs.get("parameter") or ""),
             ),
         )
 

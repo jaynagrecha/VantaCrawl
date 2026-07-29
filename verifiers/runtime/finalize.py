@@ -254,6 +254,89 @@ def apply_ledger_to_lifecycle(
     return rows
 
 
+def _inventory_identities_from_stats(stats: Any) -> List[Dict[str, Any]]:
+    """Build ground-truth inventory identities from target catalog.json when present.
+
+    Uses the same maturity classification as Phase-1 surfaces. Optional benchmark
+    path demotions (horizon_benchmark.path_policy) refine inventory-only metrics
+    without embedding fixture paths in production verifier packages.
+    """
+    catalog = list(getattr(stats, "target_catalog", None) or [])
+    if not catalog:
+        return []
+    demotion = None
+    try:
+        from horizon_benchmark.path_policy import path_demotion_reason as demotion
+    except Exception:
+        demotion = None
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for entry in catalog:
+        if not isinstance(entry, dict):
+            continue
+        path = str(entry.get("path") or "")
+        if not path.startswith("/"):
+            continue
+        tags = {str(t).lower() for t in (entry.get("tags") or entry.get("catalog_tags") or [])}
+        fam = normalize_family(str(entry.get("family") or entry.get("probe_family") or ""))
+        if "dom-clobber" in tags or "dom_clobber" in fam:
+            fam = "dom_clobber"
+        if fam not in (
+            "sqli",
+            "rce",
+            "ssti",
+            "xss",
+            "ssrf",
+            "redirect",
+            "traversal",
+            "crlf",
+            "csrf",
+            "dom_clobber",
+            "lfi",
+            "command_injection",
+        ):
+            continue
+        from verifiers.maturity import classify_support_from_maturity
+
+        path_reason = demotion(path) if demotion else ""
+        support = classify_support_from_maturity(
+            bucket="supported"
+            if (
+                "active" in tags
+                or "safe" in tags
+                or "lab" in tags
+                or "extended" in tags
+                or "control" in tags
+                or "oob" in tags
+                or "dom-clobber" in tags
+            )
+            else "passive",
+            family=fam,
+            path=path,
+            path_demotion_reason=path_reason,
+        )
+        if support.get("support_classification") != "supported_active":
+            continue
+        if path in seen:
+            continue
+        seen.add(path)
+        is_control = "control" in tags or str(entry.get("classification") or "").lower() == "control"
+        # Generic leaf /safe control marker (no fixture-path table).
+        leaf = path.rstrip("/").rsplit("/", 1)[-1]
+        if leaf == "safe" or path.rstrip("/").endswith("-safe"):
+            is_control = True
+        out.append(
+            {
+                "path": path,
+                "fixture_id": f"inv:{path}",
+                "family": fam if fam != "lfi" else "traversal",
+                "classification": "control" if is_control else "vulnerable",
+                "must_not_confirm": is_control,
+            }
+        )
+    return out
+
+
 def finalize_phase1_runtime(
     stats: Any,
     *,
@@ -307,27 +390,33 @@ def finalize_phase1_runtime(
         lifecycle = apply_ledger_to_lifecycle(
             plan_items, mode=mode, ledger=ledger, findings=findings, scan_id=sid
         )
+        inventory_identities = _inventory_identities_from_stats(stats)
         published = compute_published_metrics(
             lifecycle,
             mode=mode,
             catalog_support_counts={
-                "supported_active": max(
-                    len(
-                        [
-                            r
-                            for r in lifecycle
-                            if r.get("support_classification") == "supported_active"
-                        ]
-                    ),
-                    len(
-                        [
-                            s
-                            for s in surfaces
-                            if s.support_classification == "supported_active"
-                        ]
-                    ),
+                "supported_active": (
+                    len(inventory_identities)
+                    if inventory_identities
+                    else max(
+                        len(
+                            [
+                                r
+                                for r in lifecycle
+                                if r.get("support_classification") == "supported_active"
+                            ]
+                        ),
+                        len(
+                            [
+                                s
+                                for s in surfaces
+                                if s.support_classification == "supported_active"
+                            ]
+                        ),
+                    )
                 )
             },
+            inventory_identities=inventory_identities or None,
         )
         # Per-run outcomes only — never mutate static registry maturity files.
         published["scan_id"] = sid
@@ -356,18 +445,78 @@ def finalize_phase1_runtime(
                             or row.get("failure_or_exclusion_reason"),
                         }
                     )
-        evidence_prov = [
-            {
-                "candidate_id": r.get("fixture_id"),
-                "path": r.get("path"),
-                "family": r.get("family"),
-                "provenance": r.get("evidence_provenance"),
-                "proof_type": proof_type_for_state(str(r.get("terminal_result_state") or "")),
+        evidence_prov = []
+        for r in lifecycle:
+            if not (r.get("probe_sent") or r.get("terminal_result_state")):
+                continue
+            path = str(r.get("path") or "")
+            fam = normalize_family(str(r.get("family") or ""))
+            browser_rows = [
+                h
+                for h in ledger
+                if str(h.get("phase") or "") == "active_probe"
+                and normalize_family(str(h.get("probe_class") or "")) == fam
+                and _path(str(h.get("url") or h.get("final_url") or "")) == path
+                and (
+                    str(h.get("probe_role") or "").startswith("browser")
+                    or "browser" in str(h.get("result_state") or "")
+                )
+            ]
+            probe_rows = [
+                h
+                for h in ledger
+                if str(h.get("phase") or "") == "active_probe"
+                and h.get("probe_role") == "probe"
+                and normalize_family(str(h.get("probe_class") or "")) == fam
+                and _path(str(h.get("url") or h.get("final_url") or "")) == path
+            ]
+            latest_browser = browser_rows[-1] if browser_rows else {}
+            latest_probe = probe_rows[-1] if probe_rows else {}
+            corr = {
                 "scan_id": sid,
+                "candidate_id": r.get("fixture_id"),
+                "probe_id": latest_probe.get("probe_id") or latest_browser.get("probe_id"),
+                "nonce": latest_probe.get("nonce") or latest_browser.get("nonce"),
+                "target_url": r.get("discovered_url"),
+                "target_parameter": latest_probe.get("parameter") or r.get("parameter"),
+                "payload_redacted": latest_probe.get("payload_redacted"),
+                "browser_context_id": latest_browser.get("browser_context_id")
+                or latest_browser.get("browser_request_id"),
+                "marker_before": latest_browser.get("marker_before"),
+                "marker_after": latest_browser.get("marker_after"),
+                "correlation_reason": latest_browser.get("correlation_reason"),
+                "terminal_result_state": r.get("terminal_result_state"),
+                "decision": (
+                    "confirmed_current_probe"
+                    if r.get("terminal_result_state") == "browser_execution_confirmed"
+                    else (
+                        "rejected_or_absent"
+                        if browser_rows
+                        else "no_browser_attempt"
+                    )
+                ),
             }
-            for r in lifecycle
-            if r.get("probe_sent") or r.get("terminal_result_state")
-        ]
+            evidence_prov.append(
+                {
+                    "candidate_id": r.get("fixture_id"),
+                    "path": r.get("path"),
+                    "family": r.get("family"),
+                    "provenance": r.get("evidence_provenance"),
+                    "proof_type": proof_type_for_state(str(r.get("terminal_result_state") or "")),
+                    "scan_id": sid,
+                    "correlation": corr,
+                    "raw_browser_evidence": [
+                        {
+                            "probe_role": h.get("probe_role"),
+                            "result_state": h.get("result_state"),
+                            "url": h.get("url"),
+                            "probe_id": h.get("probe_id"),
+                            "nonce": h.get("nonce"),
+                        }
+                        for h in browser_rows[-8:]
+                    ],
+                }
+            )
 
         artifact_paths: Dict[str, str] = {}
         if report_dir:

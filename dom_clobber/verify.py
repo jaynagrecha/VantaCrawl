@@ -224,9 +224,45 @@ async def verify_dom_clobber_on_url(
         seen = set()
         discovered_names = [n for n in discovered_names if not (n in seen or seen.add(n))]
 
+    if not discovered_names:
+        # Generic HTML-injection seed names — not route-specific aliases.
+        # Lets safe/control pages without linked ?param= seeds still be probed.
+        discovered_names = ["html", "q", "content", "body", "data", "template", "fragment"]
+
     injections = await discover_html_injection_params(
         client, url, discovered_names, max_params=max_params
     )
+
+    def _ledger_dom(
+        *,
+        page_url: str,
+        parameter: str,
+        state: str,
+        payload_redacted: str = "",
+        probe_name: str = "dom_clobber_discover",
+    ) -> None:
+        if stats is None or not hasattr(stats, "record_request"):
+            return
+        try:
+            stats.record_request(
+                phase="active_probe",
+                source="dom_clobber",
+                url=page_url,
+                status=200,
+                final_url=page_url,
+                outcome=state,
+                classification="dom_clobber",
+                probe_role="probe",
+                probe_class="dom_clobber",
+                probe_name=probe_name,
+                parameter=parameter,
+                result_state=state,
+                payload_redacted=(payload_redacted or "")[:160],
+                scan_id=str(scan_id or ""),
+            )
+        except Exception:
+            pass
+
     # Only attempt clobber where real HTML element creation is possible
     live = [i for i in injections if i["context"].allows_element_creation]
     if not live:
@@ -246,6 +282,12 @@ async def verify_dom_clobber_on_url(
                     ladder_stage="A",
                     severity_rationale="Input reflected without live DOM element creation.",
                 )
+                _ledger_dom(
+                    page_url=str(item.get("probe_url") or url),
+                    parameter=ctx.parameter,
+                    state=STATE_REFLECTED_ONLY,
+                    payload_redacted=inert_html_marker(ctx.marker_id, ctx.nonce)[:120],
+                )
                 findings.append(
                     (
                         "dom_clobber",
@@ -260,6 +302,16 @@ async def verify_dom_clobber_on_url(
                         },
                     )
                 )
+        if not findings and not injections:
+            # Seeded params produced no reflection — executed negative control / gap probe.
+            seed_param = discovered_names[0] if discovered_names else "html"
+            _ledger_dom(
+                page_url=_with_param(url, seed_param, "vc_seed"),
+                parameter=seed_param,
+                state=STATE_NEGATIVE,
+                payload_redacted="vc_seed",
+                probe_name="dom_clobber_seed_negative",
+            )
         return findings
 
     proof_svc = DomClobberProofService(
