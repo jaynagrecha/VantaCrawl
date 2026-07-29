@@ -126,10 +126,102 @@ def scan_status_from_stats(stats: Any) -> Dict[str, Any]:
     else:
         enum_message = "Directory enumeration status unavailable."
 
-    # Process can be final while assessment remains inconclusive (checkpoint-only crawl)
-    assessment_status = "inconclusive" if (edge_blocked or coverage == "failed") else (
-        "complete" if status == "final" else status
+    # --- Split coverage model (crawl / enum / API / target-selection / active) ---
+    crawl_coverage = "complete" if crawl_complete else ("partial" if pages > 0 else "pending")
+    if coverage == "failed":
+        crawl_coverage = "failed"
+    elif coverage == "crawl_only" and crawl_complete:
+        crawl_coverage = "complete"
+
+    enum_coverage = (
+        "n/a"
+        if not enum_configured
+        else (
+            "complete"
+            if enum_complete
+            else ("partial" if enum_started else "pending")
+        )
     )
+    if edge_blocked and enum_configured:
+        enum_coverage = "failed"
+
+    api_done = int(getattr(stats, "api_recon_probes_done", 0) or 0)
+    api_total = int(getattr(stats, "api_recon_probes_total", 0) or 0)
+    if api_total > 0:
+        api_coverage = "complete" if api_done >= api_total else "partial"
+    elif api_done > 0:
+        api_coverage = "complete"
+    else:
+        api_coverage = "n/a"
+
+    ts = getattr(stats, "target_selection_coverage", None) or {}
+    if isinstance(ts, dict) and ts.get("status"):
+        target_selection_coverage = str(ts.get("status"))
+    else:
+        target_selection_coverage = str(getattr(stats, "target_selection_coverage_status", "") or "") or (
+            "n/a" if status != "final" else "unknown"
+        )
+
+    active_cov = str(getattr(stats, "active_validation_coverage", "") or "")
+    if not active_cov:
+        apc = getattr(stats, "active_probe_coverage", None)
+        if apc:
+            active_cov = "partial" if target_selection_coverage == "insufficient" else "complete"
+        elif status == "final":
+            active_cov = "n/a"
+        else:
+            active_cov = "pending"
+
+    # Do not mark overall vulnerability assessment complete when dedicated
+    # fixtures were discovered but not tested by the active-probe scheduler.
+    if target_selection_coverage == "insufficient":
+        assessment_status = "incomplete"
+        if not inconclusive_reason:
+            missing = []
+            if isinstance(ts, dict):
+                missing = list(ts.get("missing_families") or [])
+            inconclusive_reason = (
+                "target-selection coverage insufficient"
+                + (f" ({', '.join(missing)})" if missing else "")
+                + ": dedicated fixtures discovered but not tested"
+            )
+    elif edge_blocked or coverage == "failed":
+        assessment_status = "inconclusive"
+    elif status == "final" and active_cov in ("partial", "insufficient"):
+        assessment_status = "incomplete"
+    else:
+        assessment_status = "complete" if status == "final" else status
+
+    # Horizon acceptance gate: mandatory supported fixtures must be tested or
+    # explicitly gap-recorded (breaker / mode / unsupported) — never silent.
+    gaps = list(getattr(stats, "benchmark_coverage_gaps", None) or [])
+    mandatory_gaps = [
+        g
+        for g in gaps
+        if isinstance(g, dict)
+        and g.get("mandatory")
+        and g.get("reason")
+        not in ("mode_excluded", "family_unsupported", "browser_unavailable", "oob_unavailable")
+    ]
+    if status == "final" and mandatory_gaps:
+        assessment_status = "incomplete"
+        paths = ", ".join(sorted({str(g.get("path")) for g in mandatory_gaps})[:12])
+        inconclusive_reason = (
+            f"horizon_acceptance: mandatory fixtures untested ({paths})"
+        )
+        if target_selection_coverage in ("", "unknown", "n/a", "complete"):
+            target_selection_coverage = "insufficient"
+        active_cov = "partial"
+
+    # Keep target_content_coverage as crawl-scoped wording (not overall vuln assessment).
+    if not coverage:
+        if status == "final" and pages > 0:
+            coverage = "crawl_only" if active_cov in ("n/a", "") else "ok"
+        else:
+            coverage = ""
+    # Never claim overall "ok" when target-selection failed.
+    if target_selection_coverage == "insufficient" and coverage == "ok":
+        coverage = "crawl_complete_probes_partial"
 
     return {
         "scan_status": status,
@@ -146,6 +238,13 @@ def scan_status_from_stats(stats: Any) -> Dict[str, Any]:
         "target_content_coverage": coverage or ("crawl_only" if status == "final" and pages > 0 else ""),
         "assessment_status": assessment_status,
         "assessment_inconclusive_reason": inconclusive_reason,
+        # Split coverage (do not collapse into a single "complete")
+        "crawl_coverage": crawl_coverage,
+        "enum_coverage": enum_coverage,
+        "api_coverage": api_coverage,
+        "target_selection_coverage": target_selection_coverage,
+        "active_validation_coverage": active_cov,
+        "vulnerability_assessment_coverage": assessment_status,
         # Legacy aliases for older report templates
         "directory_enum_enabled": enum_enabled,
         "directory_enum_started": enum_started,

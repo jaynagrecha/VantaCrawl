@@ -336,12 +336,56 @@ def build_assessment_document(
         coverage_gaps.append(
             "Active security probes (injection, XSS, CSRF canary) did not run or produced no data."
         )
+    ts = getattr(stats, "target_selection_coverage", None) or snap.get("target_selection_coverage")
+    if isinstance(ts, dict) and ts.get("status") == "insufficient":
+        missing = ", ".join(ts.get("missing_families") or []) or "dedicated fixtures"
+        coverage_gaps.append(
+            f"Target-selection coverage insufficient ({missing}): dedicated fixtures were "
+            "discovered but not scheduled for the matching probe family."
+        )
+    elif str(snap.get("target_selection_coverage") or "") == "insufficient":
+        coverage_gaps.append(
+            "Target-selection coverage insufficient — dedicated fixtures discovered but not tested."
+        )
+    av = str(
+        getattr(stats, "active_validation_coverage", "")
+        or snap.get("active_validation_coverage")
+        or ""
+    )
+    if av in ("partial", "insufficient"):
+        coverage_gaps.append(
+            "Active vulnerability validation is partial — not all applicable probe families "
+            "reached their intended targets."
+        )
+    if str(snap.get("assessment_status") or getattr(stats, "assessment_status", "") or "") in (
+        "incomplete",
+        "inconclusive",
+    ):
+        coverage_gaps.append(
+            "Overall vulnerability assessment is incomplete — crawl/enum completion does not "
+            "imply full active-probe coverage."
+        )
     if not int(snap.get("enum_http_attempts") or 0):
         coverage_gaps.append("Directory/path enumeration did not run — hidden endpoint coverage is absent.")
     if not int(snap.get("subdomain_probes_done") or 0):
         coverage_gaps.append("Subdomain enumeration did not run.")
     if not int(snap.get("api_recon_probes_done") or 0):
         coverage_gaps.append("Active API recon probes did not run.")
+
+    split_coverage = {
+        "crawl": str(snap.get("crawl_coverage") or ""),
+        "enum": str(snap.get("enum_coverage") or ""),
+        "api": str(snap.get("api_coverage") or ""),
+        "target_selection": (
+            (ts.get("status") if isinstance(ts, dict) else ts) or snap.get("target_selection_coverage") or ""
+        ),
+        "active_validation": av,
+        "vulnerability_assessment": str(
+            snap.get("vulnerability_assessment_coverage")
+            or snap.get("assessment_status")
+            or ""
+        ),
+    }
 
     return {
         "product": "VantaCrawl",
@@ -372,6 +416,7 @@ def build_assessment_document(
             "suppressed_false_positives": suppressed_appendix[:40],
             "coverage_gaps": coverage_gaps,
         },
+        "split_coverage": split_coverage,
         "metrics": {
             "pages_crawled": int(snap.get("pages_crawled") or 0),
             "enum_hits": int(snap.get("enum_hits") or getattr(stats, "enum_hits", 0) or 0),

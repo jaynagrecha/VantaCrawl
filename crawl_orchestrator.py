@@ -626,6 +626,27 @@ async def run_full_crawl_async(
 
                 body_text = body.decode("utf-8", errors="replace") if body else ""
 
+                # Robots inventory + authorized-bypass provenance
+                try:
+                    path_l = (urlparse(current_url).path or "").lower()
+                    if path_l.rstrip("/").endswith("robots.txt") and body_text:
+                        stats.note_robots_txt(
+                            body_text, ignore_robots=bool(config.ignore_robots)
+                        )
+                    from crawler_common import robots_bypass_provenance_for_url
+
+                    prov = robots_bypass_provenance_for_url(
+                        current_url,
+                        ignore_robots=bool(config.ignore_robots),
+                        disallow_prefixes=list(
+                            getattr(stats, "robots_disallow_prefixes", None) or []
+                        ),
+                    )
+                    if prov:
+                        stats.note_robots_bypass(current_url, prov)
+                except Exception:
+                    prov = None
+
                 # Telemetry: always record status + response bytes for crawl pages
                 try:
                     status_code_t = int(resp_headers.get("_status_code") or 0) or 0
@@ -660,6 +681,11 @@ async def run_full_crawl_async(
                             raw_hash=raw_h,
                             normalized_hash=norm_h,
                             outcome="ok" if status_code_t < 400 else "http_error",
+                            **(
+                                {"robots_exclusion_bypass": prov}
+                                if prov
+                                else {}
+                            ),
                         )
                         stats.pages_crawled += 1
                     except Exception:

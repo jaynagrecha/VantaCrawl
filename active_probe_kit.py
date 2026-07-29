@@ -38,6 +38,25 @@ STATE_HTML_INJECTION = "html_injection"
 STATE_SINK_CANDIDATE = "sink_context_candidate"
 STATE_CANARY_FILE = "canary_file_confirmed"
 STATE_MARKER_SIGNAL = "marker_output_signal"
+STATE_BLOCKED = "blocked"
+STATE_NOT_APPLICABLE = "not_applicable"
+STATE_EXECUTION_CONFIRMED = "execution_confirmed"
+
+# ProbeSpec.kind → applicability family used by active_probe_targeting
+KIND_TO_FAMILY: Dict[str, str] = {
+    "sqli_error": "sqli",
+    "sqli_boolean": "sqli",
+    "sqli_time": "sqli",
+    "xss": "xss",
+    "rce": "rce",
+    "ssti": "ssti",
+    "ssrf": "ssrf",
+    "traversal": "traversal",
+    "traversal_diff": "traversal",
+    "crlf": "crlf",
+    "redirect": "redirect",
+    "xxe": "xxe",
+}
 
 MODES = ("passive", "safe", "extended", "lab")
 
@@ -202,11 +221,21 @@ def _should_replace_mutation(spec: "ProbeSpec", field: str) -> bool:
 
 
 def _file_names(name: str) -> bool:
-    return bool(re.match(r"(?i)^(file|path|folder|dir|document|template|include|doc)$", name))
+    return bool(
+        re.match(
+            r"(?i)^(file|filename|filepath|path|folder|dir|document|template|include|doc|page|download)$",
+            name,
+        )
+    )
 
 
 def _cmd_names(name: str) -> bool:
-    return bool(re.match(r"(?i)^(cmd|command|exec|execute|run|shell)$", name))
+    return bool(
+        re.match(
+            r"(?i)^(cmd|command|exec|execute|run|shell|host|ping|expr|input)$",
+            name,
+        )
+    )
 
 
 def _redirect_names(name: str) -> bool:
@@ -552,41 +581,51 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
 
     # --- SSRF ---
     # Unique nonce per payload family instance (never share across probes).
-    if cb:
-        ping_nonce = _fresh_oob()
-        redir_nonce = _fresh_oob()
-        specs.append(
-            ProbeSpec(
-                "ssrf",
-                f"{cb}/{ping_nonce}/ping",
-                "ssrf_callback_ping",
-                _ssrf_names,
-                "high",
-                "ssrf",
-                {
-                    "nonce": ping_nonce,
-                    "callback": True,
-                    "expected_path": f"/{ping_nonce}/ping",
-                    "callback_url": f"{cb}/{ping_nonce}/ping",
-                },
-            )
+    # Always schedule SSRF probes when mode is active. Without a callback receiver,
+    # confirmation stays unavailable — but dedicated /ssrf/* fixtures must still be hit.
+    ssrf_base = cb or "http://oob-unconfigured.invalid"
+    ping_nonce = _fresh_oob()
+    redir_nonce = _fresh_oob()
+    ssrf_meta_extra = {}
+    if not cb:
+        ssrf_meta_extra = {
+            "confirmation_unavailable": True,
+            "reason": "no callback receiver configured",
+        }
+    specs.append(
+        ProbeSpec(
+            "ssrf",
+            f"{ssrf_base}/{ping_nonce}/ping",
+            "ssrf_callback_ping",
+            _ssrf_names,
+            "high",
+            "ssrf",
+            {
+                "nonce": ping_nonce,
+                "callback": True,
+                "expected_path": f"/{ping_nonce}/ping",
+                "callback_url": f"{ssrf_base}/{ping_nonce}/ping",
+                **ssrf_meta_extra,
+            },
         )
-        specs.append(
-            ProbeSpec(
-                "ssrf",
-                f"{cb}/{redir_nonce}/redirect",
-                "ssrf_callback_redirect",
-                _ssrf_names,
-                "high",
-                "ssrf",
-                {
-                    "nonce": redir_nonce,
-                    "callback": True,
-                    "expected_path": f"/{redir_nonce}/redirect",
-                    "callback_url": f"{cb}/{redir_nonce}/redirect",
-                },
-            )
+    )
+    specs.append(
+        ProbeSpec(
+            "ssrf",
+            f"{ssrf_base}/{redir_nonce}/redirect",
+            "ssrf_callback_redirect",
+            _ssrf_names,
+            "high",
+            "ssrf",
+            {
+                "nonce": redir_nonce,
+                "callback": True,
+                "expected_path": f"/{redir_nonce}/redirect",
+                "callback_url": f"{ssrf_base}/{redir_nonce}/redirect",
+                **ssrf_meta_extra,
+            },
         )
+    )
     if mode == "lab":
         # Lab-only: cloud metadata (authorized lab fixtures)
         specs.append(
@@ -1059,7 +1098,8 @@ def classify_xss(body: str, token: str, baseline: str, *, payload: str = "", dom
             "detail_bit": "medium-confidence XSS candidate (sink context; not browser-confirmed)",
             "validation_state": STATE_SINK_CANDIDATE,
             "confidence": "medium",
-            "verification": "verified",
+            # Attribute/sink candidates are never "verified/confirmed" without browser execution.
+            "verification": "detected",
         }
 
     if "onload=" in payload or "onfocus=" in payload:
@@ -1069,7 +1109,7 @@ def classify_xss(body: str, token: str, baseline: str, *, payload: str = "", dom
                 "detail_bit": "medium-confidence XSS candidate (attribute/event context; not browser-confirmed)",
                 "validation_state": STATE_ATTR_BREAKOUT,
                 "confidence": "medium",
-                "verification": "verified",
+                "verification": "detected",
             }
 
     if _raw_token_present(text):
@@ -1290,6 +1330,7 @@ async def run_active_probe_kit(
         resp_class: str = "",
         result_state: str = "",
         values: Optional[dict] = None,
+        target_selection_reason: str = "",
     ) -> None:
         if stats is None or not hasattr(stats, "record_request"):
             return
@@ -1312,6 +1353,11 @@ async def run_active_probe_kit(
                 if str(hk).lower() == "content-type":
                     ct = str(hv or "")[:120]
                     break
+            # Blank is not auditable — every ledger row gets an explicit state.
+            state_out = (result_state or "").strip() or (
+                STATE_NOT_APPLICABLE if role in ("baseline", "control") else STATE_INCONCLUSIVE
+            )
+            reason_out = (target_selection_reason or "").strip() or "generic_fallback"
             stats.record_request(
                 phase="active_probe",
                 source=probe_class or "active_probe",
@@ -1333,10 +1379,39 @@ async def run_active_probe_kit(
                 parameter=parameter,
                 method=method,
                 payload_redacted=redact_payload(payload),
-                result_state=result_state,
+                result_state=state_out,
+                target_selection_reason=reason_out,
             )
         except Exception:
             pass
+
+    def _patch_last_probe_result(
+        result_state: str,
+        *,
+        probe_name: str = "",
+        parameter: str = "",
+        target_selection_reason: str = "",
+    ) -> None:
+        """Stamp the most recent matching active-probe ledger row with a final state."""
+        if stats is None:
+            return
+        ledger = getattr(stats, "request_ledger", None)
+        if not isinstance(ledger, list) or not ledger:
+            return
+        state_out = (result_state or "").strip() or STATE_INCONCLUSIVE
+        for row in reversed(ledger):
+            if not isinstance(row, dict) or row.get("phase") != "active_probe":
+                continue
+            if (row.get("probe_role") or "") not in ("probe", "replay", "control", "baseline"):
+                continue
+            if probe_name and row.get("probe_name") != probe_name:
+                continue
+            if parameter and row.get("parameter") != parameter:
+                continue
+            row["result_state"] = state_out[:80]
+            if target_selection_reason and not row.get("target_selection_reason"):
+                row["target_selection_reason"] = str(target_selection_reason)[:80]
+            return
 
     async def _send(
         method: str,
@@ -1350,6 +1425,7 @@ async def run_active_probe_kit(
         parameter: str = "",
         payload: str = "",
         result_state: str = "",
+        target_selection_reason: str = "",
     ):
         t0 = time.monotonic()
         try:
@@ -1382,6 +1458,7 @@ async def run_active_probe_kit(
                 resp_class="origin_failure",
                 result_state=result_state or STATE_BASELINE_FAILED,
                 values=values,
+                target_selection_reason=target_selection_reason,
             )
             raise
         duration_ms = (time.monotonic() - t0) * 1000.0
@@ -1410,6 +1487,18 @@ async def run_active_probe_kit(
                     stats.active_probe_breaker = breaker.snapshot()
                 except Exception:
                     pass
+        default_state = ""
+        if role in ("baseline", "control"):
+            default_state = STATE_NOT_APPLICABLE
+        elif role == "probe":
+            # Assume negative until confirmation logic patches a stronger state.
+            default_state = STATE_NEGATIVE
+        elif role == "replay":
+            default_state = STATE_NOT_APPLICABLE
+        elif breaker.tripped:
+            default_state = breaker.reason or STATE_BLOCKED
+        elif is_contaminated(resp_class):
+            default_state = STATE_BLOCKED if "waf" in (resp_class or "") or "edge" in (resp_class or "") else STATE_INCONCLUSIVE
         _ledger(
             role=role,
             method=method,
@@ -1424,8 +1513,9 @@ async def run_active_probe_kit(
             parameter=parameter,
             payload=payload,
             resp_class=resp_class,
-            result_state=result_state or (breaker.reason if breaker.tripped else ""),
+            result_state=result_state or default_state or STATE_INCONCLUSIVE,
             values=values,
+            target_selection_reason=target_selection_reason,
         )
         try:
             setattr(resp, "_vc_duration_ms", duration_ms)
@@ -1439,10 +1529,6 @@ async def run_active_probe_kit(
         headers = dict(getattr(resp, "headers", None) or {})
         final = str(getattr(resp, "url", "") or "")
         return status, body, headers, final
-
-    sql_names = re.compile(
-        r"(?i)^(id|uid|user_id|cat|category|item|pid|order|sort|query|q|search|filter|name)$"
-    )
 
     # Coverage skips aggregate on stats — emit a single skip note only when no
     # stats object is present (unit-test / one-shot kit runs).
@@ -1471,6 +1557,9 @@ async def run_active_probe_kit(
         baseline_status: int,
         baseline_ok: bool,
         baseline_final: str,
+        *,
+        allowed_families: Optional[Dict[str, Tuple[str, int]]] = None,
+        selection_reason: str = "generic_fallback",
     ):
         # Harmless nonce control (comparison step 2)
         control_vals = dict(values)
@@ -1485,6 +1574,7 @@ async def run_active_probe_kit(
                 probe_name="VCCTRL",
                 parameter=field,
                 payload=f"VCCTRL_{nonce}",
+                target_selection_reason=selection_reason,
             )
             _, ctrl_body, ctrl_hdrs, _ = _meta(ctrl_resp)
             ctrl_class = classify_response(int(getattr(ctrl_resp, "status_code", 200) or 200), ctrl_body, ctrl_hdrs)
@@ -1507,6 +1597,13 @@ async def run_active_probe_kit(
                 break
             if not spec.param_ok(field):
                 continue
+            family = KIND_TO_FAMILY.get(spec.kind) or ""
+            fam_reason = selection_reason
+            fam_score = 0
+            if allowed_families is not None:
+                if family not in allowed_families:
+                    continue
+                fam_reason, fam_score = allowed_families[family]
             if spec.kind in (
                 "sqli_error",
                 "sqli_boolean",
@@ -1552,24 +1649,25 @@ async def run_active_probe_kit(
                         suffix = "redirect" if "redirect" in spec.payload_class else "ping"
                         exp_path = f"/{fresh}/{suffix}"
                         cb_url = f"{cb_base}/{fresh}/{suffix}" if cb_base else ""
-                        trial[field] = cb_url
-                        payload_value = trial[field]
-                    bound = oob.register_probe(
-                        fresh,
-                        probe_id=probe_id,
-                        endpoint=target,
-                        parameter=field,
-                        category=spec.category,
-                        expected_path=exp_path,
-                        callback_url=cb_url,
-                    ) or fresh
-                    local_meta["nonce"] = bound
-                    local_meta["expected_path"] = exp_path
-                    local_meta["callback_url"] = cb_url
-                    if hasattr(oob, "status_snapshot"):
-                        coverage["oob_callback"] = oob.status_snapshot(
-                            probe_url_generated=True
-                        ).as_dict()
+                        if cb_url:
+                            trial[field] = cb_url
+                            payload_value = trial[field]
+                        bound = oob.register_probe(
+                            fresh,
+                            probe_id=probe_id,
+                            endpoint=target,
+                            parameter=field,
+                            category=spec.category,
+                            expected_path=exp_path,
+                            callback_url=cb_url,
+                        ) or fresh
+                        local_meta["nonce"] = bound
+                        local_meta["expected_path"] = exp_path
+                        local_meta["callback_url"] = cb_url
+                        if hasattr(oob, "status_snapshot"):
+                            coverage["oob_callback"] = oob.status_snapshot(
+                                probe_url_generated=True
+                            ).as_dict()
                 except Exception:
                     pass
 
@@ -1588,6 +1686,7 @@ async def run_active_probe_kit(
                     probe_name=spec.payload_class,
                     parameter=field,
                     payload=payload_value,
+                    target_selection_reason=fam_reason,
                 )
                 elapsed_ms = float(getattr(resp, "_vc_duration_ms", 0) or 0) or (
                     (time.monotonic() - t0) * 1000.0
@@ -1596,6 +1695,12 @@ async def run_active_probe_kit(
                 p_status, p_body, p_hdrs, p_final = _meta(resp)
                 resp_class = classify_response(p_status, p_body, p_hdrs)
                 if is_contaminated(resp_class):
+                    _patch_last_probe_result(
+                        STATE_BLOCKED,
+                        probe_name=spec.payload_class,
+                        parameter=field,
+                        target_selection_reason=fam_reason,
+                    )
                     continue
 
                 hit = False
@@ -2044,7 +2149,16 @@ async def run_active_probe_kit(
                                 "reason": "reflected_only",
                             }
                         else:
-                            # Probe sent; no reflection and no callback — inconclusive noise skip
+                            # Probe sent; no reflection and no callback.
+                            # Without a configured receiver, keep ledger-only (no finding spam).
+                            if not settings.callback_received and not settings.callback_base:
+                                _patch_last_probe_result(
+                                    STATE_INCONCLUSIVE,
+                                    probe_name=spec.payload_class,
+                                    parameter=field,
+                                    target_selection_reason=fam_reason,
+                                )
+                                continue
                             hit = True
                             severity = "info"
                             detail_bit = (
@@ -2208,8 +2322,16 @@ async def run_active_probe_kit(
                         if str(hk).lower() == "location":
                             location = str(hv or "")
                             break
-                    blob = f"{location} {p_final}".lower()
-                    if host.lower() not in blob:
+                    # Confirm only from Location (and followed final URL). Never from the
+                    # request URL — it embeds the payload and would self-confirm controls.
+                    blob = (location or "").lower()
+                    if follow and p_final:
+                        # Only count final_url when it differs from the probe request URL.
+                        req_base = f"{urlparse(target).scheme}://{urlparse(target).netloc}{urlparse(target).path}"
+                        final_base = f"{urlparse(p_final).scheme}://{urlparse(p_final).netloc}{urlparse(p_final).path}"
+                        if final_base.rstrip("/") != req_base.rstrip("/"):
+                            blob = f"{blob} {p_final}".lower()
+                    if not host or host.lower() not in blob:
                         continue
                     hit = True
                     severity = "high"
@@ -2217,8 +2339,8 @@ async def run_active_probe_kit(
                     validation_state = STATE_SERVER_EXEC
                     confidence = "high"
                     verification = "confirmed"
-                    new_evidence = [f"Location/final→{host}"]
-                    evidence_line = f"redirect: {location or p_final}"
+                    new_evidence = [f"Location→{host}"]
+                    evidence_line = f"redirect: {location}"
 
                 elif spec.kind == "crlf":
                     hdr_name = str(local_meta.get("header") or "").lower()
@@ -2276,7 +2398,29 @@ async def run_active_probe_kit(
                             evidence_line = "xxe_probe_sent_unconfirmed"
 
                 if not hit:
+                    _patch_last_probe_result(
+                        STATE_NEGATIVE,
+                        probe_name=spec.payload_class,
+                        parameter=field,
+                        target_selection_reason=fam_reason,
+                    )
                     continue
+
+                # Map validation_state → auditable result_state for the probe ledger row.
+                state_for_ledger = validation_state
+                if validation_state in (
+                    STATE_BROWSER_EXEC,
+                    STATE_SERVER_EXEC,
+                    STATE_OOB_CALLBACK,
+                    STATE_CANARY_FILE,
+                ):
+                    state_for_ledger = STATE_EXECUTION_CONFIRMED
+                _patch_last_probe_result(
+                    state_for_ledger,
+                    probe_name=spec.payload_class,
+                    parameter=field,
+                    target_selection_reason=fam_reason,
+                )
 
                 proof = build_proof(
                     endpoint=target,
@@ -2311,6 +2455,14 @@ async def run_active_probe_kit(
                         "observed_value": browser_meta.get("value"),
                         "method": browser_meta.get("method"),
                     }
+                # Only browser/server/OOB/canary proof may be validation=confirmed.
+                # Attribute/event XSS candidates stay unverified.
+                confirmed_states = (
+                    STATE_SERVER_EXEC,
+                    STATE_BROWSER_EXEC,
+                    STATE_OOB_CALLBACK,
+                    STATE_CANARY_FILE,
+                )
                 add(
                     finding_category,
                     severity,
@@ -2322,24 +2474,72 @@ async def run_active_probe_kit(
                         "confidence_reason": validation_state,
                         "proof": proof,
                         "validation": (
-                            "confirmed"
-                            if validation_state
-                            in (
-                                STATE_SERVER_EXEC,
-                                STATE_BROWSER_EXEC,
-                                STATE_OOB_CALLBACK,
-                                STATE_CANARY_FILE,
-                            )
-                            else "unverified"
+                            "confirmed" if validation_state in confirmed_states else "unverified"
                         ),
+                        "target_selection_reason": fam_reason,
                     },
                 )
             except Exception:
+                _patch_last_probe_result(
+                    STATE_INCONCLUSIVE,
+                    probe_name=spec.payload_class,
+                    parameter=field,
+                    target_selection_reason=fam_reason,
+                )
                 continue
 
-    # --- GET query params ---
+    # --- Vulnerability-aware target selection (route + param semantics) ---
+    from active_probe_targeting import (
+        MIN_APPLICABILITY_SCORE,
+        classify_applicability,
+        path_only_url as _path_only_url,
+        selection_coverage_report,
+        synthetic_params_for_path,
+        with_query_params,
+        _fixture_family_for_path,
+        _norm_path,
+    )
+
+    path = _norm_path(url)
+    fixture_fam = _fixture_family_for_path(path)
+    synth = synthetic_params_for_path(path)
     parsed = urlparse(url)
-    pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    pairs = list(parse_qsl(parsed.query, keep_blank_values=True))
+    if synth:
+        existing = {n for n, _ in pairs}
+        for k, v in synth.items():
+            if k not in existing:
+                pairs.append((k, v))
+        # Prefer a concrete injectable URL (path + synthetic/query params).
+        url = with_query_params(_path_only_url(url) if not pairs else url, dict(pairs))
+
+    probe_families = ("sqli", "rce", "ssti", "ssrf", "traversal", "crlf", "redirect", "xss")
+    selected_plan_paths: Dict[str, set] = {f: set() for f in probe_families}
+
+    def _allowed_for_param(pname: str) -> Dict[str, Tuple[str, int]]:
+        allowed: Dict[str, Tuple[str, int]] = {}
+        for family in probe_families:
+            score, reason = classify_applicability(
+                path=path,
+                param=pname,
+                family=family,
+                allow_generic_fallback=(fixture_fam is None),
+            )
+            if fixture_fam == family:
+                score = max(score, 100)
+                reason = "route_semantic_match"
+            # Dedicated fixtures: only the matching family (prevents spray).
+            if fixture_fam and fixture_fam != family and score < 95:
+                continue
+            min_score = MIN_APPLICABILITY_SCORE.get(reason, 40)
+            if score < min_score:
+                continue
+            if reason == "generic_fallback" and family not in ("xss", "sqli", "ssti"):
+                continue
+            allowed[family] = (reason, score)
+        return allowed
+
+    # --- GET query / synthetic params ---
     if pairs:
         values = {n: v for n, v in pairs}
         baseline_ok = False
@@ -2354,6 +2554,9 @@ async def run_active_probe_kit(
                 role="baseline",
                 probe_class="baseline",
                 probe_name="baseline",
+                target_selection_reason=(
+                    "route_semantic_match" if fixture_fam else "parameter_semantic_match"
+                ),
             )
             baseline_status, baseline_body, base_hdrs, baseline_final = _meta(base_resp)
             baseline_ok = not is_contaminated(
@@ -2362,18 +2565,41 @@ async def run_active_probe_kit(
         except Exception:
             baseline_ok = False
 
-        ordered = sorted(
-            pairs,
-            key=lambda item: (
-                0
-                if sql_names.match(item[0])
-                or _ssrf_names(item[0])
-                or _redirect_names(item[0])
-                or re.match(r"(?i)^(file|path|cmd|q|search)$", item[0])
-                else 1
-            ),
-        )
-        for name, _ in ordered[: max(1, int(settings.max_params or 8))]:
+        # Rank params: route-semantic fixtures first, then strong param matches.
+        def _param_rank(item):
+            name = item[0]
+            allowed = _allowed_for_param(name)
+            best = max((s for _, s in allowed.values()), default=0)
+            reason_best = min(
+                (
+                    {"route_semantic_match": 0, "passive_evidence_match": 1,
+                     "parameter_semantic_match": 2, "generic_fallback": 3}.get(r, 9)
+                    for r, _ in allowed.values()
+                ),
+                default=9,
+            )
+            return (reason_best, -best, name)
+
+        ordered = sorted(pairs, key=_param_rank)
+        budget = max(1, int(settings.max_params or 8))
+        probed = 0
+        for name, _ in ordered:
+            if probed >= budget:
+                break
+            allowed = _allowed_for_param(name)
+            if not allowed:
+                continue
+            # Prefer highest-scoring reason for ledger annotation.
+            selection_reason = sorted(
+                allowed.values(),
+                key=lambda x: (
+                    {"route_semantic_match": 0, "passive_evidence_match": 1,
+                     "parameter_semantic_match": 2, "generic_fallback": 3}.get(x[0], 9),
+                    -x[1],
+                ),
+            )[0][0]
+            for fam in allowed:
+                selected_plan_paths[fam].add(path)
             await probe_field(
                 "GET",
                 url,
@@ -2384,19 +2610,28 @@ async def run_active_probe_kit(
                 baseline_status,
                 baseline_ok,
                 baseline_final,
+                allowed_families=allowed,
+                selection_reason=selection_reason,
             )
+            probed += 1
 
-    # --- Forms ---
-    if forms:
+    # --- Forms (parameter-semantic; capped; never override dedicated fixture routing) ---
+    if forms and not fixture_fam:
         for form in (forms or [])[: max(0, int(settings.max_forms or 3))]:
             action = form.get("action") or url
             method = (form.get("method") or "GET").upper()
             if mutation_blocked(action, method):
                 continue
-            fields = [f for f in (form.get("fields") or []) if f][: settings.max_params]
-            if not fields:
+            raw_fields = form.get("fields") or []
+            if isinstance(raw_fields, dict):
+                field_names = [str(f) for f in raw_fields.keys() if f]
+                values = {str(k): str(v if v is not None else "test") for k, v in raw_fields.items() if k}
+            else:
+                field_names = [f for f in raw_fields if f][: settings.max_params]
+                values = {f: "test" for f in field_names}
+            if not field_names:
                 continue
-            values = {f: "test" for f in form.get("fields", []) if f}
+            form_path = _norm_path(action)
             baseline_ok = False
             baseline_body = ""
             baseline_status = 0
@@ -2409,6 +2644,7 @@ async def run_active_probe_kit(
                     role="baseline",
                     probe_class="baseline",
                     probe_name="baseline",
+                    target_selection_reason="parameter_semantic_match",
                 )
                 baseline_status, baseline_body, base_hdrs, baseline_final = _meta(base_resp)
                 baseline_ok = not is_contaminated(
@@ -2416,7 +2652,23 @@ async def run_active_probe_kit(
                 )
             except Exception:
                 baseline_ok = False
-            for field in fields:
+            for field in field_names[: settings.max_params]:
+                # Rebind path scoring to the form action.
+                path = form_path
+                fixture_fam = _fixture_family_for_path(path)
+                allowed = _allowed_for_param(field)
+                if not allowed:
+                    continue
+                selection_reason = sorted(
+                    allowed.values(),
+                    key=lambda x: (
+                        {"route_semantic_match": 0, "passive_evidence_match": 1,
+                         "parameter_semantic_match": 2, "generic_fallback": 3}.get(x[0], 9),
+                        -x[1],
+                    ),
+                )[0][0]
+                for fam in allowed:
+                    selected_plan_paths[fam].add(path)
                 await probe_field(
                     method,
                     action,
@@ -2427,7 +2679,115 @@ async def run_active_probe_kit(
                     baseline_status,
                     baseline_ok,
                     baseline_final,
+                    allowed_families=allowed,
+                    selection_reason=selection_reason,
                 )
+
+    # Record target-selection coverage for this page onto shared stats.
+    if stats is not None:
+        try:
+            prev_cov = dict(getattr(stats, "target_selection_coverage", None) or {})
+            selected_acc = dict(prev_cov.get("selected_by_family") or {})
+            for fam, paths in selected_plan_paths.items():
+                bucket = set(selected_acc.get(fam) or [])
+                bucket.update(paths)
+                selected_acc[fam] = sorted(bucket)
+            discovered_paths = []
+            for u in list(getattr(stats, "discovered_urls", None) or []):
+                try:
+                    discovered_paths.append(_norm_path(str(u)))
+                except Exception:
+                    continue
+            # Synthetic ProbeTarget list for coverage report.
+            from active_probe_targeting import ProbeTarget
+
+            faux_plan = []
+            for fam, paths in selected_acc.items():
+                for pth in paths:
+                    faux_plan.append(
+                        ProbeTarget(
+                            url=pth,
+                            method="GET",
+                            param="",
+                            family=fam,
+                            reason="route_semantic_match",
+                            score=100,
+                        )
+                    )
+            report = selection_coverage_report(faux_plan, discovered_paths)
+            stats.target_selection_coverage = {
+                "status": report.get("status"),
+                "missing_families": report.get("missing_families") or [],
+                "fixtures": report.get("fixtures") or [],
+                "selected_by_family": selected_acc,
+                "reasons": report.get("reasons") or {},
+            }
+            # Drive split coverage / assessment completeness.
+            ts_status = str(report.get("status") or "")
+            if ts_status == "insufficient":
+                stats.active_validation_coverage = "partial"  # type: ignore[attr-defined]
+                missing = ", ".join(report.get("missing_families") or []) or "dedicated fixtures"
+                stats.assessment_inconclusive_reason = (  # type: ignore[attr-defined]
+                    f"target-selection coverage insufficient ({missing} discovered but not tested)"
+                )
+            elif ts_status == "complete":
+                stats.active_validation_coverage = "complete"  # type: ignore[attr-defined]
+                prev_reason = str(getattr(stats, "assessment_inconclusive_reason", "") or "")
+                if "target-selection coverage insufficient" in prev_reason:
+                    stats.assessment_inconclusive_reason = ""  # type: ignore[attr-defined]
+            elif ts_status == "partial":
+                if not getattr(stats, "active_validation_coverage", None):
+                    stats.active_validation_coverage = "partial"  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    # Explicit coverage-gap records for Horizon / supported fixtures.
+    if stats is not None:
+        try:
+            from horizon_benchmark.evaluate import build_coverage_gaps
+            from horizon_benchmark.manifest import load_manifest
+
+            gaps = build_coverage_gaps(stats=stats, mode=mode, manifest=load_manifest())
+            prev_gaps = list(getattr(stats, "benchmark_coverage_gaps", None) or [])
+            # Merge by path+reason
+            seen_g = {(str(g.get("path")), str(g.get("reason"))) for g in prev_gaps if isinstance(g, dict)}
+            for g in gaps:
+                key = (str(g.get("path")), str(g.get("reason")))
+                if key in seen_g:
+                    continue
+                prev_gaps.append(g)
+                seen_g.add(key)
+            stats.benchmark_coverage_gaps = prev_gaps[:500]  # type: ignore[attr-defined]
+            # Unsupported discovered fixtures → informational finding (never silent)
+            emitted = getattr(stats, "_unsupported_fixture_gaps_emitted", None)
+            if not isinstance(emitted, set):
+                emitted = set()
+                stats._unsupported_fixture_gaps_emitted = emitted  # type: ignore[attr-defined]
+            for g in gaps:
+                if g.get("reason") != "family_unsupported":
+                    continue
+                path = str(g.get("path") or "")
+                if not path or path in emitted:
+                    continue
+                emitted.add(path)
+                add(
+                    "coverage_gap",
+                    "info",
+                    f"Fixture discovered but no compatible active detector exists: {path}",
+                    f"unsupported_fixture:{path}",
+                    {
+                        "verification": "informational",
+                        "confidence": "high",
+                        "confidence_reason": "benchmark_coverage_gap",
+                        "proof": {
+                            "validation_state": STATE_NOT_APPLICABLE,
+                            "coverage_gap": g,
+                        },
+                        "validation": "unverified",
+                    },
+                )
+        except Exception:
+            pass
 
     if breaker.tripped:
         # Single shared summary — never one coverage finding per page.

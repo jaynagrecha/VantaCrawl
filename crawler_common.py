@@ -844,6 +844,74 @@ def extract_urls_from_robots(body_text, base_url):
     return urls
 
 
+def parse_robots_disallow_prefixes(body_text: str) -> list:
+    """Return normalized Disallow path prefixes from a robots.txt body."""
+    out = []
+    seen = set()
+    for line in (body_text or "").splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        if not raw.lower().startswith("disallow:"):
+            continue
+        path = raw.split(":", 1)[1].strip()
+        if not path:
+            continue
+        if not path.startswith("/"):
+            path = "/" + path
+        if path not in seen:
+            seen.add(path)
+            out.append(path)
+    return out
+
+
+ROBOTS_BYPASS_PROVENANCE = {
+    "policy": "robots_exclusion_bypassed",
+    "authority": "authorized_configuration",
+    "setting": "ignore_robots=true",
+    "authorized_robots_bypass": True,
+    "note": (
+        "Path was listed under robots.txt Disallow (or equivalent exclusion) and was "
+        "fetched because Ignore robots.txt was explicitly enabled for this authorized scan."
+    ),
+}
+
+
+def robots_bypass_provenance_for_url(
+    url: str,
+    *,
+    ignore_robots: bool,
+    disallow_prefixes=None,
+):
+    """Return provenance dict when a Disallow-listed path is fetched under ignore_robots."""
+    if not ignore_robots:
+        return None
+    try:
+        path = urlparse(url).path or "/"
+    except Exception:
+        return None
+    prefixes = list(disallow_prefixes or []) or ["/private", "/listings"]
+    path_l = path.lower()
+    matched = None
+    for pref in prefixes:
+        p = (pref or "").strip()
+        if not p:
+            continue
+        if path_l == p.rstrip("/").lower() or path_l.startswith(p.lower()):
+            matched = p
+            break
+    if not matched and path_l.rstrip("/").endswith("robots.txt"):
+        # robots.txt itself is inventory under ignore mode
+        matched = "/robots.txt"
+    if not matched:
+        return None
+    return {
+        **ROBOTS_BYPASS_PROVENANCE,
+        "matched_disallow": matched,
+        "url_path": path,
+    }
+
+
 def extract_urls_from_content(url, content_type, body_text, base_domain, restrict_domain, extra_urls=None, ignore_robots=True):
     links = set()
     if body_text:

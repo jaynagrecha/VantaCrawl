@@ -162,6 +162,14 @@ def build_scan_setup(meta: Dict[str, Any] | None) -> Dict[str, Any]:
         ("Directory scan only (skip crawl)", _yes_no(enum_only)),
         ("Restrict to same domain", _yes_no(meta.get("restrict_domain", True))),
         ("Ignore robots.txt", _yes_no(meta.get("ignore_robots"))),
+        (
+            "Robots exclusion provenance",
+            (
+                "Deliberately bypassed by authorized configuration (ignore_robots=true)"
+                if _on(meta.get("ignore_robots"))
+                else "Honored (Disallow treated as crawl exclusion)"
+            ),
+        ),
         ("Probe 401/403 pages", _yes_no(meta.get("bypass_forbidden"))),
         ("Browser deep render (Chrome)", _yes_no(deep)),
         ("Brute-force depth", str(meta.get("max_depth", ""))),

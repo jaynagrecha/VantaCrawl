@@ -1,0 +1,3761 @@
+{
+  "name": "Horizon Catalog Acceptance Benchmark",
+  "version": "1",
+  "target": "https://horizon-catalog.onrender.com/",
+  "ground_truth": true,
+  "buckets": {
+    "supported_required": "Supported and must detect (or explicitly gap-report)",
+    "passive_manual": "Passive/manual candidate only",
+    "unsupported": "Explicitly unsupported \u2014 must not silently skip when discovered"
+  },
+  "routes": [
+    {
+      "path": "/sqli/error",
+      "method": "GET",
+      "parameter": "id",
+      "family": "sqli",
+      "probe_family": "sqli",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "differential_signal",
+      "expected_severity": "high",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": true,
+      "linked": true,
+      "notes": "Error-based SQLi \u2014 MySQL-style syntax differential.",
+      "title": "SQLi error-based",
+      "catalog_expected": "sql_injection differential_signal on id",
+      "catalog_tags": [
+        "active",
+        "safe"
+      ]
+    },
+    {
+      "path": "/sqli/blind",
+      "method": "GET",
+      "parameter": "id",
+      "family": "sqli",
+      "probe_family": "sqli",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "differential_signal",
+      "expected_severity": "high",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": true,
+      "linked": true,
+      "notes": "Boolean blind differential (extended+).",
+      "title": "SQLi boolean blind",
+      "catalog_expected": "boolean differential on truthy/falsey payloads",
+      "catalog_tags": [
+        "active"
+      ]
+    },
+    {
+      "path": "/sqli/safe",
+      "method": "GET",
+      "parameter": "id",
+      "family": "sqli",
+      "probe_family": "sqli",
+      "classification": "control",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "negative",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": true,
+      "mandatory": true,
+      "linked": true,
+      "notes": "Negative control \u2014 identical body for all payloads.",
+      "title": "SQLi safe control",
+      "catalog_expected": "no sql_injection confirmation",
+      "catalog_tags": [
+        "control"
+      ]
+    },
+    {
+      "path": "/rce/arith",
+      "method": "GET",
+      "parameter": "cmd",
+      "family": "rce",
+      "probe_family": "rce",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "execution_confirmed",
+      "expected_severity": "critical",
+      "expected_validation": "confirmed",
+      "must_not_confirm": false,
+      "mandatory": true,
+      "linked": true,
+      "notes": "Arithmetic / marker echo RCE sink.",
+      "title": "RCE arithmetic / marker echo",
+      "catalog_expected": "rce confirmed on cmd",
+      "catalog_tags": [
+        "active",
+        "safe"
+      ]
+    },
+    {
+      "path": "/rce/reflect",
+      "method": "GET",
+      "parameter": "cmd",
+      "family": "rce",
+      "probe_family": "rce",
+      "classification": "control",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "negative",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": true,
+      "mandatory": true,
+      "linked": true,
+      "notes": "Reflection-only \u2014 must never confirm RCE.",
+      "title": "RCE reflection-only",
+      "catalog_expected": "no rce confirmation",
+      "catalog_tags": [
+        "control"
+      ]
+    },
+    {
+      "path": "/cmdi/ping",
+      "method": "GET",
+      "parameter": "host",
+      "family": "command_injection",
+      "probe_family": "rce",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "execution_confirmed",
+      "expected_severity": "critical",
+      "expected_validation": "confirmed",
+      "must_not_confirm": false,
+      "mandatory": true,
+      "linked": true,
+      "notes": "OS command injection via host metacharacters.",
+      "title": "OS command injection",
+      "catalog_expected": "shell metacharacters in host alter command",
+      "catalog_tags": [
+        "active"
+      ]
+    },
+    {
+      "path": "/ssti/eval",
+      "method": "GET",
+      "parameter": "name",
+      "family": "ssti",
+      "probe_family": "ssti",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "execution_confirmed",
+      "expected_severity": "high",
+      "expected_validation": "confirmed",
+      "must_not_confirm": false,
+      "mandatory": true,
+      "linked": true,
+      "notes": "",
+      "title": "SSTI evaluation",
+      "catalog_expected": "ssti confirmed on name",
+      "catalog_tags": [
+        "active",
+        "safe"
+      ]
+    },
+    {
+      "path": "/ssti/reflect",
+      "method": "GET",
+      "parameter": "name",
+      "family": "ssti",
+      "probe_family": "ssti",
+      "classification": "control",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "negative",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": true,
+      "mandatory": true,
+      "linked": true,
+      "notes": "",
+      "title": "SSTI reflection-only",
+      "catalog_expected": "no ssti confirmation",
+      "catalog_tags": [
+        "control"
+      ]
+    },
+    {
+      "path": "/ssrf/fetch",
+      "method": "GET",
+      "parameter": "url",
+      "family": "ssrf",
+      "probe_family": "ssrf",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "inconclusive",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": true,
+      "linked": true,
+      "notes": "Probe must be sent. OOB confirmation only when callback receiver configured; without OOB, result_state may be inconclusive/reflected_only \u2014 never silent skip.",
+      "title": "SSRF server-side fetch",
+      "catalog_expected": "ssrf oob_callback_confirmed when callback URL is fetched",
+      "catalog_tags": [
+        "active",
+        "oob"
+      ]
+    },
+    {
+      "path": "/ssrf/reflect",
+      "method": "GET",
+      "parameter": "url",
+      "family": "ssrf",
+      "probe_family": "ssrf",
+      "classification": "control",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "reflected_only",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": true,
+      "mandatory": true,
+      "linked": true,
+      "notes": "Must not confirm SSRF via OOB.",
+      "title": "SSRF reflection-only",
+      "catalog_expected": "reflected_only \u2014 never confirmed SSRF via OOB",
+      "catalog_tags": [
+        "control",
+        "fp-guard"
+      ]
+    },
+    {
+      "path": "/crlf",
+      "method": "GET",
+      "parameter": "q",
+      "family": "crlf",
+      "probe_family": "crlf",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "execution_confirmed",
+      "expected_severity": "high",
+      "expected_validation": "confirmed",
+      "must_not_confirm": false,
+      "mandatory": true,
+      "linked": true,
+      "notes": "",
+      "title": "CRLF header injection",
+      "catalog_expected": "header_injection confirmed on q",
+      "catalog_tags": [
+        "active",
+        "safe"
+      ]
+    },
+    {
+      "path": "/trav/download",
+      "method": "GET",
+      "parameter": "path",
+      "family": "traversal",
+      "probe_family": "traversal",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "differential_signal",
+      "expected_severity": "medium",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": true,
+      "linked": true,
+      "notes": "Safe/extended: differential; lab+canary may confirm.",
+      "title": "Traversal download alias",
+      "catalog_expected": "directory_traversal / canary on path",
+      "catalog_tags": [
+        "active"
+      ]
+    },
+    {
+      "path": "/trav/view",
+      "method": "GET",
+      "parameter": "file",
+      "family": "traversal",
+      "probe_family": "traversal",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "lab"
+      ],
+      "expected_result_state": "canary_file_confirmed",
+      "expected_severity": "high",
+      "expected_validation": "confirmed",
+      "must_not_confirm": false,
+      "mandatory": true,
+      "linked": true,
+      "notes": "Lab canary confirmation when fixture configured.",
+      "title": "Traversal / file view",
+      "catalog_expected": "canary_file_confirmed when canary configured; else differential on ..",
+      "catalog_tags": [
+        "active",
+        "lab"
+      ]
+    },
+    {
+      "path": "/xss/reflected",
+      "method": "GET",
+      "parameter": "q",
+      "family": "xss",
+      "probe_family": "xss",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "reflected_only",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": true,
+      "linked": true,
+      "notes": "",
+      "title": "XSS reflected (raw text)",
+      "catalog_expected": "xss/html_injection unverified reflection (not browser-confirmed unless payload executes)",
+      "catalog_tags": [
+        "active",
+        "safe"
+      ]
+    },
+    {
+      "path": "/xss/encoded",
+      "method": "GET",
+      "parameter": "q",
+      "family": "xss",
+      "probe_family": "xss",
+      "classification": "control",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "negative",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": true,
+      "mandatory": true,
+      "linked": true,
+      "notes": "",
+      "title": "XSS encoded (escaped)",
+      "catalog_expected": "unconfirmed / no executable XSS",
+      "catalog_tags": [
+        "control"
+      ]
+    },
+    {
+      "path": "/xss/browser",
+      "method": "GET",
+      "parameter": "q",
+      "family": "xss",
+      "probe_family": "xss",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "lab"
+      ],
+      "expected_result_state": "browser_execution_confirmed",
+      "expected_severity": "high",
+      "expected_validation": "confirmed",
+      "must_not_confirm": false,
+      "mandatory": true,
+      "linked": true,
+      "notes": "Requires browser confirmation capability in lab mode.",
+      "title": "XSS browser-executing sink",
+      "catalog_expected": "browser_execution_confirmed in Lab/browser mode",
+      "catalog_tags": [
+        "active",
+        "lab",
+        "browser"
+      ]
+    },
+    {
+      "path": "/redirect",
+      "method": "GET",
+      "parameter": "next",
+      "family": "redirect",
+      "probe_family": "redirect",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "execution_confirmed",
+      "expected_severity": "high",
+      "expected_validation": "confirmed",
+      "must_not_confirm": false,
+      "mandatory": true,
+      "linked": true,
+      "notes": "Open redirect \u2014 never classified as SSRF.",
+      "title": "Open redirect",
+      "catalog_expected": "open_redirect on next \u2014 never SSRF",
+      "catalog_tags": [
+        "active",
+        "safe",
+        "fp-guard"
+      ]
+    },
+    {
+      "path": "/redirect/safe",
+      "method": "GET",
+      "parameter": "next",
+      "family": "redirect",
+      "probe_family": "redirect",
+      "classification": "control",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "negative",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": true,
+      "mandatory": true,
+      "linked": true,
+      "notes": "Same-origin redirect control \u2014 must not confirm open redirect.",
+      "title": "Safe same-origin redirect",
+      "catalog_expected": "no open_redirect confirmation",
+      "catalog_tags": [
+        "control"
+      ]
+    },
+    {
+      "path": "/bac/admin",
+      "method": "GET",
+      "parameter": "",
+      "family": "access_control",
+      "probe_family": "access_control",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Broken access control admin API",
+      "catalog_expected": "admin actions without auth cookie",
+      "catalog_tags": [
+        "active",
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/actuator/env",
+      "method": "GET",
+      "parameter": "",
+      "family": "actuator",
+      "probe_family": "actuator",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Spring Actuator env",
+      "catalog_expected": "env endpoint leaks properties/secrets",
+      "catalog_tags": [
+        "passive",
+        "enum"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/api/user",
+      "method": "GET",
+      "parameter": "",
+      "family": "api",
+      "probe_family": "api",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "JSON API without auth",
+      "catalog_expected": "unauthenticated API / PII exposure",
+      "catalog_tags": [
+        "passive",
+        "api"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/auth/2fa-bypass",
+      "method": "GET",
+      "parameter": "",
+      "family": "auth",
+      "probe_family": "auth",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "2FA bypass via direct next step",
+      "catalog_expected": "skip OTP \u2014 /auth/2fa-bypass?verified=1 grants access",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/auth/login",
+      "method": "GET",
+      "parameter": "",
+      "family": "auth",
+      "probe_family": "auth",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Weak login (user=admin pass=admin)",
+      "catalog_expected": "weak auth / default creds signal if probed; form for crawl",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/auth/reset",
+      "method": "GET",
+      "parameter": "",
+      "family": "auth",
+      "probe_family": "auth",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Password reset token in URL",
+      "catalog_expected": "reset token disclosed in link / response",
+      "catalog_tags": [
+        "passive",
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/backup/site.sql",
+      "method": "GET",
+      "parameter": "",
+      "family": "backup",
+      "probe_family": "backup",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "SQL dump backup exposed",
+      "catalog_expected": "database dump content publicly readable",
+      "catalog_tags": [
+        "passive",
+        "enum"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/backup/www.zip",
+      "method": "GET",
+      "parameter": "",
+      "family": "backup",
+      "probe_family": "backup",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Full site ZIP backup",
+      "catalog_expected": "downloadable source/backup archive",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/wp-config.php.bak",
+      "method": "GET",
+      "parameter": "",
+      "family": "backup",
+      "probe_family": "backup",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "WordPress config backup",
+      "catalog_expected": "wp-config credentials in .bak",
+      "catalog_tags": [
+        "passive",
+        "secrets"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/logic/cart",
+      "method": "GET",
+      "parameter": "",
+      "family": "business_logic",
+      "probe_family": "business_logic",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Price / quantity manipulation",
+      "catalog_expected": "negative quantity or client-side price accepted",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/logic/coupon",
+      "method": "GET",
+      "parameter": "",
+      "family": "business_logic",
+      "probe_family": "business_logic",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Coupon reuse / stack",
+      "catalog_expected": "same coupon accepted repeatedly",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/account/",
+      "method": "GET",
+      "parameter": "",
+      "family": "cache",
+      "probe_family": "cache",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": false,
+      "title": "Web cache deception prefix",
+      "catalog_expected": "/account/profile.css style path returns private HTML",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/cache/deception",
+      "method": "GET",
+      "parameter": "",
+      "family": "cache",
+      "probe_family": "cache",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Web cache deception path",
+      "catalog_expected": "non-cacheable account page with .css suffix may be stored",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/cache/poison",
+      "method": "GET",
+      "parameter": "",
+      "family": "cache",
+      "probe_family": "cache",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Cache key / unkeyed header reflection",
+      "catalog_expected": "X-Forwarded-Prefix reflected \u2014 cache poisoning candidate",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/captcha/bypass",
+      "method": "GET",
+      "parameter": "",
+      "family": "captcha",
+      "probe_family": "captcha",
+      "classification": "vulnerable",
+      "bucket": "unsupported",
+      "modes": [],
+      "expected_result_state": "fixture_discovered_no_compatible_detector",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "CAPTCHA bypass (client-side only)",
+      "catalog_expected": "captcha token accepted when omitted or forged",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": "Fixture discovered but no compatible active detector exists."
+    },
+    {
+      "path": "/clickjack",
+      "method": "GET",
+      "parameter": "",
+      "family": "clickjacking",
+      "probe_family": "clickjacking",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Clickjackable dashboard",
+      "catalog_expected": "no X-Frame-Options / CSP frame-ancestors",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/cors/localstorage",
+      "method": "GET",
+      "parameter": "",
+      "family": "client_storage",
+      "probe_family": "client_storage",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Sensitive token in localStorage",
+      "catalog_expected": "session token stored in localStorage (XSS-stealable)",
+      "catalog_tags": [
+        "passive",
+        "browser"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/k8s/token",
+      "method": "GET",
+      "parameter": "",
+      "family": "cloud",
+      "probe_family": "cloud",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "K8s service account token tease",
+      "catalog_expected": "service account JWT-like token leaked",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/cookies/dual",
+      "method": "GET",
+      "parameter": "",
+      "family": "cookies",
+      "probe_family": "cookies",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Multiple Set-Cookie (manual header lines)",
+      "catalog_expected": "cookie auth / flag findings",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/cookies/set",
+      "method": "GET",
+      "parameter": "",
+      "family": "cookies",
+      "probe_family": "cookies",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Weak session cookies",
+      "catalog_expected": "passive cookie findings (missing Secure/HttpOnly flags)",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/mixed/insecure",
+      "method": "GET",
+      "parameter": "",
+      "family": "cookies",
+      "probe_family": "cookies",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Mixed content / insecure cookie",
+      "catalog_expected": "Secure flag missing on HTTPS cookie; http:// asset ref",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/cors/null-origin",
+      "method": "GET",
+      "parameter": "",
+      "family": "cors",
+      "probe_family": "cors",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "CORS reflects null origin",
+      "catalog_expected": "ACAO: null with credentials",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/cors/open",
+      "method": "GET",
+      "parameter": "",
+      "family": "cors",
+      "probe_family": "cors",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Overly permissive CORS",
+      "catalog_expected": "cors finding reflecting Origin with credentials",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/keys/private.pem",
+      "method": "GET",
+      "parameter": "",
+      "family": "crypto",
+      "probe_family": "crypto",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Private key file exposure",
+      "catalog_expected": "PEM private key disclosed",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/csp/bypass",
+      "method": "GET",
+      "parameter": "",
+      "family": "csp",
+      "probe_family": "csp",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Weak CSP with script gadget",
+      "catalog_expected": "CSP allows unsafe-inline / JSONP host",
+      "catalog_tags": [
+        "passive",
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/csrf/action",
+      "method": "GET",
+      "parameter": "",
+      "family": "csrf",
+      "probe_family": "csrf",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "State-changing POST without CSRF token",
+      "catalog_expected": "csrf candidate (passive/active depending on mode)",
+      "catalog_tags": [
+        "passive",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/css/inject",
+      "method": "GET",
+      "parameter": "",
+      "family": "css_injection",
+      "probe_family": "css_injection",
+      "classification": "vulnerable",
+      "bucket": "unsupported",
+      "modes": [],
+      "expected_result_state": "fixture_discovered_no_compatible_detector",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "CSS injection / data exfil",
+      "catalog_expected": "attacker style reads attributes via selectors",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": "Fixture discovered but no compatible active detector exists."
+    },
+    {
+      "path": "/csv/export",
+      "method": "GET",
+      "parameter": "",
+      "family": "csv_injection",
+      "probe_family": "csv_injection",
+      "classification": "vulnerable",
+      "bucket": "unsupported",
+      "modes": [],
+      "expected_result_state": "fixture_discovered_no_compatible_detector",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "CSV / formula injection",
+      "catalog_expected": "cell values starting with =+@- become spreadsheet formulas",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": "Fixture discovered but no compatible active detector exists."
+    },
+    {
+      "path": "/debug/django",
+      "method": "GET",
+      "parameter": "",
+      "family": "debug",
+      "probe_family": "debug",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Django debug page",
+      "catalog_expected": "DEBUG=True style traceback with settings",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/deser/java",
+      "method": "GET",
+      "parameter": "",
+      "family": "deserialization",
+      "probe_family": "deserialization",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Java deserialization gadget tease",
+      "catalog_expected": "rO0 ABBase64 java serialized blob accepted",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/deser/pickle",
+      "method": "GET",
+      "parameter": "",
+      "family": "deserialization",
+      "probe_family": "deserialization",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Insecure deserialization marker",
+      "catalog_expected": "pickle/java serialized payload echoed as executed",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/deser/viewstate",
+      "method": "GET",
+      "parameter": "",
+      "family": "deserialization",
+      "probe_family": "deserialization",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "ASP.NET ViewState deserialization tease",
+      "catalog_expected": "unprotected viewstate blob",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/yaml/load",
+      "method": "GET",
+      "parameter": "",
+      "family": "deserialization",
+      "probe_family": "deserialization",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "YAML deserialization",
+      "catalog_expected": "!!python/object or critical YAML tags flagged",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/robots.txt",
+      "method": "GET",
+      "parameter": "",
+      "family": "discovery",
+      "probe_family": "discovery",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": false,
+      "title": "robots.txt",
+      "catalog_expected": "Disallow entries; respectful crawlers skip; bypass crawlers still fetch",
+      "catalog_tags": [
+        "passive",
+        "robots"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/sitemap.xml",
+      "method": "GET",
+      "parameter": "",
+      "family": "discovery",
+      "probe_family": "discovery",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": false,
+      "title": "sitemap.xml (excludes private)",
+      "catalog_expected": "public URLs only \u2014 private paths absent",
+      "catalog_tags": [
+        "passive",
+        "robots"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/.env",
+      "method": "GET",
+      "parameter": "",
+      "family": "dotenv",
+      "probe_family": "dotenv",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Exposed .env file",
+      "catalog_expected": "dotenv secrets in HTTP response",
+      "catalog_tags": [
+        "passive",
+        "secrets"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/el/eval",
+      "method": "GET",
+      "parameter": "",
+      "family": "el_injection",
+      "probe_family": "el_injection",
+      "classification": "vulnerable",
+      "bucket": "unsupported",
+      "modes": [],
+      "expected_result_state": "fixture_discovered_no_compatible_detector",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Expression Language injection",
+      "catalog_expected": "${7*7} / #{7*7} evaluated",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": "Fixture discovered but no compatible active detector exists."
+    },
+    {
+      "path": "/_cat/indices",
+      "method": "GET",
+      "parameter": "",
+      "family": "elasticsearch",
+      "probe_family": "elasticsearch",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Elasticsearch unauthenticated",
+      "catalog_expected": "open Elastic/_cat endpoint",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/email/draft",
+      "method": "GET",
+      "parameter": "",
+      "family": "email_injection",
+      "probe_family": "email_injection",
+      "classification": "vulnerable",
+      "bucket": "unsupported",
+      "modes": [],
+      "expected_result_state": "fixture_discovered_no_compatible_detector",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Email header injection",
+      "catalog_expected": "CRLF in subject/body injects headers",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": "Fixture discovered but no compatible active detector exists."
+    },
+    {
+      "path": "/config/firebase.json",
+      "method": "GET",
+      "parameter": "",
+      "family": "firebase",
+      "probe_family": "firebase",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Firebase config exposure",
+      "catalog_expected": "apiKey / appId in client config",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/.git/HEAD",
+      "method": "GET",
+      "parameter": "",
+      "family": "git",
+      "probe_family": "git",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": false,
+      "title": "Git metadata exposure",
+      "catalog_expected": ".git/HEAD readable",
+      "catalog_tags": [
+        "passive",
+        "enum"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/.git/config",
+      "method": "GET",
+      "parameter": "",
+      "family": "git",
+      "probe_family": "git",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": false,
+      "title": "Git config exposure",
+      "catalog_expected": ".git/config readable",
+      "catalog_tags": [
+        "passive",
+        "enum"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/graphql",
+      "method": "GET",
+      "parameter": "",
+      "family": "graphql",
+      "probe_family": "graphql",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "GraphQL introspection + injection",
+      "catalog_expected": "introspection enabled; error-based injection on query",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/headers/verbose",
+      "method": "GET",
+      "parameter": "",
+      "family": "headers",
+      "probe_family": "headers",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Verbose / revealing headers",
+      "catalog_expected": "passive tech/fingerprint or info disclosure signals",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/host-header",
+      "method": "GET",
+      "parameter": "",
+      "family": "host_header",
+      "probe_family": "host_header",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Host header password-reset poisoning",
+      "catalog_expected": "reset link uses attacker Host / X-Forwarded-Host",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/hpp/search",
+      "method": "GET",
+      "parameter": "",
+      "family": "hpp",
+      "probe_family": "hpp",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "HTTP parameter pollution",
+      "catalog_expected": "duplicate params \u2014 last/first wins inconsistently",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/idor/invoice",
+      "method": "GET",
+      "parameter": "",
+      "family": "idor",
+      "probe_family": "idor",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "IDOR invoice download",
+      "catalog_expected": "horizontal access \u2014 invoice by sequential id",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/idor/user",
+      "method": "GET",
+      "parameter": "",
+      "family": "idor",
+      "probe_family": "idor",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "IDOR user profile by id",
+      "catalog_expected": "insecure direct object reference \u2014 any id returns PII",
+      "catalog_tags": [
+        "active",
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/leak/env",
+      "method": "GET",
+      "parameter": "",
+      "family": "info_leak",
+      "probe_family": "info_leak",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Env / secrets leak",
+      "catalog_expected": "secret / key finding from body",
+      "catalog_tags": [
+        "passive",
+        "secrets"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/leak/stack",
+      "method": "GET",
+      "parameter": "",
+      "family": "info_leak",
+      "probe_family": "info_leak",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Stack trace dump",
+      "catalog_expected": "error disclosure / verbose exception",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/phpinfo",
+      "method": "GET",
+      "parameter": "",
+      "family": "info_leak",
+      "probe_family": "info_leak",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "PHPInfo-style diagnostics",
+      "catalog_expected": "environment / path disclosure page",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/cors/jsonp-steal",
+      "method": "GET",
+      "parameter": "",
+      "family": "json_hijacking",
+      "probe_family": "json_hijacking",
+      "classification": "vulnerable",
+      "bucket": "unsupported",
+      "modes": [],
+      "expected_result_state": "fixture_discovered_no_compatible_detector",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "JSON hijacking / array response",
+      "catalog_expected": "sensitive JSON array returned without protection",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": "Fixture discovered but no compatible active detector exists."
+    },
+    {
+      "path": "/jsonp",
+      "method": "GET",
+      "parameter": "",
+      "family": "jsonp",
+      "probe_family": "jsonp",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "JSONP callback reflection",
+      "catalog_expected": "callback= reflected into JS \u2014 XSS/JSONP abuse",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/auth/jwt-kid",
+      "method": "GET",
+      "parameter": "",
+      "family": "jwt",
+      "probe_family": "jwt",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "JWT kid path traversal / SQLi tease",
+      "catalog_expected": "kid header influences key lookup unsafely",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/jwt/none",
+      "method": "GET",
+      "parameter": "",
+      "family": "jwt",
+      "probe_family": "jwt",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "JWT alg=none token",
+      "catalog_expected": "unsigned JWT accepted / issued",
+      "catalog_tags": [
+        "active",
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/jwt/weak",
+      "method": "GET",
+      "parameter": "",
+      "family": "jwt",
+      "probe_family": "jwt",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "JWT HS256 with weak secret",
+      "catalog_expected": "JWT present; secret is 'secret' (documented for cracking labs)",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": "Token uses HMAC with trivial secret for scanner/JWT tool demos."
+    },
+    {
+      "path": "/ldap/blind",
+      "method": "GET",
+      "parameter": "",
+      "family": "ldap",
+      "probe_family": "ldap",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "LDAP blind injection",
+      "catalog_expected": "LDAP wildcard blind differential",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/ldap/search",
+      "method": "GET",
+      "parameter": "",
+      "family": "ldap",
+      "probe_family": "ldap",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "LDAP injection",
+      "catalog_expected": "LDAP filter metacharacters alter search",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/lfi/include",
+      "method": "GET",
+      "parameter": "",
+      "family": "lfi",
+      "probe_family": "lfi",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Local file inclusion",
+      "catalog_expected": "path traversal via include parameter reads local files",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/listing",
+      "method": "GET",
+      "parameter": "",
+      "family": "listing",
+      "probe_family": "listing",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Directory listing",
+      "catalog_expected": "autoindex style file listing",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/listing/notes.txt",
+      "method": "GET",
+      "parameter": "",
+      "family": "listing",
+      "probe_family": "listing",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": false,
+      "title": "Listing notes file",
+      "catalog_expected": "readable file from listing",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/log4j/greet",
+      "method": "GET",
+      "parameter": "",
+      "family": "log4j",
+      "probe_family": "log4j",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Log4j / JNDI tease",
+      "catalog_expected": "jndi:ldap reflected as lookup attempted",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/mass-assign/profile",
+      "method": "GET",
+      "parameter": "",
+      "family": "mass_assignment",
+      "probe_family": "mass_assignment",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Mass assignment role escalation",
+      "catalog_expected": "role/isAdmin accepted from client JSON",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/method/override",
+      "method": "GET",
+      "parameter": "",
+      "family": "method_override",
+      "probe_family": "method_override",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "HTTP method override tunnel",
+      "catalog_expected": "POST + X-HTTP-Method-Override performs DELETE",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/method/trace",
+      "method": "GET",
+      "parameter": "",
+      "family": "methods",
+      "probe_family": "methods",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "TRACE method echo",
+      "catalog_expected": "TRACE enabled \u2014 XST risk",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/nosql/login",
+      "method": "GET",
+      "parameter": "",
+      "family": "nosql",
+      "probe_family": "nosql",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "NoSQL operator injection",
+      "catalog_expected": "JSON operators like $gt / $ne alter auth logic",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/nullbyte/download",
+      "method": "GET",
+      "parameter": "",
+      "family": "null_byte",
+      "probe_family": "null_byte",
+      "classification": "vulnerable",
+      "bucket": "unsupported",
+      "modes": [],
+      "expected_result_state": "fixture_discovered_no_compatible_detector",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Null-byte extension bypass",
+      "catalog_expected": "%00 truncates extension check",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": "Fixture discovered but no compatible active detector exists."
+    },
+    {
+      "path": "/oauth/callback",
+      "method": "GET",
+      "parameter": "",
+      "family": "oauth",
+      "probe_family": "oauth",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "OAuth token in query string",
+      "catalog_expected": "access_token / code leaked in URL query",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/ognl/eval",
+      "method": "GET",
+      "parameter": "",
+      "family": "ognl",
+      "probe_family": "ognl",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "OGNL / Struts injection",
+      "catalog_expected": "OGNL %{ } / member access payloads",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/otp/predictable",
+      "method": "GET",
+      "parameter": "",
+      "family": "otp",
+      "probe_family": "otp",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Predictable OTP / MFA code",
+      "catalog_expected": "6-digit OTP derived from time bucket / user id",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/reset/poison",
+      "method": "GET",
+      "parameter": "",
+      "family": "password_reset",
+      "probe_family": "password_reset",
+      "classification": "vulnerable",
+      "bucket": "unsupported",
+      "modes": [],
+      "expected_result_state": "fixture_discovered_no_compatible_detector",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Password reset Host-header poisoning",
+      "catalog_expected": "reset link uses attacker-controlled Host",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": "Fixture discovered but no compatible active detector exists."
+    },
+    {
+      "path": "/proto/merge",
+      "method": "GET",
+      "parameter": "",
+      "family": "prototype_pollution",
+      "probe_family": "prototype_pollution",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Prototype pollution JSON merge",
+      "catalog_expected": "__proto__ / constructor.polluted accepted",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/put/upload",
+      "method": "GET",
+      "parameter": "",
+      "family": "put_upload",
+      "probe_family": "put_upload",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "HTTP PUT verb upload",
+      "catalog_expected": "unauthenticated PUT writes content",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/race/balance",
+      "method": "GET",
+      "parameter": "",
+      "family": "race",
+      "probe_family": "race",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Race balance view",
+      "catalog_expected": "shows balance after race withdraws",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/race/withdraw",
+      "method": "GET",
+      "parameter": "",
+      "family": "race",
+      "probe_family": "race",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Race condition withdraw",
+      "catalog_expected": "TOCTOU \u2014 concurrent withdraw can overdraw",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/auth/norate",
+      "method": "GET",
+      "parameter": "",
+      "family": "rate_limit",
+      "probe_family": "rate_limit",
+      "classification": "vulnerable",
+      "bucket": "unsupported",
+      "modes": [],
+      "expected_result_state": "fixture_discovered_no_compatible_detector",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "No rate limit on login",
+      "catalog_expected": "unlimited password guesses",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": "Fixture discovered but no compatible active detector exists."
+    },
+    {
+      "path": "/redirect/js",
+      "method": "GET",
+      "parameter": "",
+      "family": "redirect",
+      "probe_family": "redirect",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "JavaScript open redirect",
+      "catalog_expected": "location= attacker URL",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/redirect/meta",
+      "method": "GET",
+      "parameter": "",
+      "family": "redirect",
+      "probe_family": "redirect",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Meta refresh open redirect",
+      "catalog_expected": "meta refresh to external URL",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/redis/info",
+      "method": "GET",
+      "parameter": "",
+      "family": "redis",
+      "probe_family": "redis",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Redis INFO exposure tease",
+      "catalog_expected": "redis info leaked via debug proxy",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/redos/search",
+      "method": "GET",
+      "parameter": "",
+      "family": "redos",
+      "probe_family": "redos",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "ReDoS vulnerable regex",
+      "catalog_expected": "pathological input stalls evil regex",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/rfi/fetch",
+      "method": "GET",
+      "parameter": "",
+      "family": "rfi",
+      "probe_family": "rfi",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Remote file inclusion tease",
+      "catalog_expected": "remote URL in include param reflected as fetch intent",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/hidden/finance",
+      "method": "GET",
+      "parameter": "",
+      "family": "robots_bypass",
+      "probe_family": "robots_bypass",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": false,
+      "title": "robots-disallowed finance page",
+      "catalog_expected": "unlinked + Disallow \u2014 bypass test",
+      "catalog_tags": [
+        "robots"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/private",
+      "method": "GET",
+      "parameter": "",
+      "family": "robots_bypass",
+      "probe_family": "robots_bypass",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": false,
+      "title": "robots-disallowed private index",
+      "catalog_expected": "directory-style index of disallow targets",
+      "catalog_tags": [
+        "robots"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/private/admin",
+      "method": "GET",
+      "parameter": "",
+      "family": "robots_bypass",
+      "probe_family": "robots_bypass",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": false,
+      "title": "robots-disallowed admin panel",
+      "catalog_expected": "reachable despite Disallow if crawler bypasses robots.txt",
+      "catalog_tags": [
+        "robots",
+        "enum"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/private/db-dump.sql",
+      "method": "GET",
+      "parameter": "",
+      "family": "robots_bypass",
+      "probe_family": "robots_bypass",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": false,
+      "title": "robots-disallowed SQL dump",
+      "catalog_expected": "backup/secret if Disallow bypassed",
+      "catalog_tags": [
+        "robots",
+        "backup"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/private/internal-api",
+      "method": "GET",
+      "parameter": "",
+      "family": "robots_bypass",
+      "probe_family": "robots_bypass",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": false,
+      "title": "robots-disallowed internal API",
+      "catalog_expected": "JSON PII if Disallow bypassed",
+      "catalog_tags": [
+        "robots",
+        "api"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/private/secrets.env",
+      "method": "GET",
+      "parameter": "",
+      "family": "robots_bypass",
+      "probe_family": "robots_bypass",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": false,
+      "title": "robots-disallowed secrets file",
+      "catalog_expected": "secret finding only if robots Disallow is bypassed (or direct URL)",
+      "catalog_tags": [
+        "robots",
+        "secrets"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/secret-admin-panel",
+      "method": "GET",
+      "parameter": "",
+      "family": "robots_bypass",
+      "probe_family": "robots_bypass",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": false,
+      "title": "Hidden admin panel",
+      "catalog_expected": "enum / robots Disallow bypass",
+      "catalog_tags": [
+        "robots",
+        "enum"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/saml/acs",
+      "method": "GET",
+      "parameter": "",
+      "family": "saml",
+      "probe_family": "saml",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "SAML assertion confusion tease",
+      "catalog_expected": "unsigned / swapped Recipient assertion accepted (demo)",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/server-status",
+      "method": "GET",
+      "parameter": "",
+      "family": "server_status",
+      "probe_family": "server_status",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Apache server-status",
+      "catalog_expected": "mod_status style process list",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/auth/predictable-token",
+      "method": "GET",
+      "parameter": "",
+      "family": "session",
+      "probe_family": "session",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Predictable anti-CSRF / invite token",
+      "catalog_expected": "timestamp-based token",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/auth/session-fixation",
+      "method": "GET",
+      "parameter": "",
+      "family": "session",
+      "probe_family": "session",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Session fixation",
+      "catalog_expected": "pre-login session id reused after login",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/smuggle/tease",
+      "method": "GET",
+      "parameter": "",
+      "family": "smuggling",
+      "probe_family": "smuggling",
+      "classification": "vulnerable",
+      "bucket": "unsupported",
+      "modes": [],
+      "expected_result_state": "fixture_discovered_no_compatible_detector",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "HTTP request smuggling tease headers",
+      "catalog_expected": "ambiguous Transfer-Encoding / Content-Length handling noted",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": "Fixture discovered but no compatible active detector exists."
+    },
+    {
+      "path": "/static/app.js.map",
+      "method": "GET",
+      "parameter": "",
+      "family": "sourcemap",
+      "probe_family": "sourcemap",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Source map exposure",
+      "catalog_expected": "JS source map with original sources",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/spel/eval",
+      "method": "GET",
+      "parameter": "",
+      "family": "spel",
+      "probe_family": "spel",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Spring SpEL injection",
+      "catalog_expected": "SpEL T(java.lang.Runtime) style payloads",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/sqli/search",
+      "method": "GET",
+      "parameter": "",
+      "family": "sqli",
+      "probe_family": "sqli",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "SQLi search append",
+      "catalog_expected": "sql_injection differential on q",
+      "catalog_tags": [
+        "active",
+        "safe"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/sqli/second-order",
+      "method": "GET",
+      "parameter": "",
+      "family": "sqli",
+      "probe_family": "sqli",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Second-order SQLi",
+      "catalog_expected": "stored value later concatenated into SQL",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/sqli/time",
+      "method": "GET",
+      "parameter": "",
+      "family": "sqli",
+      "probe_family": "sqli",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "SQLi time-based blind",
+      "catalog_expected": "SLEEP/WAITFOR style payload delays response",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/sri/missing",
+      "method": "GET",
+      "parameter": "",
+      "family": "sri",
+      "probe_family": "sri",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Third-party script without SRI",
+      "catalog_expected": "external script lacking integrity attribute",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/ssi/page",
+      "method": "GET",
+      "parameter": "",
+      "family": "ssi",
+      "probe_family": "ssi",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Server-Side Include injection",
+      "catalog_expected": "<!--#echo / #exec --> reflected executed",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/meta/azure",
+      "method": "GET",
+      "parameter": "",
+      "family": "ssrf",
+      "probe_family": "ssrf",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Azure IMDS tease",
+      "catalog_expected": "Azure metadata path pattern",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/meta/gcp",
+      "method": "GET",
+      "parameter": "",
+      "family": "ssrf",
+      "probe_family": "ssrf",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "GCP metadata tease",
+      "catalog_expected": "GCP metadata service path pattern",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/ssrf/imds-tease",
+      "method": "GET",
+      "parameter": "",
+      "family": "ssrf",
+      "probe_family": "ssrf",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "SSRF IMDS path tease (no real IMDS)",
+      "catalog_expected": "lab/imds signal or skip \u2014 does not contact 169.254.169.254",
+      "catalog_tags": [
+        "lab"
+      ],
+      "notes": "If url looks like metadata IP, returns fake JSON body without network I/O."
+    },
+    {
+      "path": "/webhook/fetch",
+      "method": "GET",
+      "parameter": "",
+      "family": "ssrf",
+      "probe_family": "ssrf",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Webhook SSRF callback URL",
+      "catalog_expected": "server fetches attacker-controlled webhook URL",
+      "catalog_tags": [
+        "active",
+        "oob"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/tmpl/freemarker",
+      "method": "GET",
+      "parameter": "",
+      "family": "ssti",
+      "probe_family": "ssti",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "FreeMarker template injection",
+      "catalog_expected": "FreeMarker ${} expressions evaluate",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/tmpl/smarty",
+      "method": "GET",
+      "parameter": "",
+      "family": "ssti",
+      "probe_family": "ssti",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Smarty template injection",
+      "catalog_expected": "Smarty {7*7} style expressions",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/tmpl/twig",
+      "method": "GET",
+      "parameter": "",
+      "family": "ssti",
+      "probe_family": "ssti",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Twig template injection",
+      "catalog_expected": "Twig {{ }} expressions evaluate",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/tmpl/velocity",
+      "method": "GET",
+      "parameter": "",
+      "family": "ssti",
+      "probe_family": "ssti",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Velocity template injection",
+      "catalog_expected": "Velocity #set / $expr sinks",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/tabnabbing",
+      "method": "GET",
+      "parameter": "",
+      "family": "tabnabbing",
+      "probe_family": "tabnabbing",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Reverse tabnabbing (window.opener)",
+      "catalog_expected": "target=_blank without rel=noopener",
+      "catalog_tags": [
+        "passive",
+        "browser"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/auth/timing",
+      "method": "GET",
+      "parameter": "",
+      "family": "timing",
+      "probe_family": "timing",
+      "classification": "vulnerable",
+      "bucket": "unsupported",
+      "modes": [],
+      "expected_result_state": "fixture_discovered_no_compatible_detector",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Login timing oracle",
+      "catalog_expected": "valid usernames take longer (hash verify path)",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": "Fixture discovered but no compatible active detector exists."
+    },
+    {
+      "path": "/typejuggling/login",
+      "method": "GET",
+      "parameter": "",
+      "family": "type_juggling",
+      "probe_family": "type_juggling",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "PHP-style type juggling compare",
+      "catalog_expected": "0e magic hashes / loose compare bypass",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/upload",
+      "method": "GET",
+      "parameter": "",
+      "family": "upload",
+      "probe_family": "upload",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Unrestricted upload form",
+      "catalog_expected": "upload surface discovery; content echoed",
+      "catalog_tags": [
+        "passive",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/enum/user",
+      "method": "GET",
+      "parameter": "",
+      "family": "user_enumeration",
+      "probe_family": "user_enumeration",
+      "classification": "vulnerable",
+      "bucket": "unsupported",
+      "modes": [],
+      "expected_result_state": "fixture_discovered_no_compatible_detector",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Username / email enumeration",
+      "catalog_expected": "different responses for valid vs invalid accounts",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": "Fixture discovered but no compatible active detector exists."
+    },
+    {
+      "path": "/websocket/cswh",
+      "method": "GET",
+      "parameter": "",
+      "family": "websocket",
+      "probe_family": "websocket",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Cross-site WebSocket hijacking tease",
+      "catalog_expected": "WS endpoint trusts Origin reflection",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/websocket/info",
+      "method": "GET",
+      "parameter": "",
+      "family": "websocket",
+      "probe_family": "websocket",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Unauthenticated WebSocket endpoint info",
+      "catalog_expected": "WS URL without auth advertised",
+      "catalog_tags": [
+        "passive"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/xmlrpc.php",
+      "method": "GET",
+      "parameter": "",
+      "family": "xmlrpc",
+      "probe_family": "xmlrpc",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "WordPress-style XML-RPC",
+      "catalog_expected": "system.listMethods enabled; multicall available",
+      "catalog_tags": [
+        "passive",
+        "active",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/xpath/blind",
+      "method": "GET",
+      "parameter": "",
+      "family": "xpath",
+      "probe_family": "xpath",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "XPath blind injection",
+      "catalog_expected": "boolean XPath differential",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/xpath/user",
+      "method": "GET",
+      "parameter": "",
+      "family": "xpath",
+      "probe_family": "xpath",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "XPath injection",
+      "catalog_expected": "XPath quote breakout in query",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/xss/angular",
+      "method": "GET",
+      "parameter": "",
+      "family": "xss",
+      "probe_family": "xss",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "AngularJS expression injection",
+      "catalog_expected": "{{constructor}} style expressions in old AngularJS",
+      "catalog_tags": [
+        "active",
+        "browser"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/xss/attr",
+      "method": "GET",
+      "parameter": "",
+      "family": "xss",
+      "probe_family": "xss",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "XSS attribute breakout",
+      "catalog_expected": "html_injection / xss reflection on name",
+      "catalog_tags": [
+        "active",
+        "extended"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/xss/base-tag",
+      "method": "GET",
+      "parameter": "",
+      "family": "xss",
+      "probe_family": "xss",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Base tag hijack",
+      "catalog_expected": "injected <base> rewrites relative script/src",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/xss/dangling",
+      "method": "GET",
+      "parameter": "",
+      "family": "xss",
+      "probe_family": "xss",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Dangling markup injection",
+      "catalog_expected": "unclosed tags exfiltrate following HTML",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/xss/dom",
+      "method": "GET",
+      "parameter": "",
+      "family": "xss",
+      "probe_family": "xss",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "DOM XSS hash/query sink",
+      "catalog_expected": "location.hash written to innerHTML",
+      "catalog_tags": [
+        "active",
+        "browser"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/xss/dom-clobber",
+      "method": "GET",
+      "parameter": "",
+      "family": "xss",
+      "probe_family": "xss",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "DOM clobbering",
+      "catalog_expected": "named anchors/forms clobber globals used as config",
+      "catalog_tags": [
+        "active",
+        "browser"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/xss/form",
+      "method": "GET",
+      "parameter": "",
+      "family": "xss",
+      "probe_family": "xss",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "XSS POST form",
+      "catalog_expected": "xss/html_injection on form field q",
+      "catalog_tags": [
+        "active",
+        "safe",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/xss/markdown",
+      "method": "GET",
+      "parameter": "",
+      "family": "xss",
+      "probe_family": "xss",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Markdown XSS",
+      "catalog_expected": "markdown renderer allows raw HTML / javascript links",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/xss/postmessage",
+      "method": "GET",
+      "parameter": "",
+      "family": "xss",
+      "probe_family": "xss",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "postMessage origin-unchecked XSS",
+      "catalog_expected": "listener accepts data from any origin into innerHTML",
+      "catalog_tags": [
+        "active",
+        "browser"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/xss/stored",
+      "method": "GET",
+      "parameter": "",
+      "family": "xss",
+      "probe_family": "xss",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Stored XSS guestbook",
+      "catalog_expected": "stored HTML executed for later visitors",
+      "catalog_tags": [
+        "active",
+        "post",
+        "lab"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/xss/svg",
+      "method": "GET",
+      "parameter": "",
+      "family": "xss",
+      "probe_family": "xss",
+      "classification": "vulnerable",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "SVG XSS upload content",
+      "catalog_expected": "image/svg+xml with script served",
+      "catalog_tags": [
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/xxe/billion",
+      "method": "GET",
+      "parameter": "",
+      "family": "xxe",
+      "probe_family": "xxe",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "XML bomb / billion laughs tease",
+      "catalog_expected": "entity expansion DoS indicator",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/xxe/parse",
+      "method": "GET",
+      "parameter": "",
+      "family": "xxe",
+      "probe_family": "xxe",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "XXE-ish XML echo",
+      "catalog_expected": "xxe/oob candidate when DOCTYPE/entity present (simulated)",
+      "catalog_tags": [
+        "active",
+        "lab"
+      ],
+      "notes": "Does not parse real XML entities; echoes ENTITY/SYSTEM markers for kit signals."
+    },
+    {
+      "path": "/zipslip/extract",
+      "method": "GET",
+      "parameter": "",
+      "family": "zip_slip",
+      "probe_family": "zip_slip",
+      "classification": "vulnerable",
+      "bucket": "passive_manual",
+      "modes": [
+        "passive"
+      ],
+      "expected_result_state": "",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": false,
+      "mandatory": false,
+      "linked": true,
+      "title": "Zip Slip archive extract",
+      "catalog_expected": "archive entry with ../ writes outside extract dir (demo)",
+      "catalog_tags": [
+        "active",
+        "post"
+      ],
+      "notes": ""
+    }
+  ],
+  "mandatory_supported_count": 18,
+  "counts": {
+    "supported_required": 49,
+    "passive_manual": 89,
+    "unsupported": 12
+  }
+}
