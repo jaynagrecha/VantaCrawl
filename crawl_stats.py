@@ -325,8 +325,13 @@ class CrawlStats:
             row["method"] = str(method).upper()[:16]
         if payload_redacted:
             row["payload_redacted"] = str(payload_redacted)[:240]
-        if result_state:
-            row["result_state"] = str(result_state)[:80]
+        # Always persist result_state for active-probe ledger rows (blank is not auditable).
+        if probe_role or result_state or phase == "active_probe":
+            row["result_state"] = str(result_state or "").strip()[:80] or (
+                "inconclusive" if phase == "active_probe" else ""
+            )
+            if not row["result_state"]:
+                row.pop("result_state", None)
         for key, value in (extra or {}).items():
             if value is None or key in row:
                 continue

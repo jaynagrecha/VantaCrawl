@@ -73,6 +73,7 @@ ROUTE_SYNTHETIC_PARAMS: dict[str, dict[str, str]] = {
     "/xss/js-string": {"q": "test"},
     "/redirect": {"next": "https://redirect-proof.vantacrawl-lab.example/x"},
     "/redirect/safe": {"next": "/account"},
+    "/csrf/action": {"email": "user@example.com"},
 }
 
 # Families that may use generic_fallback on "interesting" params when no

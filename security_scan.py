@@ -2444,7 +2444,7 @@ async def run_active_vuln_probes(
         try:
             from exploit_probes import probe_csrf
 
-            findings.extend(await probe_csrf(client, url, forms, max_forms=min(3, max_forms)))
+            findings.extend(await probe_csrf(client, url, forms, max_forms=min(3, max(1, max_forms)), stats=stats))
         except Exception:
             pass
         try:

@@ -250,13 +250,14 @@ def supported_mandatory_fixtures() -> List[Dict[str, Any]]:
             classification="vulnerable",
             bucket=BUCKET_SUPPORTED,
             modes=safe_ext_lab,
-            expected_result_state="inconclusive",
+            expected_result_state="confirmation_unavailable",
             expected_severity="info",
             expected_validation="unverified",
             mandatory=True,
             notes=(
-                "Probe must be sent. OOB confirmation only when callback receiver configured; "
-                "without OOB, result_state may be inconclusive/reflected_only — never silent skip."
+                "Probe must be sent. Without OOB callback receiver the final state must be "
+                "confirmation_unavailable (never silent skip / never negative). "
+                "OOB success uses oob_callback_confirmed."
             ),
         ),
         _entry(
@@ -379,6 +380,24 @@ def supported_mandatory_fixtures() -> List[Dict[str, Any]]:
             must_not_confirm=True,
             mandatory=True,
             notes="Same-origin redirect control — must not confirm open redirect.",
+        ),
+        # --- CSRF (Horizon safe form: verify state-change, not token absence alone) ---
+        _entry(
+            path="/csrf/action",
+            method="POST",
+            parameter="email",
+            family="csrf",
+            classification="vulnerable",
+            bucket=BUCKET_SUPPORTED,
+            modes=safe_ext_lab,
+            expected_result_state="execution_confirmed",
+            expected_severity="medium",
+            expected_validation="confirmed",
+            mandatory=True,
+            notes=(
+                "POST the form and verify the expected email state-change. "
+                "Token absence alone is not confirmation. Do not generalise to destructive production forms."
+            ),
         ),
     ]
 

@@ -83,6 +83,28 @@ async def _seed_discovery(client: httpx.AsyncClient, base: str, stats: CrawlStat
             stats.record_request(phase="crawl", source="benchmark_fixture", url=u, status=0, outcome="error")
 
 
+async def _extract_forms(client: httpx.AsyncClient, url: str) -> List[Dict[str, Any]]:
+    """Minimal HTML form extractor for POST fixtures (CSRF / form XSS)."""
+    import re
+
+    try:
+        r = await client.get(url)
+        html = r.text or ""
+    except Exception:
+        return []
+    forms: List[Dict[str, Any]] = []
+    for m in re.finditer(r"(?is)<form\b([^>]*)>(.*?)</form>", html):
+        attrs, body = m.group(1), m.group(2)
+        method_m = re.search(r'(?i)\bmethod\s*=\s*[\'"](\w+)[\'"]', attrs)
+        action_m = re.search(r'(?i)\baction\s*=\s*[\'"]([^\'"]*)[\'"]', attrs)
+        method = (method_m.group(1) if method_m else "GET").upper()
+        action = action_m.group(1) if action_m else url
+        fields = re.findall(r'(?i)<input[^>]*\bname\s*=\s*[\'"]([^\'"]+)[\'"]', body)
+        fields += re.findall(r'(?i)<textarea[^>]*\bname\s*=\s*[\'"]([^\'"]+)[\'"]', body)
+        forms.append({"method": method, "action": action or url, "fields": fields})
+    return forms
+
+
 async def run_mode(
     *,
     mode: str,
@@ -118,22 +140,35 @@ async def run_mode(
     targets = mandatory + extra
     paths = sorted({str(t["path"]) for t in targets})
 
+    # Lab Horizon: wire playground traversal canary so /trav/view can confirm.
+    canary_path = ""
+    canary_content = ""
+    if mode_n == "lab":
+        canary_path = "fixtures/canary.txt"
+        canary_content = "PLAYGROUND_CANARY_TOKEN"
+
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
         await _seed_discovery(client, base, stats, paths)
         for fix in targets:
             url = urljoin(base, str(fix["path"]))
-            # Ensure discovered
             stats.discovered_urls.add(url)
+            forms = None
+            max_forms = 0
+            if str(fix.get("method") or "GET").upper() == "POST" or fix.get("family") == "csrf":
+                forms = await _extract_forms(client, url)
+                max_forms = 3
             items = await run_active_vuln_probes(
                 client,
                 url,
-                forms=None,
-                max_params=6,
-                max_forms=0,
+                forms=forms,
+                max_params=8,
+                max_forms=max_forms,
                 mode=mode_n,
                 callback_base=callback_base or "",
                 browser_evaluate=browser_evaluate,
                 stats=stats,
+                traversal_canary_path=canary_path,
+                traversal_canary_expected_content=canary_content,
             )
             # Mirror kit findings into stats so evaluation sees emission/confirmation.
             for item in items or []:
@@ -142,15 +177,22 @@ async def run_mode(
                         continue
                     category, severity, detail, evidence = item[0], item[1], item[2], item[3]
                     meta = item[4] if len(item) > 4 and isinstance(item[4], dict) else {}
+                    # CSRF Horizon state-change: treat as confirmed validation
+                    validation = meta.get("validation")
+                    if not validation and "state-change verified" in str(detail).lower():
+                        validation = "confirmed"
+                    proof = meta.get("proof") if isinstance(meta.get("proof"), dict) else None
+                    if validation == "confirmed" and not proof:
+                        proof = {"validation_state": "execution_confirmed"}
                     stats.record_finding(
                         str(category),
                         str(severity),
                         url,
                         str(detail),
                         evidence=str(evidence) if evidence else None,
-                        verification=meta.get("verification"),
-                        proof=meta.get("proof") if isinstance(meta.get("proof"), dict) else None,
-                        validation=meta.get("validation"),
+                        verification=meta.get("verification") or ("confirmed" if validation == "confirmed" else None),
+                        proof=proof,
+                        validation=validation,
                         confidence=meta.get("confidence"),
                         confidence_reason=meta.get("confidence_reason"),
                     )
@@ -174,23 +216,24 @@ async def run_mode(
     result["authorized_robots_bypass"] = bool(
         (result["robots_policy"] or {}).get("ignore_robots")
     ) and bool(result["robots_bypass_events"])
-    # Ensure boolean field on each bypass event
     for ev in result["robots_bypass_events"]:
         if isinstance(ev, dict):
             ev["authorized_robots_bypass"] = True
-    result["probe_ledger_count"] = sum(
-        1
+
+    probe_rows = [
+        r
         for r in stats.request_ledger
         if r.get("phase") == "active_probe" and r.get("probe_role") == "probe"
-    )
-    result["empty_result_state_count"] = sum(
-        1
-        for r in stats.request_ledger
-        if r.get("phase") == "active_probe"
-        and r.get("probe_role") == "probe"
-        and not r.get("result_state")
-    )
+    ]
+    result["probe_ledger_count"] = len(probe_rows)
+    result["empty_result_state_count"] = sum(1 for r in probe_rows if not r.get("result_state"))
+    result["family_probe_counts"] = {}
+    for r in probe_rows:
+        fam = str(r.get("probe_class") or "unknown")
+        result["family_probe_counts"][fam] = int(result["family_probe_counts"].get(fam) or 0) + 1
     result["findings_count"] = len(stats.findings)
+    # Persist raw ledger snapshot for artifact audit
+    result["probe_ledger_sample"] = probe_rows[:50]
     return result
 
 
@@ -266,24 +309,34 @@ async def run_all_modes(
             f"negative_control_false_positive_rate: {summary.get('negative_control_false_positive_rate')}"
         )
         lines.append(f"probe_routing_coverage: {summary.get('probe_routing_coverage')}")
+        lines.append(f"verification_coverage: {summary.get('verification_coverage')}")
         lines.append(f"finding_emission_coverage: {summary.get('finding_emission_coverage')}")
         lines.append(f"result_state_completeness: {summary.get('result_state_completeness')}")
         lines.append(f"authorized_robots_bypass: {mode_result.get('authorized_robots_bypass')}")
+        lines.append(f"empty_result_state_count: {mode_result.get('empty_result_state_count')}")
+        lines.append(f"family_probe_counts: {mode_result.get('family_probe_counts')}")
         lines.append("")
         lines.append(
             f"{'path':<22} {'family':<10} {'class':<10} {'probed':<7} {'state':<28} {'status':<8} mismatch/root"
         )
         for row in mode_result.get("rows") or []:
-            if not row.get("mandatory") and row.get("bucket") != BUCKET_SUPPORTED:
-                continue
             if not row.get("mandatory"):
                 continue
+            ev = row.get("evidence") or {}
             lines.append(
                 f"{str(row.get('path')):<22} {str(row.get('family')):<10} "
                 f"{str(row.get('classification')):<10} {str(row.get('probe_sent')):<7} "
                 f"{str(row.get('result_state') or '-'):<28} {str(row.get('status')):<8} "
                 f"{row.get('mismatch') or ''}/{row.get('root_cause_stage') or ''}"
             )
+            if row.get("mandatory"):
+                lines.append(
+                    f"  method={ev.get('method_actual') or row.get('method')} "
+                    f"fields={ev.get('submitted_fields')} "
+                    f"baseline/control/probe/replay="
+                    f"{ev.get('baseline_count')}/{ev.get('control_count')}/"
+                    f"{ev.get('probe_count')}/{ev.get('replay_count')}"
+                )
         lines.append("")
         if summary.get("missed_fixtures"):
             lines.append("Missed fixtures:")

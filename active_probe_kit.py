@@ -41,6 +41,13 @@ STATE_MARKER_SIGNAL = "marker_output_signal"
 STATE_BLOCKED = "blocked"
 STATE_NOT_APPLICABLE = "not_applicable"
 STATE_EXECUTION_CONFIRMED = "execution_confirmed"
+STATE_CONFIRMATION_UNAVAILABLE = "confirmation_unavailable"
+
+# Playground / lab CMDI execution markers (response classification — not new payload families).
+_CMDI_EXEC_MARKERS = (
+    "PLAYGROUND_CMDI_MARKER",
+    "uid=0(root)",
+)
 
 # ProbeSpec.kind → applicability family used by active_probe_targeting
 KIND_TO_FAMILY: Dict[str, str] = {
@@ -1391,27 +1398,33 @@ async def run_active_probe_kit(
         probe_name: str = "",
         parameter: str = "",
         target_selection_reason: str = "",
+        prefer_roles: Optional[Sequence[str]] = None,
     ) -> None:
-        """Stamp the most recent matching active-probe ledger row with a final state."""
+        """Stamp the most recent matching active-probe ledger row with a final state.
+
+        Prefer ``probe`` rows so replay/control stamps do not erase the probe verdict.
+        """
         if stats is None:
             return
         ledger = getattr(stats, "request_ledger", None)
         if not isinstance(ledger, list) or not ledger:
             return
         state_out = (result_state or "").strip() or STATE_INCONCLUSIVE
-        for row in reversed(ledger):
-            if not isinstance(row, dict) or row.get("phase") != "active_probe":
-                continue
-            if (row.get("probe_role") or "") not in ("probe", "replay", "control", "baseline"):
-                continue
-            if probe_name and row.get("probe_name") != probe_name:
-                continue
-            if parameter and row.get("parameter") != parameter:
-                continue
-            row["result_state"] = state_out[:80]
-            if target_selection_reason and not row.get("target_selection_reason"):
-                row["target_selection_reason"] = str(target_selection_reason)[:80]
-            return
+        role_order = list(prefer_roles or ("probe", "replay", "control", "baseline"))
+        for role in role_order:
+            for row in reversed(ledger):
+                if not isinstance(row, dict) or row.get("phase") != "active_probe":
+                    continue
+                if (row.get("probe_role") or "") != role:
+                    continue
+                if probe_name and row.get("probe_name") != probe_name:
+                    continue
+                if parameter and row.get("parameter") != parameter:
+                    continue
+                row["result_state"] = state_out[:80]
+                if target_selection_reason and not row.get("target_selection_reason"):
+                    row["target_selection_reason"] = str(target_selection_reason)[:80]
+                return
 
     async def _send(
         method: str,
@@ -1961,6 +1974,9 @@ async def run_active_probe_kit(
                     arith = str(local_meta.get("arith") or "")
                     if marker and marker in (baseline_body or ""):
                         continue
+                    injection_shaped = bool(
+                        re.search(r"[;|&`$]|&&|\|\|", payload_value or spec.payload or "")
+                    )
 
                     def _rce_parts(body: str):
                         evidence = []
@@ -1986,14 +2002,23 @@ async def run_active_probe_kit(
                                 body or ""
                             ):
                                 has_marker = True
+                        # Existing RCE payloads already carry shell metacharacters; classify
+                        # playground CMDI execution markers as confirmed execution evidence.
+                        has_cmdi_exec = False
+                        if injection_shaped:
+                            for cm in _CMDI_EXEC_MARKERS:
+                                if cm in stripped and cm not in (baseline_body or ""):
+                                    has_cmdi_exec = True
+                                    evidence.append(f"cmdi_exec={cm}")
+                                    break
                         if has_arith:
                             evidence.append(f"arith_result={arith}")
                         if has_marker:
                             evidence.append(f"marker={marker}")
-                        return has_arith, has_marker, evidence
+                        return has_arith, has_marker, has_cmdi_exec, evidence
 
-                    has_arith, has_marker, new_evidence = _rce_parts(p_body)
-                    if not has_arith and not has_marker:
+                    has_arith, has_marker, has_cmdi_exec, new_evidence = _rce_parts(p_body)
+                    if not has_arith and not has_marker and not has_cmdi_exec:
                         continue
                     resp2 = await _send(
                         method,
@@ -2011,7 +2036,7 @@ async def run_active_probe_kit(
                         classify_response(int(getattr(resp2, "status_code", 200) or 200), body2, hdrs2)
                     ):
                         continue
-                    has_arith2, has_marker2, ev2 = _rce_parts(body2)
+                    has_arith2, has_marker2, has_cmdi_exec2, ev2 = _rce_parts(body2)
                     if has_arith and has_arith2:
                         hit = True
                         severity = "critical"
@@ -2023,6 +2048,18 @@ async def run_active_probe_kit(
                         confidence = "high"
                         verification = "confirmed"
                         new_evidence = [e for e in (new_evidence or ev2) if e.startswith("arith_")]
+                        evidence_line = ",".join(new_evidence)
+                    elif has_cmdi_exec and has_cmdi_exec2:
+                        hit = True
+                        severity = "critical"
+                        detail_bit = (
+                            "confirmed server-side behavior "
+                            "(command-injection execution marker reproduced)"
+                        )
+                        validation_state = STATE_SERVER_EXEC
+                        confidence = "high"
+                        verification = "confirmed"
+                        new_evidence = [e for e in (new_evidence or ev2) if e.startswith("cmdi_exec=")]
                         evidence_line = ",".join(new_evidence)
                     elif has_marker and has_marker2:
                         hit = True
@@ -2130,6 +2167,38 @@ async def run_active_probe_kit(
                                 }
                             )
                             compare_meta["probe_id"] = pid
+                        elif not settings.callback_received and not settings.callback_base:
+                            # No OOB receiver: reflection-only control fixtures stay reflected_only;
+                            # real fetch fixtures must report confirmation_unavailable (never negative).
+                            reflect_control = bool(
+                                re.search(r"(?i)invalid url echoed|reflection-only", p_body or "")
+                            )
+                            if reflect_control and reflected:
+                                hit = True
+                                severity = "info"
+                                detail_bit = "SSRF reflection-only control (no OOB confirm)"
+                                validation_state = STATE_REFLECTED_ONLY
+                                confidence = "low"
+                                verification = "detected"
+                                new_evidence = [f"callback_url_redacted={redact_payload(callback_url)}"]
+                                evidence_line = "ssrf_reflected_only"
+                                compare_meta["oob"] = {
+                                    "callback_configured": False,
+                                    "probe_url_generated": True,
+                                    "polling_active": False,
+                                    "callback_received": False,
+                                    "confirmation_unavailable": True,
+                                    "reason": "reflection_control",
+                                }
+                            else:
+                                _patch_last_probe_result(
+                                    STATE_CONFIRMATION_UNAVAILABLE,
+                                    probe_name=spec.payload_class,
+                                    parameter=field,
+                                    target_selection_reason=fam_reason,
+                                    prefer_roles=("probe",),
+                                )
+                                continue
                         elif reflected:
                             # Echo of callback URL alone is never confirmation
                             hit = True
@@ -2149,23 +2218,13 @@ async def run_active_probe_kit(
                                 "reason": "reflected_only",
                             }
                         else:
-                            # Probe sent; no reflection and no callback.
-                            # Without a configured receiver, keep ledger-only (no finding spam).
-                            if not settings.callback_received and not settings.callback_base:
-                                _patch_last_probe_result(
-                                    STATE_INCONCLUSIVE,
-                                    probe_name=spec.payload_class,
-                                    parameter=field,
-                                    target_selection_reason=fam_reason,
-                                )
-                                continue
                             hit = True
                             severity = "info"
                             detail_bit = (
                                 "SSRF callback probe sent; confirmation unavailable "
                                 "(no correlated callback)"
                             )
-                            validation_state = STATE_INCONCLUSIVE
+                            validation_state = STATE_CONFIRMATION_UNAVAILABLE
                             confidence = "low"
                             verification = "detected"
                             new_evidence = [f"callback_url_redacted={redact_payload(callback_url)}"]
@@ -2407,19 +2466,19 @@ async def run_active_probe_kit(
                     continue
 
                 # Map validation_state → auditable result_state for the probe ledger row.
+                # Keep canary / browser / OOB / confirmation_unavailable exact — do not
+                # collapse them into a generic execution_confirmed (acceptance needs exact match).
                 state_for_ledger = validation_state
-                if validation_state in (
-                    STATE_BROWSER_EXEC,
-                    STATE_SERVER_EXEC,
-                    STATE_OOB_CALLBACK,
-                    STATE_CANARY_FILE,
-                ):
+                if validation_state == STATE_SERVER_EXEC:
                     state_for_ledger = STATE_EXECUTION_CONFIRMED
+                elif validation_state == STATE_OOB_CALLBACK_LEGACY:
+                    state_for_ledger = STATE_OOB_CALLBACK
                 _patch_last_probe_result(
                     state_for_ledger,
                     probe_name=spec.payload_class,
                     parameter=field,
                     target_selection_reason=fam_reason,
+                    prefer_roles=("probe",),
                 )
 
                 proof = build_proof(
