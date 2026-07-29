@@ -1,6 +1,7 @@
 # Phase-1 PR #101 blocker resolution
 
 **Branch:** `cursor/phase1-xss-gate-metrics-32cd`  
+**PR tip:** `dc452cefca134397b075e74c25028a3979749c58`  
 **Do not merge** until an independent final audit re-runs.  
 **Do not begin Phase 2.**
 
@@ -10,7 +11,7 @@
 
 **Root cause:** `crawl_orchestrator` called `run_active_vuln_probes` without `scan_id`. `CrawlStats.scan_id` was only assigned during report finalization, so active-probe ledger rows were written with `scan_id=""` and `candidate_id` prefixed `scan:`. Provenance later used the job UUID.
 
-**Residual after first fix tip `4de75e2`:** CSRF (`exploit_probes.probe_csrf`) and a second DOM-clobber ledger writer omitted `scan_id`, leaving 54/1175 active-probe rows empty. Lab job `8117ed46-…` confirmed functional gates still passed while the identity invariant failed.
+**Residual after tip `4de75e2`:** CSRF (`exploit_probes.probe_csrf`) and a second DOM-clobber ledger writer omitted `scan_id` (54/1175 empty rows on job `8117ed46-…`).
 
 **Fix path:**
 
@@ -36,6 +37,26 @@ POST /api/jobs
 
 **Fix:** Hold the shared process-global RLock for the entire negative/replay sequence (re-entrant with `analyze_clobber_page`).
 
+## Fresh production Lab validation
+
+| Field | Value |
+|-------|-------|
+| Tip SHA | `dc452cefca134397b075e74c25028a3979749c58` |
+| API deploy | `dep-d9l4rq2d0e5s73eqb92g` @ tip |
+| Worker deploy | `dep-d9l4rs1t0dsc73fq2v60` @ tip |
+| Lab job | `0d0f3167-1f70-4a1f-ae3c-8297d1f605ae` |
+| Target | `https://horizon-catalog.onrender.com/` |
+| Suite | 767 passed, 33 warnings |
+| Active-probe ledger empty `scan_id` | **0 / 1167** |
+| Reflected XSS | `terminal_confirmed` / `browser_execution_confirmed` |
+| Encoded XSS | `terminal_negative` / `reflected_only` (0 browser confirms) |
+| DOM-clobber vuln | `terminal_confirmed` / `browser_execution_confirmed` |
+| DOM-clobber safe | `terminal_negative` / `clobbered_value_consumed` (0 browser confirms) |
+| Negative-control FP | **0 / 7** |
+| Dependency closure | 37 modules; `browser_fetch` included; 0 Horizon imports/literals |
+
+Artifacts: `/opt/cursor/artifacts/phase1_blocker_resolution_r2/` (and timestamped copy).
+
 ## Explicit non-goals
 
 - No merge of PR #101 in this task
@@ -44,12 +65,6 @@ POST /api/jobs
 - No new vulnerability/payload families or Horizon fixture aliases
 - No Cloudflare / DNS / WAF / proxy changes
 
-## Validation expectations
+## Verdict
 
-Fresh production Lab job against `https://horizon-catalog.onrender.com/` must show:
-
-- every active-probe ledger `scan_id` == job UUID (zero empty)
-- provenance `scan_id` / `candidate_id` match confirming ledger rows
-- reflected XSS confirmed; encoded terminal_negative; DOM-clobber vuln confirmed; safe not browser-confirmed
-- negative-control FP 0/7
-- boundary gate includes `browser_fetch` with zero Horizon imports
+**READY FOR INDEPENDENT FINAL AUDIT**
