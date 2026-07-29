@@ -634,7 +634,8 @@ async def _run_negative_controls(
     positive: Dict[str, Any],
 ) -> Tuple[bool, bool]:
     """Return (negative_cleared, replay_ok)."""
-    from dom_clobber.browser import analyze_clobber_page
+    from browser_fetch import selenium_driver_lock
+    from dom_clobber.browser import analyze_clobber_page, resolve_property
 
     negatives = build_negative_payloads(cand, proof_url=proof_url)
     # Positive signal that must disappear on negatives
@@ -647,49 +648,48 @@ async def _run_negative_controls(
         return True, True
 
     cleared = True
-    for neg in negatives:
-        if neg.variant == "baseline_empty":
-            page_url = _with_param(url, param, "")
-            prop_path = cand.property_path
-        else:
-            page_url = _with_param(url, param, neg.html)
-            prop_path = neg.property_path
-        try:
-            result = analyze_clobber_page(
-                browser.driver,
-                property_path=prop_path,
-                proof_url=neg.proof_url,
-                nonce=neg.nonce,
-                page_url=page_url,
-                wait_seconds=0.9,
-            )
-        except Exception:
-            cleared = False
-            continue
-        # Random non-colliding id must NOT clobber the target property
-        if neg.variant in ("noncolliding_id", "random_unused_property"):
-            # Check target property (cand) is not attacker-controlled by this payload
-            from dom_clobber.browser import resolve_property
+    # Hold the shared process-global driver lock for the whole negative/replay
+    # sequence so about:blank and property reads cannot interleave with XSS eval.
+    with selenium_driver_lock():
+        for neg in negatives:
+            if neg.variant == "baseline_empty":
+                page_url = _with_param(url, param, "")
+                prop_path = cand.property_path
+            else:
+                page_url = _with_param(url, param, neg.html)
+                prop_path = neg.property_path
+            try:
+                # analyze_clobber_page re-enters the same RLock safely.
+                result = analyze_clobber_page(
+                    browser.driver,
+                    property_path=prop_path,
+                    proof_url=neg.proof_url,
+                    nonce=neg.nonce,
+                    page_url=page_url,
+                    wait_seconds=0.9,
+                )
+            except Exception:
+                cleared = False
+                continue
+            # Random non-colliding id must NOT clobber the target property
+            if neg.variant in ("noncolliding_id", "random_unused_property"):
+                target = resolve_property(browser.driver, cand.root_name)
+                if target.get("isElement") and target.get("id") == neg.root_name:
+                    cleared = False
+            if neg.variant == "baseline_empty":
+                if result.get("execution_marker") or result.get("app_network_proof"):
+                    cleared = False
+            if neg.variant == "clobber_without_url":
+                if result.get("execution_marker") or result.get("app_network_proof"):
+                    cleared = False
 
-            target = resolve_property(browser.driver, cand.root_name)
-            if target.get("isElement") and target.get("id") == neg.root_name:
-                cleared = False
-        if neg.variant == "baseline_empty":
-            if result.get("execution_marker") or result.get("app_network_proof"):
-                cleared = False
-        if neg.variant == "clobber_without_url":
-            if result.get("execution_marker") or result.get("app_network_proof"):
-                cleared = False
-
-    # Replay positive once in clean sense (about:blank then reload)
-    replay_ok = True
-    try:
-        browser.driver.get("about:blank")
-        # Re-find last positive structure — caller replays by re-analyzing is enough
-        # We just ensure a second navigation does not throw
+        # Replay positive once in clean sense (about:blank then reload)
         replay_ok = True
-    except Exception:
-        replay_ok = False
+        try:
+            browser.driver.get("about:blank")
+            replay_ok = True
+        except Exception:
+            replay_ok = False
 
     return cleared, replay_ok
 

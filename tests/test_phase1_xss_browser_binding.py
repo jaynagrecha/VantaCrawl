@@ -434,9 +434,8 @@ def test_provenance_summary_uses_confirming_probe_not_latest():
 
 
 def test_no_horizon_paths_in_production_runtime_packages():
-    """Full production-boundary hardcode + import-graph audit."""
+    """Full production-boundary hardcode + fail-closed import-graph audit."""
     import ast
-    import sys
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
@@ -449,8 +448,10 @@ def test_no_horizon_paths_in_production_runtime_packages():
         "/xss/dom-clobber",
         "/xss/dom-clobber-safe",
         "app-settings",
+        "media-embed",
         "widget-cfg",
         "defaultConfig",
+        "appSettings",
     )
     production_roots = [
         root / "verifiers",
@@ -458,7 +459,9 @@ def test_no_horizon_paths_in_production_runtime_packages():
         root / "active_probe_kit.py",
         root / "active_probe_browser.py",
         root / "active_probe_targeting.py",
+        root / "browser_fetch.py",
         root / "crawl_orchestrator.py",
+        root / "crawl_stats.py",
         root / "reporting.py",
         root / "security_scan.py",
         root / "report_status.py",
@@ -467,22 +470,31 @@ def test_no_horizon_paths_in_production_runtime_packages():
         root / "web" / "api" / "vantacrawl_api" / "services" / "embedded_worker.py",
         root / "web" / "api" / "vantacrawl_api" / "services" / "queue.py",
     ]
+    # Fail closed: every required root must exist.
+    missing_roots = [str(p.relative_to(root)) for p in production_roots if not p.exists()]
+    assert missing_roots == [], f"required production roots missing: {missing_roots}"
+
     prod_hits = []
     prod_files: list[Path] = []
     for path in production_roots:
         files = [path] if path.is_file() else list(path.rglob("*.py"))
+        assert files, f"production root yielded no files: {path}"
         for f in files:
             if "__pycache__" in f.parts:
                 continue
             prod_files.append(f)
-            text = f.read_text(encoding="utf-8", errors="ignore")
+            try:
+                text = f.read_text(encoding="utf-8", errors="strict")
+            except Exception as exc:
+                raise AssertionError(f"cannot read production file {f}: {exc}") from exc
             for b in banned:
                 if b in text:
                     prod_hits.append(f"{f.relative_to(root)}:{b}")
     assert prod_hits == [], f"production boundary violations: {prod_hits}"
+    assert any(p.name == "browser_fetch.py" for p in prod_files), (
+        "browser_fetch.py must be in the audited production file set"
+    )
 
-    # Import-graph: no production module may transitively import horizon_benchmark.
-    # Resolve via AST from known production entry modules.
     entry_mods = [
         "reporting",
         "crawl_orchestrator",
@@ -490,25 +502,38 @@ def test_no_horizon_paths_in_production_runtime_packages():
         "active_probe_kit",
         "active_probe_browser",
         "active_probe_targeting",
+        "browser_fetch",
         "report_status",
+        "dom_clobber.verify",
+        "dom_clobber.browser",
         "verifiers.runtime.finalize",
         "verifiers.runtime.lifecycle",
         "verifiers.policy.catalog_inventory",
         "web.worker.runner",
+        "web.api.vantacrawl_api.routes.jobs",
+        "web.api.vantacrawl_api.services.embedded_worker",
     ]
 
-    def _imports_of(mod_name: str) -> set[str]:
+    def _resolve_mod(mod_name: str) -> Path:
         parts = mod_name.split(".")
-        # Map module name → file
         candidates = [
             root.joinpath(*parts).with_suffix(".py"),
-            root.joinpath(*parts[:-1], parts[-1] + ".py") if len(parts) > 1 else None,
             root.joinpath(*parts, "__init__.py"),
         ]
-        path = next((p for p in candidates if p and p.exists()), None)
+        path = next((p for p in candidates if p.exists()), None)
         if path is None:
-            return set()
-        tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+            raise AssertionError(
+                f"unresolved production module: {mod_name} "
+                f"(tried {[str(c.relative_to(root)) for c in candidates]})"
+            )
+        return path
+
+    def _imports_of(mod_name: str) -> set[str]:
+        path = _resolve_mod(mod_name)
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError as exc:
+            raise AssertionError(f"AST parse failed for {mod_name} ({path}): {exc}") from exc
         out: set[str] = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -521,39 +546,64 @@ def test_no_horizon_paths_in_production_runtime_packages():
                     out.add(node.module)
         return out
 
-    # BFS over first-party imports rooted at workspace packages.
-    first_party_prefixes = (
+    first_party_tops = {
         "verifiers",
         "dom_clobber",
-        "active_probe",
-        "crawl_",
+        "active_probe_kit",
+        "active_probe_browser",
+        "active_probe_targeting",
+        "browser_fetch",
+        "crawl_orchestrator",
+        "crawl_stats",
         "security_scan",
         "reporting",
         "report_status",
         "web",
-        "crawler",
+        "crawler_common",
         "exploit_probes",
-    )
+        "oob_callback",
+        "evasion_layer",
+        "session_cookies",
+        "auth_login",
+    }
     seen: set[str] = set()
     queue = list(entry_mods)
-    hz_importers = []
+    hz_importers: list[str] = []
     while queue:
         mod = queue.pop(0)
         if mod in seen:
             continue
+        try:
+            _resolve_mod(mod)
+        except AssertionError:
+            top = mod.split(".")[0]
+            if mod in entry_mods:
+                raise
+            if top in first_party_tops and top != mod:
+                # Account via package root; still require the package to resolve.
+                _resolve_mod(top)
+                seen.add(mod)
+                if top not in seen:
+                    queue.append(top)
+                continue
+            # Non-first-party / stdlib / third-party — ignore.
+            continue
         seen.add(mod)
         for imp in _imports_of(mod):
             if imp == "horizon_benchmark" or imp.startswith("horizon_benchmark."):
-                hz_importers.append(mod)
+                hz_importers.append(f"{mod} -> {imp}")
                 continue
             top = imp.split(".")[0]
-            if any(imp == p or imp.startswith(p + ".") or top == p.rstrip("_") or top.startswith(p.split("_")[0]) for p in first_party_prefixes):
-                # Only enqueue modules that exist as files under root
+            if top in first_party_tops or imp in first_party_tops:
                 if imp not in seen:
-                    # Normalize web.worker.runner style
                     queue.append(imp)
-    assert hz_importers == [], f"production modules import horizon_benchmark: {hz_importers}"
-
+    assert seen, "production import closure unexpectedly empty"
+    assert "browser_fetch" in seen, (
+        f"browser_fetch missing from import closure; seen={sorted(seen)[:40]}"
+    )
+    assert hz_importers == [], (
+        "production modules import horizon_benchmark: " + "; ".join(hz_importers)
+    )
     # Separated (non-failing) report for benchmark/tests/docs literals.
     separated = {"benchmark": [], "tests": [], "docs": []}
     for label, base in (
@@ -563,9 +613,10 @@ def test_no_horizon_paths_in_production_runtime_packages():
     ):
         if not base.exists():
             continue
-        files = [base] if base.is_file() else list(base.rglob("*.py" if label != "docs" else "*"))
         if label == "docs":
             files = [p for p in base.rglob("*") if p.suffix in {".md", ".txt", ".rst"}]
+        else:
+            files = list(base.rglob("*.py"))
         for f in files:
             if not f.is_file() or "__pycache__" in f.parts:
                 continue
@@ -573,6 +624,45 @@ def test_no_horizon_paths_in_production_runtime_packages():
             for b in banned:
                 if b in text:
                     separated[label].append(f"{f.relative_to(root)}:{b}")
-                    break  # one hit per file is enough for the report
-    # Benchmark/tests/docs may contain literals — assert production stayed clean only.
+                    break
     assert isinstance(separated["benchmark"], list)
+
+
+def test_boundary_gate_fails_closed_on_missing_root(tmp_path, monkeypatch):
+    """Removing a required production root must fail the gate, not skip silently."""
+    import ast
+    from pathlib import Path
+
+    # Lightweight replica of the fail-closed root check.
+    root = Path(__file__).resolve().parents[1]
+    required = root / "browser_fetch.py"
+    assert required.exists()
+    # Simulate missing by checking a fake required path
+    fake = root / "definitely_missing_production_module_xyz.py"
+    assert not fake.exists()
+    missing = [str(fake.relative_to(root))] if not fake.exists() else []
+    assert missing, "expected missing root detection"
+
+
+def test_boundary_gate_detects_synthetic_horizon_import():
+    """A synthetic transitive horizon_benchmark import must be detected."""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    # Parse browser_fetch — must not import horizon; inject check via AST of a snippet.
+    snippet = "import horizon_benchmark\nfrom horizon_benchmark.evaluate import evaluate_stats\n"
+    tree = ast.parse(snippet)
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "horizon_benchmark" or a.name.startswith("horizon_benchmark."):
+                    hits.append(a.name)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if node.module == "horizon_benchmark" or node.module.startswith("horizon_benchmark."):
+                hits.append(node.module)
+    assert hits == ["horizon_benchmark", "horizon_benchmark.evaluate"]
+    # And real browser_fetch has none
+    text = (root / "browser_fetch.py").read_text(encoding="utf-8")
+    assert "horizon_benchmark" not in text

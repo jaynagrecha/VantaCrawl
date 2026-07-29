@@ -556,9 +556,19 @@ def finalize_phase1_runtime(
                 decision = "rejected_or_absent"
             else:
                 decision = "no_browser_attempt"
+            # Prefer confirming ledger candidate_id so provenance matches the
+            # accepted probe identity (same scan_id + candidate_id as ledger).
+            confirming_cid = str(
+                (confirming_browser or {}).get("candidate_id")
+                or (confirming_probe or {}).get("candidate_id")
+                or r.get("fixture_id")
+                or ""
+            )
+            if confirming_cid and not confirming_cid.startswith(f"{sid}:"):
+                confirming_cid = f"{sid}:{confirming_cid}"
             corr = {
                 "scan_id": sid,
-                "candidate_id": r.get("fixture_id"),
+                "candidate_id": confirming_cid or r.get("fixture_id"),
                 "probe_id": (confirming_probe or {}).get("probe_id")
                 or (confirming_browser or {}).get("probe_id"),
                 "nonce": (confirming_probe or {}).get("nonce")
@@ -580,7 +590,7 @@ def finalize_phase1_runtime(
             }
             evidence_prov.append(
                 {
-                    "candidate_id": r.get("fixture_id"),
+                    "candidate_id": confirming_cid or r.get("fixture_id"),
                     "path": r.get("path"),
                     "family": r.get("family"),
                     "provenance": r.get("evidence_provenance"),
@@ -594,6 +604,8 @@ def finalize_phase1_runtime(
                             "url": h.get("url"),
                             "probe_id": h.get("probe_id"),
                             "nonce": h.get("nonce"),
+                            "scan_id": h.get("scan_id"),
+                            "candidate_id": h.get("candidate_id"),
                         }
                         for h in browser_rows[-8:]
                     ],
@@ -604,7 +616,9 @@ def finalize_phase1_runtime(
         if report_dir:
             artifact_paths = write_phase1_artifacts(
                 report_dir,
-                execution_plan=[p.to_dict() for p in plan_items],
+                execution_plan=[
+                    {**p.to_dict(), "scan_id": sid} for p in plan_items
+                ],
                 lifecycle_rows=lifecycle,
                 published_metrics=published,
                 capability_inventory=capability_inventory,

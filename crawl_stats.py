@@ -17,6 +17,8 @@ _COOKIE_FINDING_NAME_RE = re.compile(r"(?i)cookie\s+`([^`]+)`")
 class CrawlStats:
     started_at: float = field(default_factory=time.time)
     finished_at: Optional[float] = None
+    # Canonical scan identity — set once at job/scan boundary before probes.
+    scan_id: str = ""
     pages_crawled: int = 0
     links_found: int = 0
     # Mapper-quality counters (invariants: raw >= unique >= queued-ish)

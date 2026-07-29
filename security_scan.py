@@ -2411,6 +2411,20 @@ async def run_active_vuln_probes(
     if mode_n == "passive":
         findings: List[Any] = []
     else:
+        # Prefer explicit arg, then stats/config already set at the scan boundary.
+        # Never leave active probes without a stable scan identity.
+        sid = str(scan_id or "").strip()
+        if not sid and stats is not None:
+            sid = str(getattr(stats, "scan_id", "") or "").strip()
+        if not sid:
+            import uuid as _uuid
+
+            sid = str(_uuid.uuid4())
+        if stats is not None:
+            try:
+                setattr(stats, "scan_id", sid)
+            except Exception:
+                pass
         settings = ProbeModeSettings(
             mode=mode_n,
             callback_base=callback_base or "",
@@ -2424,7 +2438,7 @@ async def run_active_vuln_probes(
             callback_received=callback_received,
             stats=stats,
             oob=oob,
-            scan_id=scan_id or "",
+            scan_id=sid,
         )
         findings = list(
             await run_active_probe_kit(

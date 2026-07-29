@@ -1253,14 +1253,20 @@ async def run_active_probe_kit(
     if mode == "passive":
         return []
 
-    if mode == "passive":
-        settings.coverage_notes = {
-            "traversal_canary": "skipped",
-            "reason": "passive mode",
-            "xss_browser": "skipped",
-            "oob_callback": "skipped",
-        }
-        return []
+    # Canonical scan identity required before any ledger emission.
+    sid = str(getattr(settings, "scan_id", "") or "").strip()
+    if not sid and settings.stats is not None:
+        sid = str(getattr(settings.stats, "scan_id", "") or "").strip()
+    if not sid:
+        import uuid as _uuid
+
+        sid = str(_uuid.uuid4())
+    settings.scan_id = sid
+    if settings.stats is not None:
+        try:
+            setattr(settings.stats, "scan_id", sid)
+        except Exception:
+            pass
 
     nonce = new_probe_nonce()
     canary_path, canary_content = resolve_traversal_canary(settings, nonce)
@@ -1763,10 +1769,15 @@ async def run_active_probe_kit(
                 f"{spec.payload_class}:{field}:{urlparse(target).path}:{secrets.token_hex(4)}"
             )
             local_meta["probe_id"] = probe_id
-            candidate_id = (
-                f"{getattr(settings, 'scan_id', '') or 'scan'}:"
-                f"cand:{urlparse(target).path}:{KIND_TO_FAMILY.get(spec.kind) or spec.category}:{field}"
-            )
+            # Stable candidate identity: scan + path + family (parameter is a separate field).
+            # Must match Phase-1 surface fixture_id shape: {scan_id}:cand:{path}:{family}
+            _sid = str(getattr(settings, "scan_id", "") or "").strip()
+            if not _sid:
+                raise RuntimeError(
+                    "active probe refused: scan_id missing before candidate_id generation"
+                )
+            _fam = KIND_TO_FAMILY.get(spec.kind) or spec.category
+            candidate_id = f"{_sid}:cand:{urlparse(target).path}:{_fam}"
             local_meta["candidate_id"] = candidate_id
             probe_nonce = str(
                 local_meta.get("token")

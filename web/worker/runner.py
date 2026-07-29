@@ -392,7 +392,10 @@ async def run_job(job_id: str) -> None:
             },
         )
 
-    stats_holder: Dict[str, Any] = {"stats": CrawlStats()}
+    stats = CrawlStats()
+    # Canonical scan identity = job UUID; must exist before any probe/ledger row.
+    stats.scan_id = str(job_id)
+    stats_holder: Dict[str, Any] = {"stats": stats}
     log_buffer = _LogTailBuffer(job_id)
 
     def output_callback(message: str):
