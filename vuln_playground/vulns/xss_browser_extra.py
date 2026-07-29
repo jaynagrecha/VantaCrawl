@@ -154,8 +154,13 @@ def ws_info(handler, params: Dict[str, str], *, head_only: bool = False) -> None
         200,
         page(
             "Live feed",
-            "<pre>wss://horizon-catalog.onrender.com/ws/admin/events?api_key=ws-playground-key</pre>"
-            "<script>/* new WebSocket(...) */</script>",
+            "<pre id='wsurl'></pre>"
+            "<script>"
+            "var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';"
+            "var url = proto + location.host + '/ws/admin/events?api_key=ws-playground-key';"
+            "document.getElementById('wsurl').textContent = url;"
+            "</script>"
+            "<p>Unauthenticated admin event socket (api_key in query).</p>",
         ),
         head_only=head_only,
     )

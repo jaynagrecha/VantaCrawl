@@ -46,12 +46,17 @@ def jwt_none(handler, params: Dict[str, str], *, head_only: bool = False) -> Non
     notes="Token uses HMAC with trivial secret for scanner/JWT tool demos.",
 )
 def jwt_weak(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
-    # Precomputed HS256 with secret "secret" for demo consistency
-    token = (
-        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-        "eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJhZG1pbiJ9."
-        "3OwQjvqJ5yQ8xG0oGQ0QF8YvJvQZQZQZQZQZQZQZQZQ"  # placeholder-shaped; body also leaks secret
-    )
+    import hashlib
+    import hmac
+
+    secret = b"secret"
+    header = _b64({"alg": "HS256", "typ": "JWT"})
+    payload = _b64({"sub": "admin", "role": "admin", "iat": int(time.time())})
+    signing_input = f"{header}.{payload}".encode()
+    sig = base64.urlsafe_b64encode(
+        hmac.new(secret, signing_input, hashlib.sha256).digest()
+    ).decode().rstrip("=")
+    token = f"{header}.{payload}.{sig}"
     body = page(
         "JWT weak",
         f"<pre>token={html.escape(token)}\njwt_secret=secret</pre>",

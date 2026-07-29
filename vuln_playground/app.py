@@ -66,12 +66,18 @@ class PlaygroundHandler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Credentials", "true")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, TRACE")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, TRACE")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.send_header("Content-Length", "0")
         self.end_headers()
 
     def do_TRACE(self) -> None:
+        self._dispatch()
+
+    def do_PUT(self) -> None:
+        self._dispatch()
+
+    def do_DELETE(self) -> None:
         self._dispatch()
 
     def _dispatch(self, head_only: bool = False) -> None:
@@ -104,6 +110,8 @@ class PlaygroundHandler(BaseHTTPRequestHandler):
                 headers={"Content-Type": "text/plain"},
                 head_only=head_only,
             )
+        if path.startswith("/static/"):
+            return self._static(path, head_only=head_only)
 
         spec = resolve(path)
         if spec is None:
@@ -112,6 +120,24 @@ class PlaygroundHandler(BaseHTTPRequestHandler):
 
         params = parse_params(self)
         return spec.handler(self, params, head_only=head_only)
+
+    def _static(self, path: str, head_only: bool = False) -> None:
+        rel = path[len("/static/") :]
+        if not rel or ".." in rel.split("/") or rel.startswith("/"):
+            return send(self, 404, page("Not Found", "<p>static miss</p>"), head_only=head_only)
+        target = (ROOT / "static" / rel).resolve()
+        static_root = (ROOT / "static").resolve()
+        if not str(target).startswith(str(static_root)) or not target.is_file():
+            return send(self, 404, page("Not Found", "<p>static miss</p>"), head_only=head_only)
+        data = target.read_bytes()
+        ctype = "application/octet-stream"
+        if target.suffix == ".js":
+            ctype = "application/javascript; charset=utf-8"
+        elif target.suffix == ".css":
+            ctype = "text/css; charset=utf-8"
+        elif target.suffix == ".txt":
+            ctype = "text/plain; charset=utf-8"
+        return send(self, 200, data, headers={"Content-Type": ctype}, head_only=head_only)
 
     def _index(self, head_only: bool = False) -> None:
         # Public index looks like a mundane product catalog — expected

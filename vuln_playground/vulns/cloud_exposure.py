@@ -195,17 +195,75 @@ def json_hijack(handler, params: Dict[str, str], *, head_only: bool = False) -> 
     "/websocket/cswh",
     title="Cross-site WebSocket hijacking tease",
     family="websocket",
-    expected="WS endpoint trusts Origin reflection",
-    tags=["active"],
+    expected="WS endpoint trusts Origin reflection; connect at /ws/admin/events",
+    tags=["active", "lab"],
+    notes="HTML tease plus live /ws/admin/events that echoes Origin with no allowlist.",
 )
 def ws_cswh(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
     origin = handler.headers.get("Origin", "*")
     body = page(
         "CSWH",
         f"<pre>Upgrade: websocket\nOrigin accepted: {html.escape(origin)}\n"
-        "Sec-WebSocket-Protocol: session\nNo origin allowlist.</pre>",
+        "Sec-WebSocket-Protocol: session\nNo origin allowlist.</pre>"
+        "<p>Live endpoint: <code>/ws/admin/events?api_key=ws-playground-key</code></p>"
+        "<script>"
+        "try {"
+        "  var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';"
+        "  var ws = new WebSocket(proto + location.host + '/ws/admin/events?api_key=ws-playground-key');"
+        "  ws.onopen = function(){ document.body.insertAdjacentHTML('beforeend','<pre>ws-open</pre>'); };"
+        "  ws.onmessage = function(e){ document.body.insertAdjacentHTML('beforeend','<pre>'+e.data+'</pre>'); };"
+        "  ws.onerror = function(){ document.body.insertAdjacentHTML('beforeend','<pre>ws-error (use WS-capable server)</pre>'); };"
+        "} catch (err) { document.body.insertAdjacentHTML('beforeend','<pre>'+err+'</pre>'); }"
+        "</script>",
     )
     send(handler, 200, body, headers={"Access-Control-Allow-Origin": origin}, head_only=head_only)
+
+
+@register(
+    "/ws/admin/events",
+    title="Admin WebSocket/event endpoint",
+    family="websocket",
+    expected="any Origin accepted; api_key query only",
+    tags=["active", "lab"],
+    linked=False,
+    notes="CSWH ground truth: Origin is reflected with credentials; no allowlist.",
+)
+def ws_admin_events(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
+    origin = handler.headers.get("Origin") or "*"
+    key = params.get("api_key") or ""
+    upgrade = (handler.headers.get("Upgrade") or "").lower()
+    headers = {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Headers": "content-type, authorization, sec-websocket-protocol",
+    }
+    if upgrade == "websocket":
+        # Waitress/WSGI cannot complete a real 101 upgrade here; still prove Origin trust.
+        body = (
+            f"CSWH demo: Origin={origin} accepted; api_key={key or '(missing)'}; "
+            "no Origin allowlist. Full 101 upgrade requires a WS-capable edge."
+        )
+        return send(
+            handler,
+            200,
+            body.encode(),
+            headers={**headers, "Content-Type": "text/plain; charset=utf-8", "X-WS-Origin-Trusted": "true"},
+            head_only=head_only,
+        )
+    payload = {
+        "endpoint": "/ws/admin/events",
+        "origin_accepted": origin,
+        "origin_allowlist": False,
+        "api_key_ok": bool(key),
+        "events": [{"type": "admin.heartbeat", "role": "admin"}],
+    }
+    send(
+        handler,
+        200,
+        json_bytes(payload),
+        headers={**headers, "Content-Type": "application/json"},
+        head_only=head_only,
+    )
 
 
 @register(
@@ -218,8 +276,13 @@ def ws_cswh(handler, params: Dict[str, str], *, head_only: bool = False) -> None
 )
 def put_upload(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
     if handler.command == "PUT":
-        msg = "PUT ok — content stored at /uploads/raw.bin"
-        return send(handler, 201, page("PUT upload", f"<pre>{msg}</pre>"), head_only=head_only)
+        length = int(handler.headers.get("Content-Length") or 0)
+        raw = handler.rfile.read(length) if length > 0 else b""
+        dest = __import__("pathlib").Path(__file__).resolve().parent.parent / "uploads"
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "raw.bin").write_bytes(raw[:65536])
+        msg = f"PUT ok — stored {len(raw)} bytes at /uploads/raw.bin"
+        return send(handler, 201, page("PUT upload", f"<pre>{html.escape(msg)}</pre>"), head_only=head_only)
     body = page("PUT upload", "<p>Send PUT with body to store file (no auth).</p>")
     send(handler, 200, body, head_only=head_only)
 

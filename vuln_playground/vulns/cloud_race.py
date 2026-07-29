@@ -162,6 +162,6 @@ def redirect_meta(handler, params: Dict[str, str], *, head_only: bool = False) -
     tags=["active"],
 )
 def redirect_js(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
-    nxt = params.get("next") or "https://example.com"
+    nxt = params.get("next") or params.get("url") or "https://example.com"
     body = f"<!DOCTYPE html><html><body><script>location = {nxt!r}</script></body></html>".encode()
     send(handler, 200, body, head_only=head_only)
