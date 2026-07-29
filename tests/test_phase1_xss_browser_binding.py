@@ -358,27 +358,145 @@ def test_candidate_vs_inventory_metrics_not_interchangeable():
 
 
 def test_no_horizon_paths_in_production_runtime_packages():
-    """Hardcode sweep: production packages must not embed Horizon fixture paths."""
+    """Full production-boundary hardcode + import-graph audit."""
+    import ast
+    import sys
     from pathlib import Path
 
+    root = Path(__file__).resolve().parents[1]
     banned = (
+        "horizon_benchmark",
+        "horizon-catalog",
+        "onrender.com",
         "/xss/reflected",
         "/xss/encoded",
+        "/xss/dom-clobber",
         "/xss/dom-clobber-safe",
-        "horizon-catalog.onrender.com",
+        "app-settings",
+        "widget-cfg",
+        "defaultConfig",
     )
-    roots = [
-        Path("verifiers/runtime"),
-        Path("active_probe_kit.py"),
-        Path("active_probe_browser.py"),
-        Path("dom_clobber"),
+    production_roots = [
+        root / "verifiers",
+        root / "dom_clobber",
+        root / "active_probe_kit.py",
+        root / "active_probe_browser.py",
+        root / "active_probe_targeting.py",
+        root / "crawl_orchestrator.py",
+        root / "reporting.py",
+        root / "security_scan.py",
+        root / "report_status.py",
+        root / "web" / "worker",
+        root / "web" / "api" / "vantacrawl_api" / "routes" / "jobs.py",
+        root / "web" / "api" / "vantacrawl_api" / "services" / "embedded_worker.py",
+        root / "web" / "api" / "vantacrawl_api" / "services" / "queue.py",
     ]
-    hits = []
-    for root in roots:
-        files = [root] if root.is_file() else list(root.rglob("*.py"))
+    prod_hits = []
+    prod_files: list[Path] = []
+    for path in production_roots:
+        files = [path] if path.is_file() else list(path.rglob("*.py"))
         for f in files:
-            text = f.read_text(encoding="utf-8")
+            if "__pycache__" in f.parts:
+                continue
+            prod_files.append(f)
+            text = f.read_text(encoding="utf-8", errors="ignore")
             for b in banned:
                 if b in text:
-                    hits.append(f"{f}:{b}")
-    assert hits == [], f"Horizon hardcodes in production packages: {hits}"
+                    prod_hits.append(f"{f.relative_to(root)}:{b}")
+    assert prod_hits == [], f"production boundary violations: {prod_hits}"
+
+    # Import-graph: no production module may transitively import horizon_benchmark.
+    # Resolve via AST from known production entry modules.
+    entry_mods = [
+        "reporting",
+        "crawl_orchestrator",
+        "security_scan",
+        "active_probe_kit",
+        "active_probe_browser",
+        "active_probe_targeting",
+        "report_status",
+        "verifiers.runtime.finalize",
+        "verifiers.runtime.lifecycle",
+        "verifiers.policy.catalog_inventory",
+        "web.worker.runner",
+    ]
+
+    def _imports_of(mod_name: str) -> set[str]:
+        parts = mod_name.split(".")
+        # Map module name → file
+        candidates = [
+            root.joinpath(*parts).with_suffix(".py"),
+            root.joinpath(*parts[:-1], parts[-1] + ".py") if len(parts) > 1 else None,
+            root.joinpath(*parts, "__init__.py"),
+        ]
+        path = next((p for p in candidates if p and p.exists()), None)
+        if path is None:
+            return set()
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+        out: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    out.add(alias.name.split(".")[0])
+                    out.add(alias.name)
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    out.add(node.module.split(".")[0])
+                    out.add(node.module)
+        return out
+
+    # BFS over first-party imports rooted at workspace packages.
+    first_party_prefixes = (
+        "verifiers",
+        "dom_clobber",
+        "active_probe",
+        "crawl_",
+        "security_scan",
+        "reporting",
+        "report_status",
+        "web",
+        "crawler",
+        "exploit_probes",
+    )
+    seen: set[str] = set()
+    queue = list(entry_mods)
+    hz_importers = []
+    while queue:
+        mod = queue.pop(0)
+        if mod in seen:
+            continue
+        seen.add(mod)
+        for imp in _imports_of(mod):
+            if imp == "horizon_benchmark" or imp.startswith("horizon_benchmark."):
+                hz_importers.append(mod)
+                continue
+            top = imp.split(".")[0]
+            if any(imp == p or imp.startswith(p + ".") or top == p.rstrip("_") or top.startswith(p.split("_")[0]) for p in first_party_prefixes):
+                # Only enqueue modules that exist as files under root
+                if imp not in seen:
+                    # Normalize web.worker.runner style
+                    queue.append(imp)
+    assert hz_importers == [], f"production modules import horizon_benchmark: {hz_importers}"
+
+    # Separated (non-failing) report for benchmark/tests/docs literals.
+    separated = {"benchmark": [], "tests": [], "docs": []}
+    for label, base in (
+        ("benchmark", root / "horizon_benchmark"),
+        ("tests", root / "tests"),
+        ("docs", root / "docs"),
+    ):
+        if not base.exists():
+            continue
+        files = [base] if base.is_file() else list(base.rglob("*.py" if label != "docs" else "*"))
+        if label == "docs":
+            files = [p for p in base.rglob("*") if p.suffix in {".md", ".txt", ".rst"}]
+        for f in files:
+            if not f.is_file() or "__pycache__" in f.parts:
+                continue
+            text = f.read_text(encoding="utf-8", errors="ignore")
+            for b in banned:
+                if b in text:
+                    separated[label].append(f"{f.relative_to(root)}:{b}")
+                    break  # one hit per file is enough for the report
+    # Benchmark/tests/docs may contain literals — assert production stayed clean only.
+    assert isinstance(separated["benchmark"], list)

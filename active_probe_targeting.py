@@ -12,23 +12,45 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 from urllib.parse import parse_qsl, urlsplit, urlunsplit, urlencode
 
+# When a route strongly matches a family by path semantics but has no query/form
+# params, inject these path-independent family seed parameters so probe_field
+# can run. Never keyed by exact fixture routes.
+FAMILY_FALLBACK_SEED_PARAMS: dict[str, dict[str, str]] = {
+    "sqli": {"id": "1", "q": "test"},
+    "rce": {"cmd": "1+1", "host": "127.0.0.1"},
+    "ssti": {"name": "guest"},
+    "ssrf": {"url": "http://example.com"},
+    "traversal": {"path": "readme.txt", "file": "readme.txt", "page": "home"},
+    "crlf": {"q": "ok"},
+    "redirect": {"next": "https://example.com/"},
+    "xss": {"q": "test"},
+    "csrf": {"email": "user@example.com"},
+    "dom_clobber": {"html": "x", "q": "x"},
+}
+
+# Targeting reason for family-level seed injection (distinct from discovered params).
 TARGET_SELECTION_REASONS = (
     "route_semantic_match",
     "parameter_semantic_match",
     "passive_evidence_match",
     "generic_fallback",
+    "family_fallback_seed",
+    "catalog_metadata",
 )
 
 # Route-path tokens → probe families (substring match on path segments).
+# Keep indicators family-distinctive so generic paths like /search do not lock
+# to a single family and suppress XSS/SQLi parameter probing.
 ROUTE_FAMILY_INDICATORS: dict[str, tuple[str, ...]] = {
-    "sqli": ("sqli", "sql", "search", "query", "filter", "sort"),
-    "rce": ("rce", "cmdi", "cmd", "command", "exec", "shell", "ping"),
-    "ssti": ("ssti", "template", "tmpl", "render", "preview"),
-    "ssrf": ("ssrf", "fetch", "webhook", "callback", "remote"),
-    "traversal": ("trav", "lfi", "path", "download", "include", "file", "nullbyte"),
+    "sqli": ("sqli", "sql"),
+    "rce": ("rce", "cmdi", "command", "exec", "shell"),
+    "ssti": ("ssti", "template", "tmpl"),
+    "ssrf": ("ssrf", "webhook", "imds"),
+    "traversal": ("trav", "lfi", "nullbyte"),
     "crlf": ("crlf",),
-    "redirect": ("redirect", "location", "next", "return"),
-    "xss": ("xss", "comment", "message", "html", "content"),
+    "redirect": ("redirect",),
+    "xss": ("xss",),
+    "dom_clobber": ("clobber", "domclobber"),
 }
 
 # Parameter-name tokens → probe families.
@@ -41,39 +63,7 @@ PARAM_FAMILY_INDICATORS: dict[str, tuple[str, ...]] = {
     "crlf": ("q", "query", "search", "header", "name"),
     "redirect": ("next", "url", "redirect", "return", "returnurl", "continue", "dest", "destination", "goto", "target"),
     "xss": ("q", "search", "query", "message", "comment", "html", "content", "name", "text", "body", "title"),
-}
-
-# When a route is a dedicated fixture for a family but has no query/form params,
-# inject these synthetic query parameters so the existing probe_field path can run.
-ROUTE_SYNTHETIC_PARAMS: dict[str, dict[str, str]] = {
-    "/sqli/error": {"id": "1"},
-    "/sqli/search": {"q": "test"},
-    "/sqli/blind": {"id": "1"},
-    "/sqli/time": {"id": "1"},
-    "/sqli/safe": {"id": "1"},
-    "/sqli/union": {"id": "1"},
-    "/rce/arith": {"cmd": "1+1"},
-    "/rce/reflect": {"cmd": "id"},
-    "/cmdi/ping": {"host": "127.0.0.1"},
-    "/ssti/eval": {"name": "guest"},
-    "/ssti/reflect": {"name": "guest"},
-    "/tmpl/twig": {"name": "guest"},
-    "/ssrf/fetch": {"url": "http://example.com"},
-    "/ssrf/reflect": {"url": "http://example.com"},
-    "/crlf": {"q": "ok"},
-    "/trav/download": {"path": "readme.txt"},
-    "/trav/view": {"file": "readme.txt"},
-    "/lfi/include": {"page": "home"},
-    "/nullbyte/download": {"file": "readme.txt"},
-    "/xss/browser": {"q": "test"},
-    "/xss/reflected": {"q": "test"},
-    "/xss/encoded": {"q": "test"},
-    "/xss/dom": {"q": "test"},
-    "/xss/attr": {"q": "test"},
-    "/xss/js-string": {"q": "test"},
-    "/redirect": {"next": "https://redirect-proof.vantacrawl-lab.example/x"},
-    "/redirect/safe": {"next": "/account"},
-    "/csrf/action": {"email": "user@example.com"},
+    "dom_clobber": ("html", "q", "markup", "body", "content"),
 }
 
 # Families that may use generic_fallback on "interesting" params when no
@@ -138,40 +128,49 @@ def score_route_family(path: str, family: str) -> int:
     best = 0
     for ind in indicators:
         if ind in tokens:
-            # Exact path segment match (e.g. /sqli/error → sqli)
+            # Exact path segment match (e.g. segment "sqli" → sqli family)
             best = max(best, 95 if ind == family or ind in {family, f"{family}i", "cmdi", "lfi"} else 88)
         elif ind in joined:
             best = max(best, 82)
-    # Dedicated fixture paths from the Horizon Catalog get a hard boost.
-    synth = ROUTE_SYNTHETIC_PARAMS.get(_norm_path(path))
-    if synth is not None:
-        # Only boost the family this fixture was built for.
-        fixture_family = _fixture_family_for_path(path)
-        if fixture_family == family:
-            best = max(best, 100)
     return best
 
 
-def _fixture_family_for_path(path: str) -> Optional[str]:
-    p = _norm_path(path)
-    mapping = (
-        ("/sqli/", "sqli"),
-        ("/rce/", "rce"),
-        ("/cmdi/", "rce"),
-        ("/ssti/", "ssti"),
-        ("/tmpl/", "ssti"),
-        ("/ssrf/", "ssrf"),
-        ("/trav/", "traversal"),
-        ("/lfi/", "traversal"),
-        ("/nullbyte/", "traversal"),
-        ("/crlf", "crlf"),
-        ("/redirect", "redirect"),
-        ("/xss/", "xss"),
-    )
-    for prefix, fam in mapping:
-        if p == prefix.rstrip("/") or p.startswith(prefix):
-            return fam
+def primary_route_family(path: str) -> Optional[str]:
+    """Best-scoring family for a path from route-token semantics, or None."""
+    best_fam: Optional[str] = None
+    best_score = 0
+    for fam in ROUTE_FAMILY_INDICATORS:
+        score = score_route_family(path, fam)
+        if score > best_score:
+            best_score = score
+            best_fam = fam
+    if best_score >= MIN_APPLICABILITY_SCORE["route_semantic_match"]:
+        return best_fam
     return None
+
+
+def family_fallback_seed_params(family: str) -> dict[str, str]:
+    """Path-independent seed params for a probe family."""
+    return dict(FAMILY_FALLBACK_SEED_PARAMS.get(family, {}))
+
+
+def seed_params_for_path(path: str) -> tuple[dict[str, str], str, str]:
+    """Return (params, family, reason) when route semantics justify family seeds.
+
+    Does not look up exact fixture routes — only family-level fallback seeds.
+    """
+    fam = primary_route_family(path)
+    if not fam:
+        return {}, "", ""
+    seeds = family_fallback_seed_params(fam)
+    if not seeds:
+        return {}, fam, ""
+    return seeds, fam, "family_fallback_seed"
+
+
+def _fixture_family_for_path(path: str) -> Optional[str]:
+    """Compatibility alias — route-token primary family (not fixture-path map)."""
+    return primary_route_family(path)
 
 
 def score_param_family(param: str, family: str) -> int:
@@ -255,7 +254,9 @@ def classify_applicability(
 
 
 def synthetic_params_for_path(path: str) -> dict[str, str]:
-    return dict(ROUTE_SYNTHETIC_PARAMS.get(_norm_path(path), {}))
+    """Family-level seed params when route semantics match (no fixture route map)."""
+    params, _fam, _reason = seed_params_for_path(path)
+    return params
 
 
 def with_query_params(url: str, params: dict[str, str]) -> str:
@@ -318,46 +319,61 @@ def build_probe_plan(
         seen.add(key)
         candidates.append(t)
 
-    # 1) Route-semantic fixtures (synthetic params as needed).
+    # 1) Route-semantic surfaces (family fallback seed params as needed).
     for raw_url in collect_surface_urls(surface_urls, []):
         path = _norm_path(raw_url)
-        synth = synthetic_params_for_path(path)
+        seeds, seed_fam, seed_reason = seed_params_for_path(path)
+        existing_q = dict(parse_qsl(urlsplit(raw_url).query, keep_blank_values=True))
+        # Prefer discovered query params; only seed when none exist.
+        if existing_q:
+            params = existing_q
+            param_source_reason = "parameter_semantic_match"
+        elif seeds:
+            params = seeds
+            param_source_reason = seed_reason or "family_fallback_seed"
+        else:
+            params = {}
+            param_source_reason = ""
         hints = evidence_by_path.get(path, [])
         for family in families:
             score, reason = classify_applicability(
                 path=path,
-                param=next(iter(synth), "") if synth else "",
+                param=next(iter(params), "") if params else "",
                 family=family,
                 evidence_hints=hints,
                 allow_generic_fallback=False,
             )
-            fixture_fam = _fixture_family_for_path(path)
-            if fixture_fam == family:
-                score = max(score, 100)
+            route_fam = primary_route_family(path)
+            if route_fam == family:
+                score = max(score, 95)
                 reason = "route_semantic_match"
-            if score < MIN_APPLICABILITY_SCORE["route_semantic_match"] and fixture_fam != family:
+            if score < MIN_APPLICABILITY_SCORE["route_semantic_match"] and route_fam != family:
                 continue
-            if fixture_fam and fixture_fam != family and score < 90:
+            if route_fam and route_fam != family and score < 90:
                 continue
-            params = synth or dict(parse_qsl(urlsplit(raw_url).query, keep_blank_values=True))
             if not params:
-                # No injectable surface for this route.
                 continue
-            target_url = with_query_params(path_only_url(raw_url), params) if synth else raw_url
-            # Prefer the primary synthetic/query param for this family.
+            target_url = (
+                with_query_params(path_only_url(raw_url), params)
+                if (seeds and not existing_q)
+                else raw_url
+            )
             preferred = _preferred_param(params, family)
+            sel_reason = reason
+            if seeds and not existing_q and route_fam == family:
+                sel_reason = "family_fallback_seed" if param_source_reason == "family_fallback_seed" else reason
             _add(
                 ProbeTarget(
                     url=target_url,
                     method="GET",
                     param=preferred,
                     family=family,
-                    reason=reason if fixture_fam == family else reason,
-                    score=score if fixture_fam == family else score,
+                    reason=sel_reason,
+                    score=score,
                     baseline_values={preferred: str(params.get(preferred, ""))},
+                    extra={"param_source": param_source_reason or "discovered"},
                 )
             )
-            # Also schedule secondary route params that strongly match the family.
             for pname in params:
                 if pname == preferred:
                     continue
@@ -385,10 +401,9 @@ def build_probe_plan(
             continue
         path = _norm_path(raw_url)
         hints = evidence_by_path.get(path, [])
-        fixture_fam = _fixture_family_for_path(path)
+        fixture_fam = primary_route_family(path)
         for pname, pval in qparams.items():
             for family in families:
-                # Dedicated fixtures already covered above — still allow param matches.
                 score, reason = classify_applicability(
                     path=path,
                     param=pname,
@@ -397,7 +412,7 @@ def build_probe_plan(
                     allow_generic_fallback=(fixture_fam is None),
                 )
                 if fixture_fam == family:
-                    score = max(score, 100)
+                    score = max(score, 95)
                     reason = "route_semantic_match"
                 if score <= 0:
                     continue
@@ -426,7 +441,7 @@ def build_probe_plan(
             continue
         path = _norm_path(action)
         hints = evidence_by_path.get(path, [])
-        fixture_fam = _fixture_family_for_path(path)
+        fixture_fam = primary_route_family(path)
         for pname, pval in fields.items():
             if str(pname).lower() in {"csrf", "csrfmiddlewaretoken", "_token", "authenticity_token"}:
                 continue
@@ -459,19 +474,21 @@ def build_probe_plan(
                     )
                 )
 
-    # Rank: reason priority, then score, then prefer dedicated fixture paths.
+    # Rank: reason priority, then score, then prefer strong route-family matches.
     reason_rank = {
         "route_semantic_match": 0,
-        "passive_evidence_match": 1,
-        "parameter_semantic_match": 2,
-        "generic_fallback": 3,
+        "family_fallback_seed": 1,
+        "passive_evidence_match": 2,
+        "parameter_semantic_match": 3,
+        "catalog_metadata": 4,
+        "generic_fallback": 5,
     }
 
     def _sort_key(t: ProbeTarget) -> tuple:
         return (
             reason_rank.get(t.reason, 9),
             -int(t.score),
-            0 if _fixture_family_for_path(t.url) == t.family else 1,
+            0 if primary_route_family(t.url) == t.family else 1,
             _norm_path(t.url),
             t.param,
             t.family,
@@ -505,61 +522,54 @@ def _preferred_param(params: dict[str, str], family: str) -> str:
     return scored[0][1]
 
 
-def required_horizon_fixtures() -> dict[str, tuple[str, ...]]:
-    """Canonical Horizon Catalog fixtures that must be selected when discovered."""
-    return {
-        "sqli": ("/sqli/error", "/sqli/search", "/sqli/blind", "/sqli/safe"),
-        "rce": ("/rce/arith", "/cmdi/ping", "/rce/reflect"),
-        "ssti": ("/ssti/eval", "/ssti/reflect"),
-        "ssrf": ("/ssrf/fetch", "/ssrf/reflect"),
-        "crlf": ("/crlf",),
-        "traversal": ("/trav/download", "/trav/view"),
-        "xss": ("/xss/browser", "/xss/reflected", "/xss/encoded"),
-        "redirect": ("/redirect", "/redirect/safe"),
-    }
+def required_fixture_paths() -> dict[str, tuple[str, ...]]:
+    """Deprecated no-op — production must not require fixture path lists.
 
+    Retained as an empty mapping so older callers fail closed (nothing required).
+    """
+    return {}
 
 def selection_coverage_report(
     plan: list[ProbeTarget],
     discovered_paths: Iterable[str],
 ) -> dict[str, Any]:
-    """Report whether dedicated fixtures discovered on the surface were scheduled."""
+    """Summarize selection coverage without fixture-path requirements."""
     discovered = {_norm_path(p) for p in discovered_paths}
     selected_by_family: dict[str, set[str]] = {}
     for t in plan:
         selected_by_family.setdefault(t.family, set()).add(_norm_path(t.url))
 
-    fixtures = required_horizon_fixtures()
+    # Generic: for each discovered path with a strong route-family signal,
+    # note whether that family was selected somewhere on the surface.
     rows = []
     missing = []
-    for family, paths in fixtures.items():
-        discovered_hits = [p for p in paths if p in discovered]
-        selected_hits = [p for p in discovered_hits if p in selected_by_family.get(family, set())]
-        # Also accept alternate path from the same required pair.
-        ok = bool(selected_hits) if discovered_hits else None
-        if discovered_hits and not selected_hits:
-            # Accept sibling fixture (e.g. /sqli/search when /sqli/error required).
-            siblings = [p for p in paths if p in selected_by_family.get(family, set())]
-            ok = bool(siblings)
-            selected_hits = siblings
+    for path in sorted(discovered):
+        fam = primary_route_family(path)
+        if not fam:
+            continue
+        selected_hits = [path] if path in selected_by_family.get(fam, set()) else []
+        # Also accept any selected path for that family (sibling surface).
+        if not selected_hits and selected_by_family.get(fam):
+            selected_hits = sorted(selected_by_family[fam])[:3]
+            ok = True
+        else:
+            ok = bool(selected_hits)
         rows.append(
             {
-                "family": family,
-                "required_any_of": list(paths),
-                "discovered": discovered_hits,
+                "family": fam,
+                "discovered_path": path,
                 "selected": selected_hits,
                 "ok": ok,
             }
         )
         if ok is False:
-            missing.append(family)
+            missing.append(fam)
 
+    missing = sorted(set(missing))
     status = "complete"
     if missing:
         status = "insufficient"
-    elif any(r["ok"] is False for r in rows):
-        status = "insufficient"
-    elif all(r["ok"] is None for r in rows):
+    elif not rows:
         status = "n/a"
     elif any(r["ok"] is None for r in rows):
         status = "partial"

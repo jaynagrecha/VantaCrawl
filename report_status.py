@@ -192,8 +192,8 @@ def scan_status_from_stats(stats: Any) -> Dict[str, Any]:
     else:
         assessment_status = "complete" if status == "final" else status
 
-    # Horizon acceptance gate: mandatory supported fixtures must be tested or
-    # explicitly gap-recorded (breaker / mode / unsupported) — never silent.
+    # Catalog acceptance gate: mandatory catalog gaps recorded on stats must be
+    # tested or explicitly gap-recorded — never silent.
     gaps = list(getattr(stats, "benchmark_coverage_gaps", None) or [])
     mandatory_gaps = [
         g
@@ -207,7 +207,7 @@ def scan_status_from_stats(stats: Any) -> Dict[str, Any]:
         assessment_status = "incomplete"
         paths = ", ".join(sorted({str(g.get("path")) for g in mandatory_gaps})[:12])
         inconclusive_reason = (
-            f"horizon_acceptance: mandatory fixtures untested ({paths})"
+            f"catalog_acceptance: mandatory routes untested ({paths})"
         )
         if target_selection_coverage in ("", "unknown", "n/a", "complete"):
             target_selection_coverage = "insufficient"

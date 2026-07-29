@@ -2728,25 +2728,36 @@ async def run_active_probe_kit(
         MIN_APPLICABILITY_SCORE,
         classify_applicability,
         path_only_url as _path_only_url,
+        primary_route_family,
+        seed_params_for_path,
         selection_coverage_report,
-        synthetic_params_for_path,
         with_query_params,
-        _fixture_family_for_path,
         _norm_path,
     )
 
     path = _norm_path(url)
-    fixture_fam = _fixture_family_for_path(path)
-    synth = synthetic_params_for_path(path)
+    route_fam = primary_route_family(path)
+    seeds, seed_fam, seed_reason = seed_params_for_path(path)
     parsed = urlparse(url)
     pairs = list(parse_qsl(parsed.query, keep_blank_values=True))
-    if synth:
+    targeting_param_source = "discovered_query"
+    if not pairs and seeds:
+        for k, v in seeds.items():
+            pairs.append((k, v))
+        targeting_param_source = seed_reason or "family_fallback_seed"
+        url = with_query_params(_path_only_url(url), dict(pairs))
+    elif pairs and seeds:
+        # Do not overwrite discovered params; seeds only fill missing keys when
+        # route semantics already justify the family.
         existing = {n for n, _ in pairs}
-        for k, v in synth.items():
+        filled = False
+        for k, v in seeds.items():
             if k not in existing:
                 pairs.append((k, v))
-        # Prefer a concrete injectable URL (path + synthetic/query params).
-        url = with_query_params(_path_only_url(url) if not pairs else url, dict(pairs))
+                filled = True
+        if filled:
+            targeting_param_source = "discovered_query_plus_family_seed"
+            url = with_query_params(url, dict(pairs))
 
     probe_families = ("sqli", "rce", "ssti", "ssrf", "traversal", "crlf", "redirect", "xss")
     selected_plan_paths: Dict[str, set] = {f: set() for f in probe_families}
@@ -2758,13 +2769,13 @@ async def run_active_probe_kit(
                 path=path,
                 param=pname,
                 family=family,
-                allow_generic_fallback=(fixture_fam is None),
+                allow_generic_fallback=(route_fam is None),
             )
-            if fixture_fam == family:
-                score = max(score, 100)
+            if route_fam == family:
+                score = max(score, 95)
                 reason = "route_semantic_match"
-            # Dedicated fixtures: only the matching family (prevents spray).
-            if fixture_fam and fixture_fam != family and score < 95:
+            # Strong route match: prefer matching family (prevents spray).
+            if route_fam and route_fam != family and score < 95:
                 continue
             min_score = MIN_APPLICABILITY_SCORE.get(reason, 40)
             if score < min_score:
@@ -2790,7 +2801,10 @@ async def run_active_probe_kit(
                 probe_class="baseline",
                 probe_name="baseline",
                 target_selection_reason=(
-                    "route_semantic_match" if fixture_fam else "parameter_semantic_match"
+                    targeting_param_source
+                    if targeting_param_source.startswith("family")
+                    or targeting_param_source.endswith("seed")
+                    else ("route_semantic_match" if route_fam else "parameter_semantic_match")
                 ),
             )
             baseline_status, baseline_body, base_hdrs, baseline_final = _meta(base_resp)
@@ -2851,7 +2865,7 @@ async def run_active_probe_kit(
             probed += 1
 
     # --- Forms (parameter-semantic; capped; never override dedicated fixture routing) ---
-    if forms and not fixture_fam:
+    if forms and not route_fam:
         for form in (forms or [])[: max(0, int(settings.max_forms or 3))]:
             action = form.get("action") or url
             method = (form.get("method") or "GET").upper()
@@ -2890,7 +2904,7 @@ async def run_active_probe_kit(
             for field in field_names[: settings.max_params]:
                 # Rebind path scoring to the form action.
                 path = form_path
-                fixture_fam = _fixture_family_for_path(path)
+                route_fam = primary_route_family(path)
                 allowed = _allowed_for_param(field)
                 if not allowed:
                     continue
@@ -2976,51 +2990,75 @@ async def run_active_probe_kit(
         except Exception:
             pass
 
-    # Explicit coverage-gap records for Horizon / supported fixtures.
+    # Catalog-driven coverage notes (no benchmark package imports).
+    # Phase-1 unresolved gaps are authoritative; this only records unsupported
+    # families discovered via runtime catalog metadata when present.
     if stats is not None:
         try:
-            from horizon_benchmark.evaluate import build_coverage_gaps
-            from horizon_benchmark.manifest import load_manifest
+            catalog = list(getattr(stats, "target_catalog", None) or [])
+            if catalog:
+                from active_probe_targeting import _norm_path as _np
 
-            gaps = build_coverage_gaps(stats=stats, mode=mode, manifest=load_manifest())
-            prev_gaps = list(getattr(stats, "benchmark_coverage_gaps", None) or [])
-            # Merge by path+reason
-            seen_g = {(str(g.get("path")), str(g.get("reason"))) for g in prev_gaps if isinstance(g, dict)}
-            for g in gaps:
-                key = (str(g.get("path")), str(g.get("reason")))
-                if key in seen_g:
-                    continue
-                prev_gaps.append(g)
-                seen_g.add(key)
-            stats.benchmark_coverage_gaps = prev_gaps[:500]  # type: ignore[attr-defined]
-            # Unsupported discovered fixtures → informational finding (never silent)
-            emitted = getattr(stats, "_unsupported_fixture_gaps_emitted", None)
-            if not isinstance(emitted, set):
-                emitted = set()
-                stats._unsupported_fixture_gaps_emitted = emitted  # type: ignore[attr-defined]
-            for g in gaps:
-                if g.get("reason") != "family_unsupported":
-                    continue
-                path = str(g.get("path") or "")
-                if not path or path in emitted:
-                    continue
-                emitted.add(path)
-                add(
-                    "coverage_gap",
-                    "info",
-                    f"Fixture discovered but no compatible active detector exists: {path}",
-                    f"unsupported_fixture:{path}",
-                    {
-                        "verification": "informational",
-                        "confidence": "high",
-                        "confidence_reason": "benchmark_coverage_gap",
-                        "proof": {
-                            "validation_state": STATE_NOT_APPLICABLE,
-                            "coverage_gap": g,
-                        },
-                        "validation": "unverified",
-                    },
-                )
+                discovered = set()
+                for u in list(getattr(stats, "discovered_urls", None) or []):
+                    try:
+                        discovered.add(_np(str(u)))
+                    except Exception:
+                        continue
+                prev_gaps = list(getattr(stats, "benchmark_coverage_gaps", None) or [])
+                seen_g = {
+                    (str(g.get("path")), str(g.get("reason")))
+                    for g in prev_gaps
+                    if isinstance(g, dict)
+                }
+                emitted = getattr(stats, "_unsupported_fixture_gaps_emitted", None)
+                if not isinstance(emitted, set):
+                    emitted = set()
+                    stats._unsupported_fixture_gaps_emitted = emitted  # type: ignore[attr-defined]
+                known_fams = set(probe_families) | {"dom_clobber", "csrf"}
+                for entry in catalog:
+                    if not isinstance(entry, dict):
+                        continue
+                    cpath = _np(str(entry.get("path") or ""))
+                    if not cpath or cpath not in discovered:
+                        continue
+                    tags = {str(t).lower() for t in (entry.get("tags") or [])}
+                    fam = str(entry.get("family") or "").lower()
+                    if "dom-clobber" in tags:
+                        fam = "dom_clobber"
+                    if fam in known_fams or fam in ("", "unknown"):
+                        continue
+                    gap = {
+                        "path": cpath,
+                        "family": fam,
+                        "reason": "family_unsupported",
+                        "detail": "Catalog family has no compatible active detector.",
+                        "mode": mode,
+                        "mandatory": False,
+                    }
+                    key = (cpath, "family_unsupported")
+                    if key not in seen_g:
+                        prev_gaps.append(gap)
+                        seen_g.add(key)
+                    if cpath not in emitted:
+                        emitted.add(cpath)
+                        add(
+                            "coverage_gap",
+                            "info",
+                            f"Catalog route discovered but no compatible active detector exists: {cpath}",
+                            f"unsupported_family:{cpath}",
+                            {
+                                "verification": "informational",
+                                "confidence": "high",
+                                "confidence_reason": "catalog_coverage_gap",
+                                "proof": {
+                                    "validation_state": STATE_NOT_APPLICABLE,
+                                    "coverage_gap": gap,
+                                },
+                                "validation": "unverified",
+                            },
+                        )
+                stats.benchmark_coverage_gaps = prev_gaps[:500]  # type: ignore[attr-defined]
         except Exception:
             pass
 

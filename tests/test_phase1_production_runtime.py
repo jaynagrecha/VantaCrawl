@@ -491,32 +491,42 @@ def test_benchmark_and_production_equivalent_lifecycle_classification():
 def test_production_packages_contain_zero_horizon_hardcodes():
     root = Path(__file__).resolve().parents[1]
     banned = (
-        "horizon-catalog.onrender.com",
-        "hz:",
-        "/xss/dom-clobber/app-settings",
-        "fixture_id\": \"hz",
+        "horizon-catalog",
+        "onrender.com",
+        "horizon_benchmark",
+        "/xss/reflected",
+        "/xss/encoded",
+        "/xss/dom-clobber",
+        "app-settings",
+        "widget-cfg",
+        "defaultConfig",
         "PARTIAL_OR_PASSIVE_PATHS",
+        "fixture_id\": \"hz",
     )
-    # Allow listing package paths; scan .py under production packages only
     packages = [
-        root / "verifiers" / "runtime",
-        root / "verifiers" / "phase1.py",
-        root / "verifiers" / "contract.py",
-        root / "verifiers" / "maturity.py",
-        root / "verifiers" / "registry.py",
-        root / "web" / "worker" / "runner.py",
+        root / "verifiers",
+        root / "dom_clobber",
+        root / "active_probe_kit.py",
+        root / "active_probe_browser.py",
+        root / "active_probe_targeting.py",
+        root / "crawl_orchestrator.py",
         root / "reporting.py",
+        root / "security_scan.py",
+        root / "report_status.py",
+        root / "web" / "worker",
+        root / "web" / "api" / "vantacrawl_api" / "routes" / "jobs.py",
     ]
     hits = []
     for path in packages:
         files = [path] if path.is_file() else list(path.rglob("*.py"))
         for f in files:
+            if "__pycache__" in f.parts:
+                continue
             text = f.read_text(encoding="utf-8", errors="ignore")
             for b in banned:
                 if b in text:
-                    hits.append(f"{f}:{b}")
+                    hits.append(f"{f.relative_to(root)}:{b}")
     assert hits == [], hits
-
 
 def test_callback_base_alias_in_job_config():
     """callback_base UI alias maps to ssrf_callback_base + poll URL."""

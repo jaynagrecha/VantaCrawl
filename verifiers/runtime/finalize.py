@@ -257,18 +257,15 @@ def apply_ledger_to_lifecycle(
 def _inventory_identities_from_stats(stats: Any) -> List[Dict[str, Any]]:
     """Build ground-truth inventory identities from target catalog.json when present.
 
-    Uses the same maturity classification as Phase-1 surfaces. Optional benchmark
-    path demotions (horizon_benchmark.path_policy) refine inventory-only metrics
-    without embedding fixture paths in production verifier packages.
+    Uses maturity classification plus catalog-tag demotion from
+    ``verifiers.policy.catalog_inventory`` (path-independent). Never imports
+    benchmark packages or fixture route tables.
     """
     catalog = list(getattr(stats, "target_catalog", None) or [])
     if not catalog:
         return []
-    demotion = None
-    try:
-        from horizon_benchmark.path_policy import path_demotion_reason as demotion
-    except Exception:
-        demotion = None
+    from verifiers.policy.catalog_inventory import catalog_entry_demotion_reason
+
     out: List[Dict[str, Any]] = []
     seen: set = set()
     for entry in catalog:
@@ -298,7 +295,7 @@ def _inventory_identities_from_stats(stats: Any) -> List[Dict[str, Any]]:
             continue
         from verifiers.maturity import classify_support_from_maturity
 
-        path_reason = demotion(path) if demotion else ""
+        path_reason = catalog_entry_demotion_reason(entry)
         support = classify_support_from_maturity(
             bucket="supported"
             if (
@@ -470,31 +467,116 @@ def finalize_phase1_runtime(
                 and normalize_family(str(h.get("probe_class") or "")) == fam
                 and _path(str(h.get("url") or h.get("final_url") or "")) == path
             ]
-            latest_browser = browser_rows[-1] if browser_rows else {}
-            latest_probe = probe_rows[-1] if probe_rows else {}
+            # Prefer the probe that was actually accepted for confirmation —
+            # never substitute a later sibling probe for the same candidate.
+            confirming_browser = next(
+                (
+                    h
+                    for h in browser_rows
+                    if str(h.get("probe_role") or "") == "browser_execution_confirmed"
+                ),
+                None,
+            )
+            if confirming_browser is None:
+                confirming_browser = next(
+                    (
+                        h
+                        for h in browser_rows
+                        if str(h.get("result_state") or "") == "browser_execution_confirmed"
+                        and str(h.get("probe_role") or "").startswith("browser")
+                    ),
+                    None,
+                )
+            if confirming_browser is None:
+                confirming_browser = next(
+                    (
+                        h
+                        for h in browser_rows
+                        if str(h.get("result_state") or "") == "browser_execution_confirmed"
+                    ),
+                    None,
+                )
+            confirming_probe_id = (
+                str((confirming_browser or {}).get("probe_id") or "") if confirming_browser else ""
+            )
+            confirming_nonce = (
+                str((confirming_browser or {}).get("nonce") or "") if confirming_browser else ""
+            )
+            confirming_probe = None
+            if confirming_probe_id:
+                confirming_probe = next(
+                    (
+                        h
+                        for h in probe_rows
+                        if str(h.get("probe_id") or "") == confirming_probe_id
+                    ),
+                    None,
+                )
+            if confirming_probe is None and confirming_nonce:
+                confirming_probe = next(
+                    (
+                        h
+                        for h in probe_rows
+                        if str(h.get("nonce") or "") == confirming_nonce
+                    ),
+                    None,
+                )
+            if confirming_probe is None and confirming_browser is None:
+                # No browser confirmation — keep latest probe for negative traces,
+                # but do not invent a confirming identity.
+                confirming_probe = probe_rows[-1] if probe_rows else {}
+                confirming_browser = {}
+            elif confirming_probe is None:
+                confirming_probe = {}
+
+            marker_row = next(
+                (
+                    h
+                    for h in browser_rows
+                    if str(h.get("probe_role") or "") == "browser_marker_checked"
+                    and (
+                        not confirming_probe_id
+                        or str(h.get("probe_id") or "") == confirming_probe_id
+                    )
+                ),
+                confirming_browser or {},
+            )
+            context_row = confirming_browser or next(
+                (
+                    h
+                    for h in browser_rows
+                    if h.get("browser_context_id") or h.get("browser_request_id")
+                ),
+                {},
+            )
+            terminal_state = str(r.get("terminal_result_state") or "")
+            if terminal_state == "browser_execution_confirmed" and confirming_browser:
+                decision = "confirmed_current_probe"
+            elif browser_rows:
+                decision = "rejected_or_absent"
+            else:
+                decision = "no_browser_attempt"
             corr = {
                 "scan_id": sid,
                 "candidate_id": r.get("fixture_id"),
-                "probe_id": latest_probe.get("probe_id") or latest_browser.get("probe_id"),
-                "nonce": latest_probe.get("nonce") or latest_browser.get("nonce"),
+                "probe_id": (confirming_probe or {}).get("probe_id")
+                or (confirming_browser or {}).get("probe_id"),
+                "nonce": (confirming_probe or {}).get("nonce")
+                or (confirming_browser or {}).get("nonce"),
                 "target_url": r.get("discovered_url"),
-                "target_parameter": latest_probe.get("parameter") or r.get("parameter"),
-                "payload_redacted": latest_probe.get("payload_redacted"),
-                "browser_context_id": latest_browser.get("browser_context_id")
-                or latest_browser.get("browser_request_id"),
-                "marker_before": latest_browser.get("marker_before"),
-                "marker_after": latest_browser.get("marker_after"),
-                "correlation_reason": latest_browser.get("correlation_reason"),
-                "terminal_result_state": r.get("terminal_result_state"),
-                "decision": (
-                    "confirmed_current_probe"
-                    if r.get("terminal_result_state") == "browser_execution_confirmed"
-                    else (
-                        "rejected_or_absent"
-                        if browser_rows
-                        else "no_browser_attempt"
-                    )
+                "target_parameter": (confirming_probe or {}).get("parameter")
+                or (confirming_browser or {}).get("parameter")
+                or r.get("parameter"),
+                "payload_redacted": (confirming_probe or {}).get("payload_redacted"),
+                "browser_context_id": context_row.get("browser_context_id")
+                or context_row.get("browser_request_id"),
+                "marker_before": marker_row.get("marker_before"),
+                "marker_after": marker_row.get("marker_after"),
+                "correlation_reason": (confirming_browser or marker_row).get(
+                    "correlation_reason"
                 ),
+                "terminal_result_state": terminal_state,
+                "decision": decision,
             }
             evidence_prov.append(
                 {
@@ -502,7 +584,7 @@ def finalize_phase1_runtime(
                     "path": r.get("path"),
                     "family": r.get("family"),
                     "provenance": r.get("evidence_provenance"),
-                    "proof_type": proof_type_for_state(str(r.get("terminal_result_state") or "")),
+                    "proof_type": proof_type_for_state(terminal_state),
                     "scan_id": sid,
                     "correlation": corr,
                     "raw_browser_evidence": [
