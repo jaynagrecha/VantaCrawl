@@ -110,6 +110,13 @@ def _build_config_json(body: JobCreateRequest) -> dict:
     }
     # Backend gate: never trust raw UI strings for probe intensity
     merged["active_probe_mode"] = normalize_mode(str(merged.get("active_probe_mode") or "safe"))
+    # Alias common UI/API name → CrawlConfig field used by the worker/orchestrator
+    if merged.get("callback_base") and not merged.get("ssrf_callback_base"):
+        merged["ssrf_callback_base"] = str(merged.get("callback_base") or "").strip()
+    if merged.get("ssrf_callback_base") and not merged.get("oob_callback_poll_url"):
+        base = str(merged["ssrf_callback_base"]).rstrip("/")
+        if base:
+            merged["oob_callback_poll_url"] = f"{base}/poll"
     if "traversal_fixture_installed" in merged:
         merged["traversal_fixture_installed"] = bool(merged.get("traversal_fixture_installed"))
     if body.target_urls:

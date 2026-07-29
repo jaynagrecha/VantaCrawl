@@ -510,6 +510,34 @@ async def run_full_crawl_async(
 
         stats.discovered_urls.update(discovered)
 
+        # Optional machine-readable target catalog (production-neutral discovery).
+        # Any origin that publishes /catalog.json is used to seed Phase-1 surfaces.
+        if bool(getattr(config, "vuln_active_probe", True)) and await running():
+            try:
+                import json as _json
+
+                parsed = urlparse(config.start_url)
+                cat_url = f"{parsed.scheme}://{parsed.netloc}/catalog.json"
+                cr = await client.get(cat_url, timeout=20.0)
+                if cr.status_code == 200:
+                    payload = _json.loads(cr.text or "null")
+                    entries = payload if isinstance(payload, list) else (
+                        (payload.get("routes") or payload.get("fixtures") or payload.get("entries"))
+                        if isinstance(payload, dict)
+                        else None
+                    )
+                    if isinstance(entries, list) and entries:
+                        stats.target_catalog = entries  # type: ignore[attr-defined]
+                        stats.discovered_urls.add(str(cr.url))
+                        output_callback(
+                            f"Loaded target catalog.json ({len(entries)} entries) for Phase-1 planning"
+                        )
+            except Exception as exc:
+                try:
+                    output_callback(f"Target catalog.json not used: {exc}")
+                except Exception:
+                    pass
+
         if config.distributed_redis_url:
             from distributed_queue import pop_url
 

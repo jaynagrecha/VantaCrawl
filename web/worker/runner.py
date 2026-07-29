@@ -203,6 +203,16 @@ def _build_crawl_config(job: ScanJob) -> CrawlConfig:
     if api_wl:
         cfg.api_recon_wordlist = str(api_wl)
 
+    # Alias callback_base → ssrf_callback_base before applying overlay
+    if overlay.get("callback_base") and not overlay.get("ssrf_callback_base"):
+        overlay["ssrf_callback_base"] = str(overlay.pop("callback_base") or "").strip()
+    elif "callback_base" in overlay:
+        overlay.pop("callback_base", None)
+    if overlay.get("ssrf_callback_base") and not overlay.get("oob_callback_poll_url"):
+        base = str(overlay["ssrf_callback_base"]).rstrip("/")
+        if base:
+            overlay["oob_callback_poll_url"] = f"{base}/poll"
+
     for key, value in overlay.items():
         if hasattr(cfg, key) and key not in {
             "start_url",
@@ -229,6 +239,10 @@ def _build_crawl_config(job: ScanJob) -> CrawlConfig:
 
     cfg.report_dir = lambda: str(Path(report_dir).resolve())  # type: ignore[method-assign]
     cfg.report_title = (job.title or "").strip()
+    try:
+        setattr(cfg, "job_id", str(job.id))
+    except Exception:
+        pass
     return cfg
 
 
@@ -778,6 +792,25 @@ async def run_job(job_id: str) -> None:
             "elapsed_seconds": stats.elapsed_seconds() if hasattr(stats, "elapsed_seconds") else None,
             "eta_seconds": 0,
         }
+        # Additive Phase-1 metrics for API consumers (never required by legacy clients).
+        try:
+            p1 = getattr(stats, "phase1_runtime_summary", None)
+            if isinstance(p1, dict) and p1:
+                progress["phase1_runtime"] = p1
+            pub = getattr(stats, "phase1_published_metrics", None)
+            if isinstance(pub, dict) and pub:
+                progress["phase1_published_metrics"] = {
+                    k: v
+                    for k, v in pub.items()
+                    if k
+                    not in (
+                        "live_validated_entries",
+                        "reconciliation",
+                        "vulnerable_without_terminal_proof",
+                    )
+                }
+        except Exception:
+            pass
         finished_job = _get_job(job_id)
         if not html_path:
             # Last resort: try rebuild from snapshot/progress, then thin summary

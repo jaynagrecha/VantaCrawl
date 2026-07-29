@@ -213,6 +213,21 @@ class ReportWriter:
         payload["browser_confirmation"] = dict(getattr(stats, "browser_confirmation", None) or {})
         payload["active_probe_coverage"] = dict(getattr(stats, "active_probe_coverage", None) or {})
         payload["active_probe_breaker"] = dict(getattr(stats, "active_probe_breaker", None) or {})
+        # Additive Phase-1 runtime summary (planner/lifecycle/metrics)
+        try:
+            payload["phase1_runtime_summary"] = dict(getattr(stats, "phase1_runtime_summary", None) or {})
+            pub = getattr(stats, "phase1_published_metrics", None)
+            if isinstance(pub, dict) and pub:
+                payload["phase1_published_metrics"] = {
+                    k: v
+                    for k, v in pub.items()
+                    if k not in ("live_validated_entries", "reconciliation", "vulnerable_without_terminal_proof")
+                }
+            rows = getattr(stats, "phase1_lifecycle_rows", None)
+            if isinstance(rows, list):
+                payload["phase1_lifecycle_row_count"] = len(rows)
+        except Exception:
+            pass
         payload["discovered_urls"] = sorted(getattr(stats, "discovered_urls", set()))[:5000]
         payload["discovered_urls_note"] = (
             "discovered_urls list is capped at 5000 for export; discovered_url_count is the full total."
@@ -768,6 +783,61 @@ def write_stats_reports(
         setattr(stats, "last_report_conclusion", reporter.last_conclusion)
     except Exception:
         pass
+
+    # Phase-1 production runtime: shared planner + lifecycle + metrics (never silent).
+    # Runs after conventional reports so scanner output is preserved even if this fails.
+    try:
+        active_on = True if config is None else bool(getattr(config, "vuln_active_probe", True))
+        if active_on:
+            from verifiers.runtime.finalize import finalize_phase1_runtime
+
+            scan_id = str(
+                getattr(stats, "scan_id", "")
+                or getattr(config, "job_id", "")
+                or getattr(config, "report_title", "")
+                or os.path.basename(str(report_dir).rstrip("/\\"))
+                or "scan"
+            )
+            try:
+                setattr(stats, "scan_id", scan_id)
+            except Exception:
+                pass
+            phase1 = finalize_phase1_runtime(
+                stats,
+                config=config,
+                report_dir=report_dir,
+                scan_id=scan_id,
+                output_callback=cb,
+            )
+            for key, p in (phase1.get("artifact_paths") or {}).items():
+                if p:
+                    paths[f"phase1_{key}"] = p
+            if phase1.get("summary"):
+                paths["phase1_runtime_summary"] = "in-memory"
+            # Refresh JSON export so phase1 fields are present for API consumers.
+            try:
+                if flags.get("json_report"):
+                    paths["json"] = reporter.write_json(stats)
+            except Exception:
+                pass
+    except Exception as exc:
+        cb(f"Phase-1 runtime finalize skipped with error: {exc}")
+        try:
+            from verifiers.runtime.artifacts import write_phase1_artifacts
+
+            write_phase1_artifacts(
+                report_dir,
+                execution_plan=[],
+                lifecycle_rows=[],
+                published_metrics={},
+                capability_inventory={},
+                unresolved_gaps=[{"reason": "phase1_runtime_error", "error": str(exc)}],
+                evidence_provenance=[],
+                runtime_status={"status": "failed", "error": str(exc)},
+            )
+        except Exception:
+            pass
+
     if paths.get("assessment_report_html"):
         cb(f"\nAssessment report (HTML): {paths['assessment_report_html']}")
     if paths.get("assessment_report_txt"):
