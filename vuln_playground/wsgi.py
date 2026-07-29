@@ -110,6 +110,7 @@ def _bind_handler(req: WSGIRequest) -> PlaygroundHandler:
     handler._index = PlaygroundHandler._index.__get__(handler, PlaygroundHandler)  # type: ignore
     handler._oob = PlaygroundHandler._oob.__get__(handler, PlaygroundHandler)  # type: ignore
     handler._static = PlaygroundHandler._static.__get__(handler, PlaygroundHandler)  # type: ignore
+    handler._fixtures = PlaygroundHandler._fixtures.__get__(handler, PlaygroundHandler)  # type: ignore
     return handler
 
 
