@@ -101,7 +101,17 @@ def xmlrpc(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
     tags=["active", "post"],
 )
 def race_withdraw(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
-    amt = float(params.get("amount") or 90)
+    raw = params.get("amount") or "90"
+    try:
+        amt = float(raw)
+    except (TypeError, ValueError):
+        return send(
+            handler,
+            400,
+            json_bytes({"ok": False, "error": "amount must be numeric", "requested": raw}),
+            headers={"Content-Type": "application/json"},
+            head_only=head_only,
+        )
     # Intentionally weak check then mutate without exclusive lock spanning the sleep
     if _BALANCE["usd"] >= amt:
         time.sleep(0.15)

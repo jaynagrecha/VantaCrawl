@@ -87,8 +87,22 @@ def logic_cart(handler, params: Dict[str, str], *, head_only: bool = False) -> N
             '<button type="submit">Checkout</button></form>',
         )
         return send(handler, 200, body, head_only=head_only)
-    price = float(params.get("price") or 0)
-    qty = float(params.get("qty") or 1)
+    price_raw = params.get("price") or "0"
+    qty_raw = params.get("qty") or "1"
+    try:
+        price = float(price_raw)
+        qty = float(qty_raw)
+    except (TypeError, ValueError):
+        return send(
+            handler,
+            400,
+            page(
+                "Order",
+                f"<p>Invalid price/qty "
+                f"(price={html.escape(str(price_raw))}, qty={html.escape(str(qty_raw))})</p>",
+            ),
+            head_only=head_only,
+        )
     total = price * qty
     send(
         handler,

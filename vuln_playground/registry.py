@@ -81,10 +81,31 @@ def linked_index() -> List[RouteSpec]:
 
 
 def resolve(path: str) -> Optional[RouteSpec]:
-    if path in _ROUTES:
-        return _ROUTES[path]
+    """Resolve an exact or prefix route.
+
+    Callers may strip a trailing slash (``/account/`` → ``/account``). Prefix
+    routes registered with a trailing slash must still match that normalized form
+    and deeper paths like ``/account/profile.css``.
+    """
+    raw = path or "/"
+    if raw in _ROUTES:
+        return _ROUTES[raw]
+    # Also try with/without trailing slash for exact routes.
+    alt = (raw.rstrip("/") or "/") if raw != "/" else raw
+    if alt != raw and alt in _ROUTES:
+        return _ROUTES[alt]
+    trailed = raw if raw.endswith("/") else raw + "/"
+    if trailed != raw and trailed in _ROUTES:
+        return _ROUTES[trailed]
+
     for spec in _PREFIX_ROUTES:
-        if path == spec.path or path.startswith(spec.path.rstrip("/") + "/") or path.startswith(spec.path):
+        prefix = spec.path or "/"
+        prefix_stripped = prefix.rstrip("/") or "/"
+        if raw == prefix or raw == prefix_stripped:
+            return spec
+        if raw.startswith(prefix_stripped + "/"):
+            return spec
+        if prefix.endswith("/") and raw.startswith(prefix):
             return spec
     return None
 
