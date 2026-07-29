@@ -546,6 +546,42 @@ def test_callback_base_alias_in_job_config():
     assert "callback_base" not in overlay
 
 
+def test_catalog_intensity_tags_expand_upward():
+    """Tag 'safe' must not exclude the candidate from lab mode."""
+    catalog = [
+        {
+            "path": "/xss/reflected",
+            "family": "xss",
+            "tags": ["active", "safe"],
+            "methods": ["GET"],
+        },
+        {
+            "path": "/trav/view",
+            "family": "traversal",
+            "tags": ["active", "lab"],
+            "methods": ["GET"],
+        },
+    ]
+    stats = _stats(target_catalog=catalog, discovered_urls={"https://t.example/"})
+    surfaces = discover_surfaces_from_stats(stats, mode="lab", scan_id="s")
+    plan = build_execution_plan(
+        mode="lab",
+        surfaces=surfaces,
+        deps=DependencyAvailability(browser=True, traversal_canary=True),
+    )
+    by_path = {p.path: p for p in plan}
+    assert by_path["/xss/reflected"].schedule_status == ATTEMPTED
+    assert by_path["/trav/view"].schedule_status == ATTEMPTED
+    plan_safe = build_execution_plan(
+        mode="safe",
+        surfaces=surfaces,
+        deps=DependencyAvailability(browser=True, traversal_canary=True),
+    )
+    by_safe = {p.path: p for p in plan_safe}
+    assert by_safe["/xss/reflected"].schedule_status == ATTEMPTED
+    assert by_safe["/trav/view"].schedule_status == MODE_EXCLUDED
+
+
 def test_catalog_surfaces_use_tags_not_path_allowlist():
     catalog = [
         {

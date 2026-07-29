@@ -101,7 +101,15 @@ def surfaces_from_target_catalog(
         if support.get("support_classification") != "supported_active":
             continue
         is_control = _controlish(path, tags=tags) or str(entry.get("classification") or "").lower() == "control"
-        mode_tags = [t for t in ("safe", "extended", "lab") if t in tags]
+        # Catalog intensity tags mean "included from this suite upward", not exclusive.
+        # e.g. tag "safe" ⇒ available in safe/extended/lab; tag "lab" alone ⇒ lab only.
+        _order = ("safe", "extended", "lab")
+        present = [m for m in _order if m in tags]
+        if present:
+            lowest = min(_order.index(m) for m in present)
+            mode_tags = list(_order[lowest:])
+        else:
+            mode_tags = []
         methods = entry.get("methods") or [entry.get("method") or "GET"]
         method = str(methods[0] if isinstance(methods, list) and methods else "GET").upper()
         cid = _stable_id(path, fam)
@@ -163,16 +171,37 @@ def discover_surfaces_from_stats(
         form_fields: Optional[List[str]] = None,
         channels: Optional[List[str]] = None,
         modes: Optional[List[str]] = None,
+        from_ledger: bool = False,
     ) -> None:
         fam = normalize_family(family)
         if fam not in PHASE1_FAMILIES:
             return
-        if get_verifier(fam) is None and assess_capability_maturity(fam).get("registered") is False:
-            mat = assess_capability_maturity(fam)
-            if not mat.get("executable_methods"):
+        matured = assess_capability_maturity(fam)
+        if get_verifier(fam) is None and not matured.get("registered"):
+            if not matured.get("executable_methods"):
                 return
+        from verifiers.maturity import classify_support_from_maturity
+
         path = _path_of(url)
-        cid = _stable_id(path, fam, parameter)
+        cid = _stable_id(path, fam)
+        support = classify_support_from_maturity(
+            bucket="supported",
+            family=fam,
+            path=path,
+            path_demotion_reason="",
+        )
+        support_cls = str(support.get("support_classification") or "")
+        # Only Phase-1 supported_active enter the plan. Ledger evidence alone does not
+        # promote a passive/incomplete family (e.g. CSRF) into supported_active.
+        if support_cls != "supported_active" and not from_ledger:
+            return
+        if support_cls != "supported_active" and from_ledger:
+            # Active probe already ran — still require executable maturity.
+            if not matured.get("executable_methods") or matured.get("capability_maturity") in (
+                "contract_only",
+                "registered_adapter",
+            ):
+                return
         existing = by_key.get(cid)
         if existing is None:
             by_key[cid] = CandidateSurface(
@@ -191,9 +220,7 @@ def discover_surfaces_from_stats(
                 capability_id=(get_verifier(fam).capability_id if get_verifier(fam) else ""),
                 input_channels=list(channels or []),
                 form_fields=list(form_fields or []),
-                verifier_implementation_module=str(
-                    assess_capability_maturity(fam).get("implementation_module") or ""
-                ),
+                verifier_implementation_module=str(matured.get("implementation_module") or ""),
             )
         else:
             if url and not existing.url:
@@ -254,9 +281,11 @@ def discover_surfaces_from_stats(
             must_not=must_not,
             channels=channels,
             form_fields=[param] if method.upper() == "POST" and param else None,
+            from_ledger=True,
         )
 
-    # Forms discovered during crawl
+    # Forms: attach field names onto already-known Phase-1 surfaces (catalog/ledger).
+    # Do not invent new CSRF/XSS candidates from every HTML form on the site.
     for form in forms:
         if not isinstance(form, dict):
             continue
@@ -274,24 +303,12 @@ def discover_surfaces_from_stats(
                 else:
                     names.append(str(f))
         names = [n for n in names if n]
-        method = str(form.get("method") or "POST").upper()
-        upsert(
-            url=action,
-            family="csrf",
-            parameter=",".join(names[:8]),
-            method=method,
-            form_fields=names,
-            channels=["form"],
-        )
-        if names:
-            upsert(
-                url=action,
-                family="xss",
-                parameter=names[0],
-                method=method,
-                form_fields=names,
-                channels=["form"],
-            )
+        path = _path_of(action)
+        for surf in list(by_key.values()):
+            if surf.path == path and names:
+                surf.form_fields = sorted(set(surf.form_fields) | set(names))
+                if "form" not in surf.input_channels:
+                    surf.input_channels = sorted(set(surf.input_channels) | {"form"})
 
     for finding in findings:
         if not isinstance(finding, dict):
