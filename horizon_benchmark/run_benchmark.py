@@ -112,6 +112,9 @@ async def run_mode(
     manifest: Dict[str, Any],
     browser_evaluate=None,
     callback_base: str = "",
+    oob=None,
+    scan_id: str = "",
+    oob_callback_poll_url: str = "",
 ) -> Dict[str, Any]:
     from active_probe_kit import normalize_mode
 
@@ -148,6 +151,26 @@ async def run_mode(
         canary_content = "PLAYGROUND_CANARY_TOKEN"
 
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        # Prefer an explicit correlator; otherwise build one when callback_base is set.
+        oob_obj = oob
+        cb_recv = None
+        if oob_obj is None and callback_base:
+            from oob_callback import OobCallbackCorrelator
+
+            oob_obj = OobCallbackCorrelator(
+                scan_id=scan_id or f"horizon-{mode_n}",
+                callback_base=callback_base.rstrip("/"),
+                poll_url=(oob_callback_poll_url or f"{callback_base.rstrip('/')}/poll").rstrip("/"),
+                http_client=client,
+                reject_local_sources=False,  # same-host Horizon lab is expected
+            )
+        if oob_obj is not None:
+            cb_recv = oob_obj.make_callback_received()
+            try:
+                oob_obj.http_client = client
+            except Exception:
+                pass
+
         await _seed_discovery(client, base, stats, paths)
         for fix in targets:
             url = urljoin(base, str(fix["path"]))
@@ -165,8 +188,12 @@ async def run_mode(
                 max_forms=max_forms,
                 mode=mode_n,
                 callback_base=callback_base or "",
+                oob_callback_poll_url=oob_callback_poll_url or "",
                 browser_evaluate=browser_evaluate,
+                callback_received=cb_recv,
                 stats=stats,
+                oob=oob_obj,
+                scan_id=scan_id or (getattr(oob_obj, "scan_id", "") if oob_obj else ""),
                 traversal_canary_path=canary_path,
                 traversal_canary_expected_content=canary_content,
             )
@@ -266,6 +293,12 @@ async def run_all_modes(
         browser_evaluate = None
 
     results: Dict[str, Any] = {"manifest": str(manifest_path), "base": base, "modes": {}}
+    # Controlled OOB receiver: same Horizon catalog hosts /oob/<nonce>/ping + /oob/poll.
+    base_n = base if base.endswith("/") else base + "/"
+    callback_base = urljoin(base_n, "oob").rstrip("/")
+    poll_url = f"{callback_base}/poll"
+    scan_id = "horizon-acceptance"
+
     for mode in modes:
         t0 = time.time()
         print(f"=== Horizon acceptance mode={mode} ===", flush=True)
@@ -276,7 +309,9 @@ async def run_all_modes(
             base=base,
             manifest=manifest,
             browser_evaluate=be,
-            callback_base="",
+            callback_base=callback_base,
+            oob_callback_poll_url=poll_url,
+            scan_id=f"{scan_id}-{mode}",
         )
         mode_result["duration_s"] = round(time.time() - t0, 2)
         results["modes"][mode] = mode_result

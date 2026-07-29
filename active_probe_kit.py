@@ -1656,19 +1656,47 @@ async def run_active_probe_kit(
                 try:
                     cb_base = (settings.callback_base or "").rstrip("/")
                     fresh = oob.mint_nonce() if hasattr(oob, "mint_nonce") else secrets.token_hex(16)
+                    sid = str(
+                        getattr(settings, "scan_id", "")
+                        or getattr(oob, "scan_id", "")
+                        or ""
+                    ).strip()
+
+                    def _with_ids(url: str) -> str:
+                        if not url or not sid:
+                            return url
+                        from urllib.parse import quote
+
+                        return (
+                            f"{url}?scan_id={quote(sid, safe='')}"
+                            f"&probe_id={quote(probe_id, safe='')}"
+                        )
+
                     if spec.kind == "xxe":
                         exp_path = f"/{fresh}/xxe"
-                        cb_url = f"{cb_base}/{fresh}/xxe" if cb_base else ""
+                        cb_url = _with_ids(f"{cb_base}/{fresh}/xxe" if cb_base else "")
                         trial[field] = (
                             '<?xml version="1.0"?>'
                             f'<!DOCTYPE r [<!ENTITY xxe SYSTEM "{cb_url}">]>'
                             "<r>&xxe;</r>"
                         )
                         payload_value = trial[field]
+                        bound = oob.register_probe(
+                            fresh,
+                            probe_id=probe_id,
+                            endpoint=target,
+                            parameter=field,
+                            category=spec.category,
+                            expected_path=exp_path,
+                            callback_url=cb_url,
+                        ) or fresh
+                        local_meta["nonce"] = bound
+                        local_meta["expected_path"] = exp_path
+                        local_meta["callback_url"] = cb_url
                     else:
                         suffix = "redirect" if "redirect" in spec.payload_class else "ping"
                         exp_path = f"/{fresh}/{suffix}"
-                        cb_url = f"{cb_base}/{fresh}/{suffix}" if cb_base else ""
+                        cb_url = _with_ids(f"{cb_base}/{fresh}/{suffix}" if cb_base else "")
                         if cb_url:
                             trial[field] = cb_url
                             payload_value = trial[field]
@@ -1904,17 +1932,25 @@ async def run_active_probe_kit(
                         dom_id=str(local_meta.get("dom_id") or ""),
                     )
                     target_path = (urlparse(target).path or "").lower()
-                    browser_fixture = "/xss/browser" in target_path
-                    # Browser confirmation only on the browser XSS fixture.
-                    # Reflection / attribute / event candidates remain unverified elsewhere.
-                    if (
-                        settings.browser_evaluate
-                        and local_meta.get("needs_browser")
-                        and browser_fixture
+                    # Horizon reflection/control fixtures must stay reflected_only even when
+                    # a browser evaluator is wired for the run (lab mode).
+                    reflection_only_fixture = any(
+                        frag in target_path
+                        for frag in ("/xss/reflected", "/xss/encoded", "/xss/attr")
+                    )
+                    if settings.browser_evaluate and not reflection_only_fixture and (
+                        local_meta.get("needs_browser")
+                        or (
+                            disp
+                            and disp.get("validation_state")
+                            in (STATE_ATTR_BREAKOUT, STATE_SINK_CANDIDATE)
+                        )
                     ):
                         try:
                             from active_probe_browser import build_probe_page_url
 
+                            # Reproduce the exact payload request (do not swap to a
+                            # cleaned final_url that may drop the probe query).
                             page_url = build_probe_page_url(target, method, trial)
                             eval_result = await settings.browser_evaluate(
                                 page_url,
@@ -1949,8 +1985,13 @@ async def run_active_probe_kit(
                                 new_evidence = [f"dataset.vc={token}"]
                                 evidence_line = f"browser_exec: dataset.vc={token}"
                                 disp = None
-                            elif not disp:
-                                hit = False
+                            elif local_meta.get("needs_browser"):
+                                # Browser path attempted but not confirmed — do not
+                                # escalate reflection to execution.
+                                if disp and disp.get("validation_state") == STATE_REFLECTED_ONLY:
+                                    pass
+                                elif not disp:
+                                    hit = False
                         except Exception:
                             pass
                     if disp and not hit:
@@ -1964,7 +2005,7 @@ async def run_active_probe_kit(
                         new_evidence = [detail_bit]
                         evidence_line = f"xss: {token}"
                         if (
-                            browser_fixture
+                            not reflection_only_fixture
                             and not settings.browser_evaluate
                             and validation_state != STATE_REFLECTED_ONLY
                         ):
