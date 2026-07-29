@@ -48,8 +48,7 @@ def xss_dom_clobber(handler, params: Dict[str, str], *, head_only: bool = False)
     else:
         href = params.get("href") or params.get("url") or "/fixtures/dom-clobber-proof.js"
         raw = f'<a id="defaultConfig" href="{href}">x</a>'
-    # Keep the vulnerable page script as valid JS only — no fancy punctuation inside
-    # the <script> block (avoids parse failures that abort before appendChild).
+    # Valid JS only inside <script> — victim opens the URL and the sink runs automatically.
     body = page(
         "DOM clobber",
         f"<div id='sink'>{raw}</div>"
@@ -84,6 +83,47 @@ def xss_dom_clobber(handler, params: Dict[str, str], *, head_only: bool = False)
         "<p>Inject via <code>?html=&lt;a id=defaultConfig href=…&gt;</code> "
         "or <code>?href=/fixtures/dom-clobber-proof.js</code>. "
         "Proof: <code>document.body.dataset.domClobberExecuted === 'true'</code>.</p>",
+    )
+    send(handler, 200, body, head_only=head_only)
+
+
+@register(
+    "/xss/dom-clobber-safe",
+    title="DOM clobber reflection-only control",
+    family="xss",
+    expected="same clobber HTML retained/displayed but never assigned to script.src",
+    tags=["control", "fp-guard", "browser"],
+)
+def xss_dom_clobber_safe(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
+    """Negative control: identical clobber injection, no script-loading sink."""
+    if "html" in params:
+        raw = params.get("html") or ""
+    else:
+        href = params.get("href") or params.get("url") or "/fixtures/dom-clobber-proof.js"
+        raw = f'<a id="defaultConfig" href="{href}">x</a>'
+    body = page(
+        "DOM clobber safe",
+        f"<div id='sink'>{raw}</div>"
+        "<p id='retained'></p>"
+        "<p id='status'>no script sink</p>"
+        "<script>"
+        "(function () {"
+        "  var cfg = window.defaultConfig || { href: '/safe' };"
+        "  var resolved = '/safe';"
+        "  if (cfg && typeof cfg.href === 'string' && cfg.href) {"
+        "    resolved = cfg.href;"
+        "  } else if (cfg && typeof cfg.url === 'string' && cfg.url) {"
+        "    resolved = cfg.url;"
+        "  } else if (cfg && cfg.url && typeof cfg.url.value === 'string') {"
+        "    resolved = cfg.url.value;"
+        "  }"
+        "  var retained = document.getElementById('retained');"
+        "  if (retained) retained.textContent = 'cfg.url=' + resolved;"
+        "  // Intentionally no createElement('script') / script.src assignment."
+        "})();"
+        "</script>"
+        "<p>Control: clobber HTML may be present and retained, but never reaches "
+        "<code>script.src</code>.</p>",
     )
     send(handler, 200, body, head_only=head_only)
 
