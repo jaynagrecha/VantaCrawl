@@ -112,6 +112,8 @@ class PlaygroundHandler(BaseHTTPRequestHandler):
             )
         if path.startswith("/static/"):
             return self._static(path, head_only=head_only)
+        if path.startswith("/fixtures/"):
+            return self._fixtures(path, head_only=head_only)
 
         spec = resolve(path)
         if spec is None:
@@ -135,6 +137,30 @@ class PlaygroundHandler(BaseHTTPRequestHandler):
             ctype = "application/javascript; charset=utf-8"
         elif target.suffix == ".css":
             ctype = "text/css; charset=utf-8"
+        elif target.suffix == ".txt":
+            ctype = "text/plain; charset=utf-8"
+        return send(self, 200, data, headers={"Content-Type": ctype}, head_only=head_only)
+
+    def _fixtures(self, path: str, head_only: bool = False) -> None:
+        """Serve same-origin lab proof assets under /fixtures/ (no path traversal)."""
+        rel = path[len("/fixtures/") :]
+        if not rel or ".." in rel.split("/") or rel.startswith("/"):
+            return send(self, 404, page("Not Found", "<p>fixture miss</p>"), head_only=head_only)
+        target = (ROOT / "fixtures" / rel).resolve()
+        fixtures_root = (ROOT / "fixtures").resolve()
+        if not str(target).startswith(str(fixtures_root)) or not target.is_file():
+            return send(self, 404, page("Not Found", "<p>fixture miss</p>"), head_only=head_only)
+        # Only expose intentional proof/canary text assets — not arbitrary uploads.
+        if target.suffix.lower() not in {".js", ".txt", ".json", ".css"}:
+            return send(self, 404, page("Not Found", "<p>fixture miss</p>"), head_only=head_only)
+        data = target.read_bytes()
+        ctype = "application/octet-stream"
+        if target.suffix == ".js":
+            ctype = "application/javascript; charset=utf-8"
+        elif target.suffix == ".css":
+            ctype = "text/css; charset=utf-8"
+        elif target.suffix == ".json":
+            ctype = "application/json; charset=utf-8"
         elif target.suffix == ".txt":
             ctype = "text/plain; charset=utf-8"
         return send(self, 200, data, headers={"Content-Type": ctype}, head_only=head_only)
