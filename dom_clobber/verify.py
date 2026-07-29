@@ -348,11 +348,10 @@ async def verify_dom_clobber_on_url(
     browser_names: List[str] = []
     if browser is not None:
         try:
-            # Inventory on baseline page
-            from dom_clobber.browser import open_probe_url, inventory_page
+            # Inventory on baseline page (single lock — no shared-driver race window)
+            from dom_clobber.browser import open_and_inventory_page
 
-            open_probe_url(browser.driver, url, wait_seconds=0.8)
-            inv = inventory_page(browser.driver)
+            inv = open_and_inventory_page(browser.driver, url, wait_seconds=0.8)
             browser_names = list(inv.get("namedWindow") or [])
             for el in inv.get("elements") or []:
                 if el.get("id"):

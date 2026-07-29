@@ -199,6 +199,27 @@ def collect_network_proof_requests(driver, nonce: str) -> List[Dict[str, str]]:
 
 def open_probe_url(driver, page_url: str, *, wait_seconds: float = 1.5) -> Dict[str, Any]:
     """Navigate to the crafted URL (victim only opens URL — no click required)."""
+    from browser_fetch import selenium_driver_lock
+
+    with selenium_driver_lock():
+        return _open_probe_url_unlocked(driver, page_url, wait_seconds=wait_seconds)
+
+
+def open_and_inventory_page(
+    driver,
+    page_url: str,
+    *,
+    wait_seconds: float = 1.5,
+) -> Dict[str, Any]:
+    """Open *page_url* and inventory named DOM under one shared-driver lock."""
+    from browser_fetch import selenium_driver_lock
+
+    with selenium_driver_lock():
+        _open_probe_url_unlocked(driver, page_url, wait_seconds=wait_seconds)
+        return inventory_page(driver)
+
+
+def _open_probe_url_unlocked(driver, page_url: str, *, wait_seconds: float = 1.5) -> Dict[str, Any]:
     console_errors: List[str] = []
     csp_blocked: List[str] = []
     session_id = f"bs_{secrets.token_hex(6)}"
@@ -250,77 +271,80 @@ def analyze_clobber_page(
     wait_seconds: float = 1.5,
 ) -> Dict[str, Any]:
     """Full browser analysis for one clobber attempt."""
-    nav = open_probe_url(driver, page_url, wait_seconds=wait_seconds)
-    inv = inventory_page(driver)
-    prop = resolve_property(driver, property_path)
-    # Also resolve root if nested
-    root = property_path.split(".", 1)[0]
-    root_prop = resolve_property(driver, root) if root != property_path else prop
-    hooks = read_sink_hooks(driver)
-    net = collect_network_proof_requests(driver, nonce)
-    executed = check_execution_marker(driver, nonce)
+    from browser_fetch import selenium_driver_lock
 
-    sinks = list(hooks.get("sinks") or [])
-    scripts = list(hooks.get("scriptsCreated") or [])
-    proof_in_sink = False
-    sink_name = ""
-    sink_arg = ""
-    for s in sinks:
-        detail = str((s or {}).get("detail") or "")
-        kind = str((s or {}).get("kind") or "")
-        if proof_url and proof_url in detail or (nonce and nonce in detail):
-            proof_in_sink = True
-            sink_name = kind
-            sink_arg = detail[:300]
-            break
-    if not proof_in_sink:
-        for s in scripts:
-            src = str((s or {}).get("src") or "")
-            if (proof_url and proof_url in src) or (nonce and nonce in src):
+    with selenium_driver_lock():
+        nav = _open_probe_url_unlocked(driver, page_url, wait_seconds=wait_seconds)
+        inv = inventory_page(driver)
+        prop = resolve_property(driver, property_path)
+        # Also resolve root if nested
+        root = property_path.split(".", 1)[0]
+        root_prop = resolve_property(driver, root) if root != property_path else prop
+        hooks = read_sink_hooks(driver)
+        net = collect_network_proof_requests(driver, nonce)
+        executed = check_execution_marker(driver, nonce)
+
+        sinks = list(hooks.get("sinks") or [])
+        scripts = list(hooks.get("scriptsCreated") or [])
+        proof_in_sink = False
+        sink_name = ""
+        sink_arg = ""
+        for s in sinks:
+            detail = str((s or {}).get("detail") or "")
+            kind = str((s or {}).get("kind") or "")
+            if proof_url and proof_url in detail or (nonce and nonce in detail):
                 proof_in_sink = True
-                sink_name = "script.src"
-                sink_arg = src[:300]
+                sink_name = kind
+                sink_arg = detail[:300]
                 break
+        if not proof_in_sink:
+            for s in scripts:
+                src = str((s or {}).get("src") or "")
+                if (proof_url and proof_url in src) or (nonce and nonce in src):
+                    proof_in_sink = True
+                    sink_name = "script.src"
+                    sink_arg = src[:300]
+                    break
 
-    # Application-originated network to proof
-    app_request = False
-    for n in net:
-        url = str((n or {}).get("url") or "")
-        init = str((n or {}).get("initiatorType") or "")
-        if nonce in url or (proof_url and proof_url.split("?")[0] in url):
-            if init in ("script", "other", "fetch", "xmlhttprequest", "img", ""):
-                app_request = True
-                break
+        # Application-originated network to proof
+        app_request = False
+        for n in net:
+            url = str((n or {}).get("url") or "")
+            init = str((n or {}).get("initiatorType") or "")
+            if nonce in url or (proof_url and proof_url.split("?")[0] in url):
+                if init in ("script", "other", "fetch", "xmlhttprequest", "img", ""):
+                    app_request = True
+                    break
 
-    named_clobber = bool(
-        (prop.get("isElement") or root_prop.get("isElement"))
-        and (prop.get("ok") or root_prop.get("ok"))
-    )
-    # Value consumed ≈ sink saw proof URL or retained assignment matched proof
-    href = prop.get("href") or root_prop.get("href") or ""
-    value = prop.get("value") or root_prop.get("value") or ""
-    consumed_hint = bool(
-        proof_in_sink
-        or (proof_url and (proof_url in str(href) or proof_url in str(value)))
-        or (nonce and (nonce in str(href) or nonce in str(value)))
-    )
+        named_clobber = bool(
+            (prop.get("isElement") or root_prop.get("isElement"))
+            and (prop.get("ok") or root_prop.get("ok"))
+        )
+        # Value consumed ≈ sink saw proof URL or retained assignment matched proof
+        href = prop.get("href") or root_prop.get("href") or ""
+        value = prop.get("value") or root_prop.get("value") or ""
+        consumed_hint = bool(
+            proof_in_sink
+            or (proof_url and (proof_url in str(href) or proof_url in str(value)))
+            or (nonce and (nonce in str(href) or nonce in str(value)))
+        )
 
-    return {
-        **nav,
-        "inventory": inv,
-        "property": prop,
-        "root_property": root_prop,
-        "hooks": hooks,
-        "network": net,
-        "named_property_clobbered": named_clobber,
-        "proof_in_sink": proof_in_sink,
-        "sink_name": sink_name,
-        "sink_argument": sink_arg,
-        "app_network_proof": app_request,
-        "execution_marker": executed,
-        "consumed_hint": consumed_hint,
-        "original_snapshot": None,
-    }
+        return {
+            **nav,
+            "inventory": inv,
+            "property": prop,
+            "root_property": root_prop,
+            "hooks": hooks,
+            "network": net,
+            "named_property_clobbered": named_clobber,
+            "proof_in_sink": proof_in_sink,
+            "sink_name": sink_name,
+            "sink_argument": sink_arg,
+            "app_network_proof": app_request,
+            "execution_marker": executed,
+            "consumed_hint": consumed_hint,
+            "original_snapshot": None,
+        }
 
 
 def make_dom_clobber_browser(config=None) -> Optional[Any]:
@@ -348,7 +372,10 @@ def make_dom_clobber_browser(config=None) -> Optional[Any]:
             return analyze_clobber_page(self.driver, **kwargs)
 
         def inventory(self) -> Dict[str, Any]:
-            return inventory_page(self.driver)
+            from browser_fetch import selenium_driver_lock
+
+            with selenium_driver_lock():
+                return inventory_page(self.driver)
 
     def _factory() -> _Session:
         return _Session()

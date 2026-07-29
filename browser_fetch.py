@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional, Tuple
@@ -27,6 +28,12 @@ _selenium_driver = None
 _driver_ua = ""
 _chrome_probe: Optional[Tuple[bool, str]] = None
 _chrome_skip_logged = False
+_selenium_lock = threading.RLock()
+
+
+def selenium_driver_lock() -> threading.RLock:
+    """Serialize all shared Chrome WebDriver use (XSS confirm, DOM-clobber, fetch)."""
+    return _selenium_lock
 
 DOM_LINKS_SCRIPT = """
 const out = [];
@@ -243,49 +250,66 @@ def _chromedriver_service():
 
 def get_selenium_driver(proxy_url: str = "", user_agent: str = ""):
     global _selenium_driver, _driver_ua
-    ua = (user_agent or "").strip() or get_random_user_agent()
+    with _selenium_lock:
+        ua = (user_agent or "").strip() or get_random_user_agent()
 
+        if _selenium_driver is not None:
+            # Recreate if UA policy changed (keeps browser UA aligned with sticky stealth UA)
+            if ua and _driver_ua and ua != _driver_ua:
+                _quit_selenium_driver_unlocked()
+            else:
+                return _selenium_driver
+
+        ok, detail = probe_chrome()
+        if not ok:
+            raise RuntimeError(f"Browser automation unavailable: {detail}")
+
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+
+        options = Options()
+        options.binary_location = detail
+        options.add_argument("--headless=new")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument(f"user-agent={ua}")
+        # Reduce obvious automation flags where possible
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
+        options.add_argument("--window-size=1280,720")
+        if proxy_url:
+            options.add_argument(f"--proxy-server={proxy_url}")
+        service = _chromedriver_service()
+        _selenium_driver = webdriver.Chrome(service=service, options=options)
+        _selenium_driver.set_page_load_timeout(30)
+        _selenium_driver.set_script_timeout(20)
+        _driver_ua = ua
+        try:
+            _selenium_driver.execute_cdp_cmd(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"},
+            )
+        except Exception:
+            pass
+        return _selenium_driver
+
+
+def _quit_selenium_driver_unlocked() -> None:
+    global _selenium_driver, _driver_ua
     if _selenium_driver is not None:
-        # Recreate if UA policy changed (keeps browser UA aligned with sticky stealth UA)
-        if ua and _driver_ua and ua != _driver_ua:
-            quit_selenium_driver()
-        else:
-            return _selenium_driver
+        try:
+            _selenium_driver.quit()
+        except Exception:
+            pass
+        _selenium_driver = None
+        _driver_ua = ""
 
-    ok, detail = probe_chrome()
-    if not ok:
-        raise RuntimeError(f"Browser automation unavailable: {detail}")
 
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-
-    options = Options()
-    options.binary_location = detail
-    options.add_argument("--headless=new")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument(f"user-agent={ua}")
-    # Reduce obvious automation flags where possible
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option("useAutomationExtension", False)
-    options.add_argument("--window-size=1280,720")
-    if proxy_url:
-        options.add_argument(f"--proxy-server={proxy_url}")
-    service = _chromedriver_service()
-    _selenium_driver = webdriver.Chrome(service=service, options=options)
-    _selenium_driver.set_page_load_timeout(30)
-    _selenium_driver.set_script_timeout(20)
-    _driver_ua = ua
-    try:
-        _selenium_driver.execute_cdp_cmd(
-            "Page.addScriptToEvaluateOnNewDocument",
-            {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"},
-        )
-    except Exception:
-        pass
-    return _selenium_driver
+def quit_selenium_driver() -> None:
+    with _selenium_lock:
+        _quit_selenium_driver_unlocked()
 
 
 def fetch_with_selenium(
@@ -303,69 +327,59 @@ def fetch_with_selenium(
     from selenium.webdriver.support import expected_conditions as EC
     from selenium.webdriver.support.ui import WebDriverWait
 
-    driver = get_selenium_driver(proxy_url, user_agent=user_agent)
-    try:
-        driver.execute_cdp_cmd("Network.enable", {})
-    except Exception:
-        pass
-    if cookie_header:
-        _seed_driver_cookies(driver, url, cookie_header)
-    try:
-        driver.get(url)
-    except Exception:
-        # PageLoadTimeout / WebDriverException — still try to scrape whatever loaded
-        pass
-    try:
-        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-    except Exception:
-        pass
-
-    html_preview = ""
-    try:
-        html_preview = driver.page_source or ""
-    except Exception:
-        html_preview = ""
-
-    bm_found: list[str] = []
-    needs_bm_wait = page_suggests_bot_manager(html_preview) or float(bm_wait_seconds or 0) > 0
-    if needs_bm_wait and float(bm_wait_seconds or 0) > 0:
-        # Always give BM sensor time on Chrome-first navigations — interstitial HTML
-        # may not include obvious markers until scripts run.
-        bm_found = _wait_for_bm_cookies(driver, timeout_seconds=float(bm_wait_seconds))
-        if bm_found and float(bm_post_settle_seconds or 0) > 0:
-            time.sleep(min(float(bm_post_settle_seconds), 5.0))
-    elif settle_seconds:
-        time.sleep(min(float(settle_seconds), 5.0))
-
-    if screenshot_path:
-        os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
-        driver.save_screenshot(screenshot_path)
-    try:
-        dom_urls = driver.execute_script(DOM_LINKS_SCRIPT) or []
-    except Exception:
-        dom_urls = []
-    try:
-        cookies = driver.get_cookies() or []
-    except Exception:
-        cookies = []
-    if not bm_found:
-        bm_found = bm_cookie_names_present(cookies)
-    try:
-        page_html = driver.page_source or ""
-    except Exception:
-        page_html = html_preview
-    return page_html, cookies, dom_urls, bm_found
-
-
-def quit_selenium_driver() -> None:
-    global _selenium_driver, _driver_ua
-    if _selenium_driver is not None:
+    with _selenium_lock:
+        driver = get_selenium_driver(proxy_url, user_agent=user_agent)
         try:
-            _selenium_driver.quit()
+            driver.execute_cdp_cmd("Network.enable", {})
         except Exception:
             pass
-        _selenium_driver = None
-        _driver_ua = ""
+        if cookie_header:
+            _seed_driver_cookies(driver, url, cookie_header)
+        try:
+            driver.get(url)
+        except Exception:
+            # PageLoadTimeout / WebDriverException — still try to scrape whatever loaded
+            pass
+        try:
+            WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        except Exception:
+            pass
+
+        html_preview = ""
+        try:
+            html_preview = driver.page_source or ""
+        except Exception:
+            html_preview = ""
+
+        bm_found: list[str] = []
+        needs_bm_wait = page_suggests_bot_manager(html_preview) or float(bm_wait_seconds or 0) > 0
+        if needs_bm_wait and float(bm_wait_seconds or 0) > 0:
+            # Always give BM sensor time on Chrome-first navigations — interstitial HTML
+            # may not include obvious markers until scripts run.
+            bm_found = _wait_for_bm_cookies(driver, timeout_seconds=float(bm_wait_seconds))
+            if bm_found and float(bm_post_settle_seconds or 0) > 0:
+                time.sleep(min(float(bm_post_settle_seconds), 5.0))
+        elif settle_seconds:
+            time.sleep(min(float(settle_seconds), 5.0))
+
+        if screenshot_path:
+            os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
+            driver.save_screenshot(screenshot_path)
+        try:
+            dom_urls = driver.execute_script(DOM_LINKS_SCRIPT) or []
+        except Exception:
+            dom_urls = []
+        try:
+            cookies = driver.get_cookies() or []
+        except Exception:
+            cookies = []
+        if not bm_found:
+            bm_found = bm_cookie_names_present(cookies)
+        try:
+            page_html = driver.page_source or ""
+        except Exception:
+            page_html = html_preview
+        return page_html, cookies, dom_urls, bm_found
 
 
 def _response_looks_challenged(

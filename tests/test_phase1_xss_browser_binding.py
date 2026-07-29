@@ -357,6 +357,82 @@ def test_candidate_vs_inventory_metrics_not_interchangeable():
     assert pub["inventory_metrics"]["negative_control_fp_rate"]["numerator"] == 0
 
 
+def test_provenance_summary_uses_confirming_probe_not_latest():
+    """Provenance correlation must cite the accepted confirming probe_id/nonce."""
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from crawl_stats import CrawlStats
+    from verifiers.runtime.finalize import finalize_phase1_runtime
+
+    class _Cfg:
+        active_probe_mode = "lab"
+        job_id = "scan-prov"
+        report_title = "t"
+
+    stats = CrawlStats()
+    stats.scan_id = "scan-prov"
+    stats.discovered_urls.add("https://t.example/ui/xss/reflected")
+    stats.target_catalog = [
+        {
+            "path": "/ui/xss/reflected",
+            "family": "xss",
+            "tags": ["active", "safe"],
+            "methods": ["GET"],
+        }
+    ]
+    stats.request_ledger.extend(
+        [
+            {
+                "phase": "active_probe",
+                "probe_role": "probe",
+                "probe_class": "xss",
+                "probe_name": "xss_event_onload",
+                "probe_id": "xss_event_onload:q:/ui/xss/reflected:1",
+                "nonce": "VCXSS_aaa",
+                "parameter": "q",
+                "url": "https://t.example/ui/xss/reflected?q=1",
+                "result_state": "browser_execution_confirmed",
+            },
+            {
+                "phase": "active_probe",
+                "probe_role": "browser_execution_confirmed",
+                "probe_class": "xss",
+                "probe_id": "xss_event_onload:q:/ui/xss/reflected:1",
+                "nonce": "VCXSS_aaa",
+                "parameter": "q",
+                "url": "https://t.example/ui/xss/reflected?q=1",
+                "result_state": "browser_execution_confirmed",
+                "browser_context_id": "ctx-onload",
+                "marker_before": "",
+                "marker_after": "VCXSS_aaa",
+            },
+            {
+                "phase": "active_probe",
+                "probe_role": "probe",
+                "probe_class": "xss",
+                "probe_name": "xss_js_string_breakout",
+                "probe_id": "xss_js_string_breakout:q:/ui/xss/reflected:2",
+                "nonce": "VCXSS_bbb",
+                "parameter": "q",
+                "url": "https://t.example/ui/xss/reflected?q=2",
+                "result_state": "reflected_only",
+            },
+        ]
+    )
+    with tempfile.TemporaryDirectory() as td:
+        finalize_phase1_runtime(stats, config=_Cfg(), report_dir=td, scan_id="scan-prov")
+        prov = json.loads(Path(td, "evidence_provenance.json").read_text(encoding="utf-8"))
+    row = next(e for e in prov if e.get("path") == "/ui/xss/reflected")
+    corr = row["correlation"]
+    assert corr["probe_id"] == "xss_event_onload:q:/ui/xss/reflected:1"
+    assert corr["nonce"] == "VCXSS_aaa"
+    assert corr["browser_context_id"] == "ctx-onload"
+    assert corr["decision"] == "confirmed_current_probe"
+    assert "xss_js_string_breakout" not in str(corr["probe_id"])
+
+
 def test_no_horizon_paths_in_production_runtime_packages():
     """Full production-boundary hardcode + import-graph audit."""
     import ast

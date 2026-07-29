@@ -240,6 +240,48 @@ def make_browser_evaluate(
         target_parameter: str = "",
     ) -> Dict[str, Any]:
         from selenium.webdriver.support.ui import WebDriverWait
+        from browser_fetch import selenium_driver_lock
+
+        with selenium_driver_lock():
+            return _sync_evaluate_locked(
+                page_url,
+                js_expr,
+                method=method,
+                post_data=post_data,
+                fragment=fragment,
+                expected_token=expected_token,
+                probe_class=probe_class,
+                probe_name=probe_name,
+                parameter=parameter,
+                payload=payload,
+                scan_id=scan_id,
+                candidate_id=candidate_id,
+                probe_id=probe_id,
+                nonce=nonce,
+                target_url=target_url,
+                target_parameter=target_parameter,
+            )
+
+    def _sync_evaluate_locked(
+        page_url: str,
+        js_expr: str,
+        *,
+        method: str = "GET",
+        post_data: Optional[Dict[str, Any]] = None,
+        fragment: str = "",
+        expected_token: str = "",
+        probe_class: str = "",
+        probe_name: str = "",
+        parameter: str = "",
+        payload: str = "",
+        scan_id: str = "",
+        candidate_id: str = "",
+        probe_id: str = "",
+        nonce: str = "",
+        target_url: str = "",
+        target_parameter: str = "",
+    ) -> Dict[str, Any]:
+        from selenium.webdriver.support.ui import WebDriverWait
 
         driver = get_selenium_driver(proxy, user_agent=ua or "")
         console_errors: list = []
@@ -342,6 +384,27 @@ def make_browser_evaluate(
             time.sleep(max(0.25, float(wait_seconds or 0)))
 
             final_url = str(getattr(driver, "current_url", None) or page_url)
+            # Shared-driver races can steal navigation — enforce intended path.
+            try:
+                want_path = (urlparse(bind_target).path or urlparse(page_url).path or "").rstrip("/")
+                got_path = (urlparse(final_url).path or "").rstrip("/")
+                if want_path and got_path and want_path != got_path and method_u == "GET" and not fragment:
+                    driver.get(target)
+                    try:
+                        WebDriverWait(driver, max(2.0, float(wait_seconds) + 1.5)).until(
+                            lambda d: d.execute_script("return document.readyState") == "complete"
+                        )
+                    except Exception:
+                        pass
+                    time.sleep(max(0.25, float(wait_seconds or 0)))
+                    final_url = str(getattr(driver, "current_url", None) or page_url)
+                    got_path = (urlparse(final_url).path or "").rstrip("/")
+                    if want_path and got_path and want_path != got_path:
+                        correlation_ok = False
+                        correlation_reason = "url_path_mismatch"
+            except Exception:
+                pass
+
             _ledger_role(
                 "browser_page_loaded",
                 page_url=page_url,
@@ -364,8 +427,8 @@ def make_browser_evaluate(
                 want_path = (urlparse(bind_target).path or "").rstrip("/")
                 got_path = (urlparse(final_url).path or "").rstrip("/")
                 if want_path and got_path and want_path != got_path:
-                    # Allow same-path with different query (payload delivery).
-                    pass
+                    correlation_ok = False
+                    correlation_reason = "url_path_mismatch"
                 if bind_param and post_data is None:
                     # GET probes must carry the parameter on the navigated URL.
                     from urllib.parse import parse_qs
@@ -386,7 +449,7 @@ def make_browser_evaluate(
                     executed = marker_after == str(expected_token)
                     value = marker_after if executed else value
                 # SVG/event onload can race readyState=complete — one short re-check.
-                if not executed and bind_nonce:
+                if not executed and bind_nonce and correlation_ok:
                     time.sleep(0.45)
                     marker_after = _read_marker(driver)
                     if marker_after == bind_nonce:
