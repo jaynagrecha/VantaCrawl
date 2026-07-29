@@ -272,11 +272,20 @@ async def verify_dom_clobber_on_url(
                 parameter=parameter,
                 result_state=state,
                 payload_redacted=(payload_redacted or "")[:160],
-                scan_id=str(scan_id or ""),
+                scan_id=str(scan_id or getattr(stats, "scan_id", "") or ""),
+                candidate_id=_dc_candidate_id(parameter),
                 target_selection_reason="parameter_semantic_match",
             )
         except Exception:
             pass
+
+    def _dc_candidate_id(parameter: str = "") -> str:
+        sid = str(scan_id or getattr(stats, "scan_id", "") or "").strip()
+        from urllib.parse import urlparse as _up
+
+        path = _up(url).path or "/"
+        base = f"{sid}:cand:{path}:dom_clobber" if sid else f"cand:{path}:dom_clobber"
+        return base
 
     # Only attempt clobber where real HTML element creation is possible
     live = [i for i in injections if i["context"].allows_element_creation]
@@ -585,6 +594,8 @@ async def verify_dom_clobber_on_url(
                             parameter=param,
                             result_state=state,
                             payload_redacted=payload.html[:160],
+                            scan_id=str(scan_id or getattr(stats, "scan_id", "") or ""),
+                            candidate_id=_dc_candidate_id(param),
                             target_selection_reason="parameter_semantic_match",
                         )
                     except Exception:

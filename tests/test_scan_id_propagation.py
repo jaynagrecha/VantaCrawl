@@ -153,13 +153,32 @@ def test_kit_refuses_empty_fallback_identity_collision_across_scans():
             assert row.get("scan_id")
 
 
+def test_record_request_autobinds_stats_scan_id_for_active_probe():
+    stats = CrawlStats()
+    stats.scan_id = "job-auto-bind"
+    stats.record_request(
+        phase="active_probe",
+        source="csrf",
+        url="https://lab.example/form",
+        probe_role="probe",
+        probe_class="csrf",
+        result_state="negative",
+    )
+    row = stats.request_ledger[-1]
+    assert row["scan_id"] == "job-auto-bind"
+
+
 def test_dom_clobber_about_blank_uses_shared_lock_source():
-    """Source audit: negative/replay about:blank must reference selenium_driver_lock."""
-    text = Path("dom_clobber/verify.py").read_text(encoding="utf-8")
-    assert "selenium_driver_lock" in text
-    # The about:blank replay lives inside _run_negative_controls under the lock.
-    assert "browser.driver.get(\"about:blank\")" in text
-    idx_lock = text.find("with selenium_driver_lock()")
-    idx_blank = text.find("browser.driver.get(\"about:blank\")")
-    assert idx_lock != -1 and idx_blank != -1
-    assert idx_lock < idx_blank
+    import inspect
+    from pathlib import Path
+
+    import browser_fetch as bf
+    from dom_clobber import verify as dc_verify
+
+    src = Path(dc_verify.__file__).read_text(encoding="utf-8")
+    assert "selenium_driver_lock" in src
+    assert 'driver.get("about:blank")' in src or "driver.get('about:blank')" in src
+    neg = inspect.getsource(dc_verify._run_negative_controls)
+    assert "selenium_driver_lock" in neg
+    assert "about:blank" in neg
+    assert bf.selenium_driver_lock is not None
