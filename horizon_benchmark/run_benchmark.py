@@ -21,6 +21,7 @@ from horizon_benchmark.execution_plan import (
 )
 from horizon_benchmark.inventory import build_fixture_inventory
 from horizon_benchmark.lifecycle import (
+    annotate_lifecycle_outcomes,
     apply_probe_outcome,
     compute_published_metrics,
     empty_lifecycle_row,
@@ -497,6 +498,7 @@ async def run_mode(
         "note": "legacy_acceptance_subset_recall — mandatory fixtures only; not overall supported-active recall",
     }
 
+    lifecycle[:] = annotate_lifecycle_outcomes(lifecycle)
     published = compute_published_metrics(
         lifecycle,
         mode=mode_n,
@@ -510,8 +512,7 @@ async def run_mode(
     )
     post_run_maturity = merge_catalog_maturity_counts(inventory.get("fixtures") or [], lifecycle)
     published["post_run_maturity_counts_catalog_155"] = post_run_maturity
-    published["live_validated_count"] = post_run_maturity.get("live_validated", 0)
-    # Reconcile: live_validated_count must equal len(live_validated_entries)
+    # Reconcile: live_validated_count must equal evidence-backed live-recall numerator
     live_entries = (published.get("evidence_backed_live_recall") or {}).get("live_validated_entries") or []
     published["live_validated_count"] = len(live_entries)
     published["maturity_live_validated_reconciled"] = (
@@ -527,8 +528,18 @@ async def run_mode(
         **legacy_subset,
         "note": "DEPRECATED alias of legacy_acceptance_subset_recall — not overall supported-active recall",
     }
-    headline["execution_coverage"] = published["execution_coverage"]
+    headline["scheduling_coverage"] = published["scheduling_coverage"]
+    headline["applicable_execution_coverage"] = published["applicable_execution_coverage"]
+    headline["catalog_scheduling_execution_visibility"] = published[
+        "catalog_scheduling_execution_visibility"
+    ]
+    headline["execution_coverage"] = published["applicable_execution_coverage"]
+    headline["lifecycle_completion_coverage"] = published["lifecycle_completion_coverage"]
     headline["verification_coverage"] = published["verification_coverage"]
+    headline["terminal_confirmation_rate"] = published["terminal_confirmation_rate"]
+    headline["nonterminal_rate"] = {
+        k: v for k, v in (published.get("nonterminal_rate") or {}).items() if k != "rows"
+    }
     headline["evidence_backed_live_recall"] = {
         k: v
         for k, v in (published.get("evidence_backed_live_recall") or {}).items()
@@ -544,15 +555,19 @@ async def run_mode(
     )
     headline["live_validated_count"] = published["live_validated_count"]
     headline["live_validated_entries"] = live_entries
+    headline["outcome_class_counts_attempted"] = published.get("outcome_class_counts_attempted")
+    headline["reconciliation_totals"] = published.get("reconciliation_totals")
     headline["plan_summary"] = plan_summary(plan_items)
     entire["headline"] = headline
     entire["lifecycle"] = lifecycle
     entire["execution_plan"] = plan_dicts
     entire["published_metrics"] = published
+    entire["reconciliation"] = published.get("reconciliation") or []
     result["entire_catalog"] = entire
     result["lifecycle"] = lifecycle
     result["execution_plan"] = plan_dicts
     result["published_metrics"] = published
+    result["reconciliation"] = published.get("reconciliation") or []
 
     if not result["assessment_complete"]:
         stats.assessment_inconclusive_reason = (  # type: ignore[attr-defined]
@@ -667,14 +682,44 @@ async def run_all_modes(
                 f"entire-catalog mode={mode} "
                 f"fixtures={headline.get('catalog_fixtures')} "
                 f"supported_active={headline.get('supported_active')} "
-                f"exec_cov={headline.get('execution_coverage')} "
-                f"ver_cov={headline.get('verification_coverage')} "
+                f"sched_cov={headline.get('scheduling_coverage')} "
+                f"applicable_exec={headline.get('applicable_execution_coverage')} "
+                f"catalog_exec_vis={headline.get('catalog_scheduling_execution_visibility')} "
+                f"lifecycle_completion={headline.get('lifecycle_completion_coverage')} "
+                f"terminal_confirm={headline.get('terminal_confirmation_rate')} "
+                f"nonterminal={headline.get('nonterminal_rate')} "
                 f"live_recall={live} "
                 f"live_validated_count={headline.get('live_validated_count')} "
                 f"legacy_subset={headline.get('legacy_acceptance_subset_recall')} "
                 f"fp={headline.get('negative_control_fp_rate')} "
+                f"outcomes={headline.get('outcome_class_counts_attempted')} "
                 f"maturity={headline.get('capability_maturity_counts')}",
                 flush=True,
+            )
+        recon = published.get("reconciliation") or mode_result.get("reconciliation") or []
+        if recon:
+            (out_dir / f"reconciliation_{mode}.json").write_text(
+                json.dumps(recon, indent=2, default=str) + "\n", encoding="utf-8"
+            )
+        if mode == "lab" and recon:
+            (out_dir / "lab_reconciliation_39.json").write_text(
+                json.dumps(
+                    {
+                        "totals": published.get("reconciliation_totals"),
+                        "entries": recon,
+                        "live_validated_audit": (
+                            (published.get("evidence_backed_live_recall") or {}).get(
+                                "live_validated_entries"
+                            )
+                            or []
+                        ),
+                        "nonterminal": (published.get("nonterminal_rate") or {}).get("rows") or [],
+                    },
+                    indent=2,
+                    default=str,
+                )
+                + "\n",
+                encoding="utf-8",
             )
         summary = mode_result.get("summary") or {}
         print(
