@@ -22,6 +22,7 @@ from horizon_benchmark.manifest import (
 from verifiers.contract import PRODUCT_CLAIM
 from verifiers.maturity import classify_support_from_maturity
 from verifiers.registry import capability_registry, supported_families
+from horizon_benchmark.path_policy import path_demotion_reason
 
 
 PHASE1_FAMILIES = frozenset(
@@ -84,6 +85,7 @@ def build_fixture_inventory(catalog: Optional[List[Dict[str, Any]]] = None) -> D
             bucket=bucket,
             family=fam_for_maturity,
             path=str(route.get("path") or ""),
+            path_demotion_reason=path_demotion_reason(str(route.get("path") or "")),
             prior_cap_id=str(cap_id or ""),
         )
         support = matured["support_classification"]

@@ -17,8 +17,6 @@ from typing import Any, Dict, List, Optional, Set
 
 from verifiers.registry import capability_registry, get_verifier
 
-ROOT = Path(__file__).resolve().parents[1]
-
 MATURITY_CONTRACT_ONLY = "contract_only"
 MATURITY_REGISTERED_ADAPTER = "registered_adapter"
 MATURITY_EXECUTABLE_UNVALIDATED = "executable_unvalidated"
@@ -237,45 +235,27 @@ _FAMILY_IMPL: Dict[str, Dict[str, Any]] = {
     },
 }
 
-# Fixtures / subtypes known to be routed or partially covered but not fully
-# executable end-to-end without additional work. Keys are path prefixes or exact paths.
-_PARTIAL_OR_PASSIVE_PATHS = {
-    "/xss/angular": "browser_framework_sink_not_fully_executable",
-    "/xss/postmessage": "postmessage_channel_not_fully_executable",
-    "/xss/markdown": "markdown_renderer_path_partial",
-    "/xss/stored": "stored_xss_requires_multi_request_state",
-    "/xss/base-tag": "base_tag_sink_partial",
-    "/xss/dangling": "dangling_markup_partial",
-    "/xss/svg": "svg_context_partial",
-    "/xss/dom": "dom_xss_without_clobber_ladder",
-}
-
-# Live-validated capability ids from this audit (updated by audit runner).
+# Live-validated capability ids (in-memory only in production).
+# Benchmark code may call load_live_validated_from_file() explicitly.
 _LIVE_VALIDATED: Set[str] = set()
-_LIVE_VALIDATED_PATHS = (
-    Path("/opt/cursor/artifacts/stacked_audit/live_validated_caps.json"),
-    ROOT / "horizon_benchmark" / "live_validated_caps.json",
-)
 
 
-def _load_persisted_live_validated() -> None:
-    for path in _LIVE_VALIDATED_PATHS:
-        try:
-            if path.is_file():
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    for item in data:
-                        if item:
-                            _LIVE_VALIDATED.add(str(item))
-                elif isinstance(data, dict):
-                    for item in data.get("capability_ids") or []:
-                        if item:
-                            _LIVE_VALIDATED.add(str(item))
-        except Exception:
-            continue
-
-
-_load_persisted_live_validated()
+def load_live_validated_from_file(path: Path) -> None:
+    """Optional explicit loader — callers may pass a benchmark evidence file."""
+    try:
+        if not path.is_file():
+            return
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            for item in data:
+                if item:
+                    _LIVE_VALIDATED.add(str(item))
+        elif isinstance(data, dict):
+            for item in data.get("capability_ids") or []:
+                if item:
+                    _LIVE_VALIDATED.add(str(item))
+    except Exception:
+        return
 
 
 def mark_live_validated(capability_id: str) -> None:
@@ -285,19 +265,14 @@ def mark_live_validated(capability_id: str) -> None:
 
 def clear_live_validated(*, clear_persisted: bool = False) -> None:
     _LIVE_VALIDATED.clear()
-    if clear_persisted:
-        for path in _LIVE_VALIDATED_PATHS:
-            try:
-                if path.is_file() and path.name == "live_validated_caps.json":
-                    # Do not delete repo evidence during normal tests; only in-memory clear.
-                    pass
-            except Exception:
-                pass
+    # clear_persisted retained for API compatibility; production keeps no
+    # Horizon-coupled on-disk maturity marks.
+    _ = clear_persisted
 
 
 def reload_live_validated() -> None:
+    """Clear in-memory marks. Persisted reload is explicit via load_live_validated_from_file."""
     _LIVE_VALIDATED.clear()
-    _load_persisted_live_validated()
 
 
 def live_validated_ids() -> Set[str]:
@@ -433,22 +408,25 @@ def assess_capability_maturity(
     family: str,
     *,
     path: str = "",
+    path_demotion_reason: str = "",
     live_validated_override: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Return maturity + support eligibility for one family/fixture."""
+    """Return maturity + support eligibility for one family/capability.
+
+    ``path`` is accepted for API compatibility with callers that still pass a
+    surface path, but maturity classification must not branch on catalog route
+    names. Fixture-specific demotions belong in the benchmark inventory layer
+    and are supplied via ``path_demotion_reason``.
+    """
+    _ = path  # unused — do not demote by catalog route inside production code
     fam = _normalize_family(family)
-    if path and ("dom-clobber" in path or "dom_clobber" in path):
-        fam = "dom_clobber"
 
     assessed = assess_verifier_class(fam)
     cap_id = assessed.get("capability_id") or ""
     stages = assessed.get("stages") or {}
     missing_stages = [k for k, ok in stages.items() if not ok]
 
-    # Path-level demotions for XSS subtypes without full executability
-    path_reason = ""
-    if path in _PARTIAL_OR_PASSIVE_PATHS:
-        path_reason = _PARTIAL_OR_PASSIVE_PATHS[path]
+    path_reason = (path_demotion_reason or "").strip()
 
     live = bool(live_validated_override)
     if live_validated_override is None:
@@ -505,18 +483,28 @@ def classify_support_from_maturity(
     bucket: str,
     family: str,
     path: str = "",
+    path_demotion_reason: str = "",
     prior_cap_id: str = "",
 ) -> Dict[str, Any]:
-    """Map bucket + maturity → support_classification."""
-    from horizon_benchmark.manifest import BUCKET_PASSIVE, BUCKET_UNSUPPORTED
+    """Map bucket + maturity → support_classification.
 
-    mat = assess_capability_maturity(family, path=path)
+    Bucket string values match the benchmark manifest constants but are
+    compared as plain strings so production code does not import the benchmark.
+    """
+    # Keep in sync with benchmark manifest bucket string values.
+    bucket_passive = "passive_manual"
+    bucket_unsupported = "unsupported"
+
+    mat = assess_capability_maturity(
+        family,
+        path_demotion_reason=path_demotion_reason,
+    )
     cap_id = mat.get("capability_id") or prior_cap_id or ""
 
-    if bucket == BUCKET_UNSUPPORTED:
+    if bucket == bucket_unsupported:
         support = "unsupported"
         reason = mat.get("maturity_reason") or "bucket_unsupported"
-    elif bucket == BUCKET_PASSIVE:
+    elif bucket == bucket_passive:
         support = "passive_manual"
         reason = "bucket_passive_manual"
     elif mat.get("supported_active_eligible"):
@@ -547,4 +535,5 @@ def classify_support_from_maturity(
         "classification_reason": reason,
         "missing_lifecycle_stages": list(mat.get("missing_lifecycle_stages") or []),
         "maturity_detail": mat,
+        "path": path,
     }

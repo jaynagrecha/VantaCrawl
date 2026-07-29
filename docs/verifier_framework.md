@@ -76,7 +76,19 @@ Phase 2/3 backlog: see `docs/verifier_backlog.md`.
 
 ## Metrics (never collapse to one “100%”)
 
-Report separately: catalog discovery, routing, probe execution, verification,
-emission, result-state completeness, supported-active TP recall, negative-control
-FP rate, passive/manual inventory, unsupported count, confirmation-unavailable,
-cleanup success.
+Report separately and with unambiguous names:
+
+| Metric | Meaning |
+|--------|---------|
+| Scheduling coverage | Candidates entered into the execution plan / catalog supported-active considered |
+| Applicable execution coverage | Attempted applicable / applicable executable (mode_excluded out of denominator) |
+| Lifecycle completion coverage | terminal_confirmed + terminal_negative + terminal_inconclusive / attempted |
+| Terminal confirmation rate | terminal_confirmed vulnerable / confirmation-eligible vulnerable |
+| Evidence-backed live recall | Exact terminal-confirmed vulnerable / in-scope confirmation-eligible vulnerable |
+| Negative-control FP rate | Controls reaching terminal_confirmed / controls executed |
+| Nonterminal rate | nonterminal / attempted |
+
+**Do not** label lifecycle completion as “verification coverage” in external reports.
+The JSON field `verification_coverage` is a **deprecated compatibility alias** of
+`lifecycle_completion_coverage` only; new consumers must use the canonical field.
+Removing the alias later must not silently change metric meaning.

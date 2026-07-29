@@ -740,6 +740,7 @@ async def run_all_modes(
     ]
     for mode, mode_result in results["modes"].items():
         summary = mode_result.get("summary") or {}
+        published = mode_result.get("published_metrics") or {}
         lines.append(f"## Mode: {mode}")
         lines.append(f"assessment_complete: {mode_result.get('assessment_complete')}")
         lines.append(f"supported_fixture_recall: {summary.get('supported_fixture_recall')}")
@@ -747,7 +748,33 @@ async def run_all_modes(
             f"negative_control_false_positive_rate: {summary.get('negative_control_false_positive_rate')}"
         )
         lines.append(f"probe_routing_coverage: {summary.get('probe_routing_coverage')}")
-        lines.append(f"verification_coverage: {summary.get('verification_coverage')}")
+        # Legacy mandatory-subset float from evaluate.py — not entire-catalog lifecycle completion.
+        lines.append(
+            "legacy_mandatory_verification_coverage "
+            f"(evaluate.py mandatory subset pass-rate; NOT lifecycle completion): "
+            f"{summary.get('verification_coverage')}"
+        )
+        life_cov = published.get("lifecycle_completion_coverage") or {}
+        lines.append(
+            f"Lifecycle completion coverage: "
+            f"{life_cov.get('numerator')}/{life_cov.get('denominator')} "
+            f"(rate={life_cov.get('rate')}; "
+            "terminal_confirmed+terminal_negative+terminal_inconclusive / attempted)"
+        )
+        lines.append(
+            "verification_coverage_json_alias "
+            f"(DEPRECATED == lifecycle_completion_coverage): "
+            f"{(published.get('verification_coverage') or {}).get('numerator')}/"
+            f"{(published.get('verification_coverage') or {}).get('denominator')}"
+        )
+        lines.append(
+            f"applicable_execution_coverage: {published.get('applicable_execution_coverage')}"
+        )
+        lines.append(
+            f"evidence_backed_live_recall: "
+            f"{((published.get('evidence_backed_live_recall') or {}).get('numerator'))}/"
+            f"{((published.get('evidence_backed_live_recall') or {}).get('denominator'))}"
+        )
         lines.append(f"finding_emission_coverage: {summary.get('finding_emission_coverage')}")
         lines.append(f"result_state_completeness: {summary.get('result_state_completeness')}")
         lines.append(f"authorized_robots_bypass: {mode_result.get('authorized_robots_bypass')}")
