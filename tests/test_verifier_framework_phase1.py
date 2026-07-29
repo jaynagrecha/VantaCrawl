@@ -33,8 +33,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def test_product_claim_is_honest():
-    assert "supported-active recall separately" in PRODUCT_CLAIM
+    assert "live-validation maturity" in PRODUCT_CLAIM or "live_validated" in PRODUCT_CLAIM
     assert "100%" not in PRODUCT_CLAIM
+    assert "supported-active recall separately" in PRODUCT_CLAIM
 
 
 def test_phase1_capabilities_registered():
