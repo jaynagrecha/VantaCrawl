@@ -136,11 +136,19 @@ def score_route_family(path: str, family: str) -> int:
 
 
 def primary_route_family(path: str) -> Optional[str]:
-    """Best-scoring family for a path from route-token semantics, or None."""
+    """Best-scoring family for a path from route-token semantics, or None.
+
+    When a path contains both a broad family token (e.g. ``xss``) and a more
+    specific one (e.g. ``clobber``), prefer the specific family so fallback
+    seeds do not short-circuit specialized verifiers.
+    """
+    scores = {fam: score_route_family(path, fam) for fam in ROUTE_FAMILY_INDICATORS}
+    joined = "/".join(_path_tokens(path))
+    if "clobber" in joined and scores.get("dom_clobber", 0) >= 70:
+        return "dom_clobber"
     best_fam: Optional[str] = None
     best_score = 0
-    for fam in ROUTE_FAMILY_INDICATORS:
-        score = score_route_family(path, fam)
+    for fam, score in scores.items():
         if score > best_score:
             best_score = score
             best_fam = fam

@@ -385,6 +385,13 @@ def make_browser_evaluate(
                 if not executed and expected_token:
                     executed = marker_after == str(expected_token)
                     value = marker_after if executed else value
+                # SVG/event onload can race readyState=complete — one short re-check.
+                if not executed and bind_nonce:
+                    time.sleep(0.45)
+                    marker_after = _read_marker(driver)
+                    if marker_after == bind_nonce:
+                        executed = True
+                        value = True
                 if executed and bind_nonce and marker_after != bind_nonce:
                     executed = False
                     correlation_ok = False
