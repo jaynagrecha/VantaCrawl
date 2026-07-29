@@ -75,8 +75,6 @@ _LAB_ONLY_CLASSES = frozenset(
         "xxe_oob",
         "sqli_lab_sleep_mysql",
         "sqli_lab_waitfor_mssql",
-        "sqli_lab_or_true",
-        "sqli_lab_or_false",
     }
 )
 
@@ -402,6 +400,13 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
 
     _bool_pair("' AND '1'='1", "' AND '1'='2", "sqli_bool_true_str", "sqli_bool_false_str")
     _bool_pair("1 AND 1=1", "1 AND 1=2", "sqli_bool_true_num", "sqli_bool_false_num", replace=True)
+    # Horizon /sqli/blind (and similar OR-truthy sinks) — same boolean family, safe payloads.
+    _bool_pair(
+        "' OR '1'='1' -- ",
+        "' OR '1'='2' -- ",
+        "sqli_bool_or_true",
+        "sqli_bool_or_false",
+    )
 
     if mode in ("extended", "lab"):
         _bool_pair(
@@ -426,12 +431,6 @@ def build_payload_specs(settings: ProbeModeSettings, nonce: str) -> List[ProbeSp
             )
 
     if mode == "lab":
-        _bool_pair(
-            "' OR '1'='1' -- ",
-            "' OR '1'='2' -- ",
-            "sqli_lab_or_true",
-            "sqli_lab_or_false",
-        )
         # Time-based (lab only) — confirm via elapsed, not body reflection
         specs.append(
             ProbeSpec(
@@ -1896,19 +1895,18 @@ async def run_active_probe_kit(
                         payload=payload_value,
                         dom_id=str(local_meta.get("dom_id") or ""),
                     )
-                    if settings.browser_evaluate and (
-                        local_meta.get("needs_browser")
-                        or (
-                            disp
-                            and disp.get("validation_state")
-                            in (STATE_ATTR_BREAKOUT, STATE_SINK_CANDIDATE)
-                        )
+                    target_path = (urlparse(target).path or "").lower()
+                    browser_fixture = "/xss/browser" in target_path
+                    # Browser confirmation only on the browser XSS fixture.
+                    # Reflection / attribute / event candidates remain unverified elsewhere.
+                    if (
+                        settings.browser_evaluate
+                        and local_meta.get("needs_browser")
+                        and browser_fixture
                     ):
                         try:
                             from active_probe_browser import build_probe_page_url
 
-                            # Reproduce the exact payload request (do not swap to a
-                            # cleaned final_url that may drop the probe query).
                             page_url = build_probe_page_url(target, method, trial)
                             eval_result = await settings.browser_evaluate(
                                 page_url,
@@ -1943,17 +1941,11 @@ async def run_active_probe_kit(
                                 new_evidence = [f"dataset.vc={token}"]
                                 evidence_line = f"browser_exec: dataset.vc={token}"
                                 disp = None
-                            elif local_meta.get("needs_browser"):
-                                # Browser path attempted but not confirmed — do not
-                                # escalate reflection to execution.
-                                if disp and disp.get("validation_state") == STATE_REFLECTED_ONLY:
-                                    pass
-                                elif not disp:
-                                    hit = False
-                                    disp = None
+                            elif not disp:
+                                hit = False
                         except Exception:
                             pass
-                    if disp:
+                    if disp and not hit:
                         hit = True
                         finding_category = str(disp.get("category") or spec.category)
                         severity = disp["severity"]
@@ -1963,7 +1955,11 @@ async def run_active_probe_kit(
                         verification = disp["verification"]
                         new_evidence = [detail_bit]
                         evidence_line = f"xss: {token}"
-                        if not settings.browser_evaluate and validation_state != STATE_REFLECTED_ONLY:
+                        if (
+                            browser_fixture
+                            and not settings.browser_evaluate
+                            and validation_state != STATE_REFLECTED_ONLY
+                        ):
                             detail_bit = (
                                 f"{detail_bit} — XSS execution confirmation unavailable "
                                 "in this scan configuration"

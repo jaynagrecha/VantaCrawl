@@ -175,22 +175,26 @@ def evaluate_fixture_against_stats(
     reasons = {str(r.get("target_selection_reason") or "") for r in probes if r.get("target_selection_reason")}
     states = [str(r.get("result_state") or "").strip() for r in probes]
     probe_sent = bool(probes)
-    # Prefer strongest matching confirm state, else first non-empty.
+    expected_state = str(fixture.get("expected_result_state") or "")
+    # Prefer exact expected match when any probe row has it; else strongest state.
     result_state = ""
-    for preferred in (
-        "browser_execution_confirmed",
-        "oob_callback_confirmed",
-        "canary_file_confirmed",
-        "execution_confirmed",
-        "server_execution_confirmed",
-        "differential_signal",
-        "reflected_only",
-        "confirmation_unavailable",
-        "negative",
-    ):
-        if preferred in states:
-            result_state = preferred
-            break
+    if expected_state and expected_state in states:
+        result_state = expected_state
+    else:
+        for preferred in (
+            "browser_execution_confirmed",
+            "oob_callback_confirmed",
+            "canary_file_confirmed",
+            "execution_confirmed",
+            "server_execution_confirmed",
+            "differential_signal",
+            "reflected_only",
+            "confirmation_unavailable",
+            "negative",
+        ):
+            if preferred in states:
+                result_state = preferred
+                break
     if not result_state:
         result_state = next((s for s in states if s), "")
     response_classified = any(bool(str(r.get("result_state") or "").strip()) for r in probes)
@@ -224,7 +228,6 @@ def evaluate_fixture_against_stats(
     )
     ledger_confirmed = any(s in _CONFIRM_STATES for s in states)
 
-    expected_state = str(fixture.get("expected_result_state") or "")
     must_not = bool(fixture.get("must_not_confirm"))
     mode_ok = (mode or "safe").lower() in [m.lower() for m in (fixture.get("modes") or [])]
 

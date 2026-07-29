@@ -238,7 +238,11 @@ def test_lab_adds_deeper_and_imds_passwd_xxe():
     assert "trav_passwd_lab" in classes
     assert "trav_canary" in classes
     assert "xxe_oob" in classes
-    assert "sqli_lab_or_true" in classes
+    assert "sqli_bool_or_true" in classes
+    # OR boolean pair is available in safe too (same family; not lab-gated).
+    safe_classes = {s.payload_class for s in build_payload_specs(ProbeModeSettings(mode="safe"), "a81f")}
+    assert "sqli_bool_or_true" in safe_classes
+    assert "ssrf_imds_lab" not in safe_classes
 
 
 def test_lab_without_fixture_skips_canary_payloads():
@@ -317,24 +321,40 @@ def test_active_xss_dom_node_medium():
 
 def test_active_xss_browser_confirm_optional():
     async def _eval(url, expr, **kwargs):
-        return {"executed": True, "final_url": url, "console_errors": [], "csp_blocked": []}
+        return {"executed": True, "reproduced": True, "final_url": url, "console_errors": [], "csp_blocked": []}
 
     findings = asyncio.run(
         run_active_vuln_probes(
             _Client("xss_breakout"),
-            "https://example.com/search?q=test",
+            "https://example.com/xss/browser?q=test",
             max_params=4,
             max_forms=0,
             mode="safe",
             browser_evaluate=_eval,
         )
     )
-    # Browser confirm may fire on event payloads if body still has token
+    # Browser confirm only on /xss/browser fixtures.
     assert isinstance(findings, list)
     assert any(
         f[0] == "xss" and f[4]["proof"]["validation_state"] == "browser_execution_confirmed"
         for f in findings
         if len(f) > 4
+    )
+
+    # Non-browser reflected path must stay unverified even if a browser eval is available.
+    reflected = asyncio.run(
+        run_active_vuln_probes(
+            _Client("xss_breakout"),
+            "https://example.com/xss/reflected?q=test",
+            max_params=4,
+            max_forms=0,
+            mode="safe",
+            browser_evaluate=_eval,
+        )
+    )
+    assert not any(
+        len(f) > 4 and f[4]["proof"]["validation_state"] == "browser_execution_confirmed"
+        for f in reflected
     )
 
 
