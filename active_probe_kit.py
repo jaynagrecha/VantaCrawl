@@ -49,6 +49,7 @@ KIND_TO_FAMILY: Dict[str, str] = {
     "sqli_boolean": "sqli",
     "sqli_time": "sqli",
     "xss": "xss",
+    "dom_clobber": "xss",
     "rce": "rce",
     "ssti": "ssti",
     "ssrf": "ssrf",
@@ -2906,4 +2907,65 @@ async def run_active_probe_kit(
             pass
     # Traversal skip notices live only in stats.active_probe_coverage.aggregate —
     # never one informational finding per endpoint.
+
+    # --- Dynamic DOM-clobber source-to-sink verification (no hardcoded props/params) ---
+    if not breaker.tripped and mode in ("safe", "extended", "lab"):
+        try:
+            from dom_clobber.browser import make_dom_clobber_browser
+            from dom_clobber.verify import verify_dom_clobber_on_url
+
+            browser_factory = None
+            if settings.browser_evaluate is not None or mode in ("extended", "lab"):
+                # Prefer shared Chrome when XSS browser confirm is already wired.
+                browser_factory = make_dom_clobber_browser(None)
+
+            # Safe mode still runs discovery/collision with browser when available,
+            # but verify clamps out executable proof confirmation.
+            dc_findings = await verify_dom_clobber_on_url(
+                client,
+                url,
+                mode=mode,
+                forms=forms,
+                callback_base=settings.callback_base or "",
+                scan_id=settings.scan_id or "",
+                oob=oob,
+                browser_session_factory=browser_factory,
+                stats=stats,
+                max_params=min(6, int(settings.max_params or 8)),
+                max_candidates=8 if mode == "lab" else 4,
+                max_payloads_per_candidate=3 if mode == "lab" else 1,
+            )
+            for item in dc_findings or []:
+                try:
+                    if not isinstance(item, (tuple, list)) or len(item) < 4:
+                        continue
+                    category, severity, detail, evidence = item[0], item[1], item[2], item[3]
+                    meta = item[4] if len(item) > 4 and isinstance(item[4], dict) else {}
+                    add(str(category), str(severity), str(detail), evidence, meta)
+                except Exception:
+                    continue
+            if stats is not None:
+                try:
+                    cov = dict(getattr(stats, "active_probe_coverage", None) or {})
+                    cov["dom_clobber"] = {
+                        "status": "ran",
+                        "mode": mode,
+                        "findings": len(dc_findings or []),
+                        "claim": (
+                            "Dynamic DOM-clobber source-to-sink verification for "
+                            "supported browser and injection contexts."
+                        ),
+                    }
+                    stats.active_probe_coverage = cov
+                except Exception:
+                    pass
+        except Exception:
+            if stats is not None:
+                try:
+                    cov = dict(getattr(stats, "active_probe_coverage", None) or {})
+                    cov["dom_clobber"] = {"status": "error"}
+                    stats.active_probe_coverage = cov
+                except Exception:
+                    pass
+
     return findings
