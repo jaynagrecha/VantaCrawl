@@ -106,6 +106,16 @@ Cross-candidate / cross-scan / wrong-origin / stale-nonce evidence is rejected.
 - Shared Selenium RLock for the full browser transaction.
 - No Horizon domains/routes/markers in production packages.
 
+## Reporting / lifecycle binding
+
+- Findings are deduped per **host+path+state**, not per host, so a public
+  `uncredentialed_public_read` cannot collapse a later `cors_browser_read_confirmed`.
+- Finalize prefers ledger rows with `probe_role` `cors_classified` /
+  `cors_browser_read_confirmed` over raw `cors_browser_proof` decisions such as
+  `confirmed_current_probe` (so ACAO:*+ACAC:true stays `wildcard_with_credentials_invalid`).
+- Emitted proofs include a redacted HTTP request/response carrying ACAO/ACAC so
+  report impact gates can accept browser-confirmed CORS without storing secrets.
+
 ## Limitations
 
 - Requires `cors_proof_origin_base` (or `public_base_url`) configured to a distinct origin
@@ -115,6 +125,8 @@ Cross-candidate / cross-scan / wrong-origin / stale-nonce evidence is rejected.
   confirmation unavailable when only `Origin: null` is relevant).
 - Impact/sensitivity classification is conservative without explicit canary or
   classified sensitive content.
+- Trusted-allowlist fixtures that never reflect the proof Origin may remain
+  `discovery_missing` (still non-confirmed).
 
 ## Stop conditions
 
