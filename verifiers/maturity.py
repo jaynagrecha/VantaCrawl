@@ -233,6 +233,21 @@ _FAMILY_IMPL: Dict[str, Dict[str, Any]] = {
         "kit_kinds": (),
         "requires": ("browser", "callback_base_or_oob"),
     },
+    "cors": {
+        "module": "verifiers.cors.verify",
+        "stages": {
+            "discovery": True,
+            "input_modelling": True,
+            "request_construction": True,
+            "baseline": True,
+            "negative_control": True,
+            "replay": True,
+            "proof_contract": True,
+            "finding_emission": True,
+        },
+        "kit_kinds": (),
+        "requires": ("browser", "cors_proof_origin"),
+    },
 }
 
 # Live-validated capability ids (in-memory only in production).
@@ -373,11 +388,15 @@ def assess_verifier_class(family: str) -> Dict[str, Any]:
     module = str(impl.get("module") or type(v).__module__)
     # Adapter-only: registered classify wrapper whose execute/collect are stubs
     # and lifecycle is delegated (dom_clobber package / kit).
-    adapter_only = bool(exec_stub or (not probes and fam != "dom_clobber"))
+    adapter_only = bool(exec_stub or (not probes and fam not in ("dom_clobber", "cors")))
     if fam == "dom_clobber":
         # Dedicated package owns execution; registry class is a thin adapter.
         adapter_only = True
         module = "dom_clobber.verify"
+        executable_via_module = True
+    elif fam == "cors":
+        adapter_only = True
+        module = "verifiers.cors.verify"
         executable_via_module = True
     else:
         executable_via_module = bool(impl.get("stages", {}).get("request_construction"))
@@ -389,7 +408,7 @@ def assess_verifier_class(family: str) -> Dict[str, Any]:
         "implementation_module": module,
         "implementation_status": (
             "dedicated_package"
-            if fam == "dom_clobber"
+            if fam in ("dom_clobber", "cors")
             else ("kit_backed" if executable_via_module else "adapter")
         ),
         "executable_methods": (not exec_stub) or executable_via_module,

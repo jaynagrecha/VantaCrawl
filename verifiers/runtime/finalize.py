@@ -40,12 +40,22 @@ from verifiers.runtime.surfaces import discover_surfaces_from_stats
 
 # Prefer stronger terminal states when multiple ledger rows exist for one candidate.
 _STATE_RANK = {
+    "cors_browser_read_confirmed": 100,
     "browser_execution_confirmed": 100,
     "server_execution_confirmed": 95,
     "execution_confirmed": 95,
     "oob_callback_confirmed": 90,
     "canary_file_confirmed": 90,
     "controlled_request_confirmed": 85,
+    # Classified CORS outcomes outrank raw browser decisions.
+    "wildcard_with_credentials_invalid": 55,
+    "uncredentialed_public_read": 50,
+    "reflected_origin_without_sensitive_read": 50,
+    "browser_read_blocked": 48,
+    "origin_not_allowed": 48,
+    "preflight_blocked": 48,
+    "readable_without_canary": 35,
+    "confirmed_current_probe": 20,  # raw browser decision only
     "html_injection_confirmed": 40,
     "html_injection": 28,
     "differential_signal": 35,
@@ -58,6 +68,8 @@ _STATE_RANK = {
     "probe_sent": 5,
     "inconclusive": 8,
     "confirmation_unavailable": 8,
+    "passive_header_observed": 8,
+    "proof_origin_unavailable": 8,
 }
 
 
@@ -83,12 +95,20 @@ def _deps_from_config_stats(config: Any, stats: Any) -> DependencyAvailability:
     except Exception:
         oob = False
     canary = bool(getattr(config, "traversal_fixture_installed", False))
+    cors_proof = False
+    try:
+        base = str(getattr(config, "cors_proof_origin_base", "") or "").strip()
+        secret = str(getattr(config, "cors_proof_secret", "") or "").strip()
+        cors_proof = bool(base and secret)
+    except Exception:
+        cors_proof = False
     return DependencyAvailability(
         http_client=True,
         browser=browser,
         oob_callback=oob,
         traversal_canary=canary,
         session=False,
+        cors_proof_origin=cors_proof,
     )
 
 
@@ -172,10 +192,21 @@ def apply_ledger_to_lifecycle(
             continue
 
         hits = _ledger_for_candidate(ledger, path=item.path, family=item.family)
-        probes = [h for h in hits if h.get("probe_role") == "probe"]
-        controls = [h for h in hits if h.get("probe_role") == "control"]
+        probes = [
+            h
+            for h in hits
+            if h.get("probe_role")
+            in ("probe", "cors_browser_proof", "cors_classified", "cors_browser_read_confirmed")
+        ]
+        controls = [
+            h
+            for h in hits
+            if h.get("probe_role") in ("control", "cors_negative_control")
+        ]
         baselines = [h for h in hits if h.get("probe_role") == "baseline"]
-        replays = [h for h in hits if h.get("probe_role") == "replay"]
+        replays = [
+            h for h in hits if h.get("probe_role") in ("replay", "cors_replay")
+        ]
         form_hits = [
             h
             for h in hits
@@ -187,18 +218,32 @@ def apply_ledger_to_lifecycle(
             h
             for h in hits
             if str(h.get("probe_role") or "").startswith("browser")
-            or h.get("result_state") in ("browser_execution_confirmed", "browser_execution_failed")
+            or str(h.get("probe_role") or "").startswith("cors_")
+            or h.get("result_state")
+            in (
+                "browser_execution_confirmed",
+                "browser_execution_failed",
+                "cors_browser_read_confirmed",
+            )
         ]
         # Route visit alone (crawl phase) never counts as verification — only active_probe hits.
         row["route_visited"] = bool(hits)
         row["form_submitted"] = bool(form_hits) or bool(item.form_fields and form_hits)
-        states = [str(h.get("result_state") or "") for h in probes] or [
-            str(h.get("result_state") or "") for h in hits
+        # Prefer classified CORS ledger rows over raw browser decision rows.
+        classified_cors = [
+            h
+            for h in hits
+            if h.get("probe_role") in ("cors_classified", "cors_browser_read_confirmed")
         ]
+        states = [str(h.get("result_state") or "") for h in classified_cors] or [
+            str(h.get("result_state") or "") for h in probes
+        ] or [str(h.get("result_state") or "") for h in hits]
         best = _best_state(states)
         # If probes ran but state empty → probe_sent nonterminal
         probe_sent = bool(probes) or any(
-            h.get("probe_role") in ("probe", "replay") for h in hits
+            h.get("probe_role")
+            in ("probe", "replay", "cors_browser_proof", "cors_replay", "cors_classified", "cors_browser_read_confirmed")
+            for h in hits
         )
         if probe_sent and not best:
             best = "probe_sent"
@@ -550,7 +595,10 @@ def finalize_phase1_runtime(
                 {},
             )
             terminal_state = str(r.get("terminal_result_state") or "")
-            if terminal_state == "browser_execution_confirmed" and confirming_browser:
+            if terminal_state in (
+                "browser_execution_confirmed",
+                "cors_browser_read_confirmed",
+            ) and confirming_browser:
                 decision = "confirmed_current_probe"
             elif browser_rows:
                 decision = "rejected_or_absent"

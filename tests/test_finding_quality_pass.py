@@ -190,11 +190,33 @@ def test_cors_without_proof_is_unverified():
 def test_cors_host_dedupe():
     stats = CrawlStats()
     detail = "CORS reflects arbitrary Origin (https://evil.example) with credentials — high risk"
-    stats.record_finding("cors", "high", "https://app.example/", detail)
+    # Same path + same detail collapses; distinct paths stay distinct (Phase-2).
+    stats.record_finding("cors", "high", "https://app.example/login", detail)
     stats.record_finding("cors", "high", "https://app.example/login", detail)
     stats.record_finding("cors", "high", "https://app.example/api/v1", detail)
-    assert len([f for f in stats.findings if f["category"] == "cors"]) == 1
-    assert stats.finding_repeat_suppressed == 2
+    assert len([f for f in stats.findings if f["category"] == "cors"]) == 2
+    assert stats.finding_repeat_suppressed == 1
+
+
+def test_cors_confirmed_not_collapsed_into_public_read():
+    stats = CrawlStats()
+    stats.record_finding(
+        "cors",
+        "info",
+        "https://app.example/cors/public",
+        "CORS uncredentialed_public_read on /cors/public",
+        evidence="acao=*; state=uncredentialed_public_read",
+    )
+    stats.record_finding(
+        "cors",
+        "medium",
+        "https://app.example/cors/open",
+        "CORS cors_browser_read_confirmed on /cors/open",
+        evidence="acao=https://proof.example; state=cors_browser_read_confirmed; canary=True",
+    )
+    cors = [f for f in stats.findings if f["category"] == "cors"]
+    assert len(cors) == 2
+    assert any("cors_browser_read_confirmed" in f["detail"] for f in cors)
 
 
 def test_js_intel_host_dedupe():

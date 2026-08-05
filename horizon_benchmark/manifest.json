@@ -1054,9 +1054,11 @@
       "family": "cors",
       "probe_family": "cors",
       "classification": "vulnerable",
-      "bucket": "passive_manual",
+      "bucket": "supported_required",
       "modes": [
-        "passive"
+        "safe",
+        "extended",
+        "lab"
       ],
       "expected_result_state": "",
       "expected_severity": "info",
@@ -1067,7 +1069,96 @@
       "title": "Overly permissive CORS",
       "catalog_expected": "cors finding reflecting Origin with credentials",
       "catalog_tags": [
-        "passive"
+        "passive",
+        "lab",
+        "extended",
+        "active"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/cors/public",
+      "method": "GET",
+      "parameter": "",
+      "family": "cors",
+      "probe_family": "cors",
+      "classification": "control",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "negative",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": true,
+      "mandatory": false,
+      "linked": true,
+      "title": "Public wildcard CORS without credentials",
+      "catalog_expected": "cross-origin public read is not high-severity without sensitive canary",
+      "catalog_tags": [
+        "passive",
+        "lab",
+        "control"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/cors/trusted",
+      "method": "GET",
+      "parameter": "",
+      "family": "cors",
+      "probe_family": "cors",
+      "classification": "control",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "negative",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": true,
+      "mandatory": false,
+      "linked": true,
+      "title": "CORS allowlist trusted origin only",
+      "catalog_expected": "disallowed proof origin remains unreadable (negative control)",
+      "catalog_tags": [
+        "passive",
+        "lab",
+        "control",
+        "fp-guard"
+      ],
+      "notes": ""
+    },
+    {
+      "path": "/cors/wildcard-creds",
+      "method": "GET",
+      "parameter": "",
+      "family": "cors",
+      "probe_family": "cors",
+      "classification": "control",
+      "bucket": "supported_required",
+      "modes": [
+        "safe",
+        "extended",
+        "lab"
+      ],
+      "expected_result_state": "negative",
+      "expected_severity": "info",
+      "expected_validation": "unverified",
+      "must_not_confirm": true,
+      "mandatory": false,
+      "linked": true,
+      "title": "Invalid wildcard+credentials header pair",
+      "catalog_expected": "browsers block credentialed wildcard reads \u2014 must not confirm",
+      "catalog_tags": [
+        "passive",
+        "lab",
+        "control",
+        "fp-guard"
       ],
       "notes": ""
     },
@@ -3896,8 +3987,8 @@
   ],
   "mandatory_supported_count": 19,
   "counts": {
-    "supported_required": 54,
-    "passive_manual": 89,
+    "supported_required": 58,
+    "passive_manual": 88,
     "unsupported": 12
   }
 }

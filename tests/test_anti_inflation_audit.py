@@ -223,7 +223,7 @@ def test_unsupported_and_passive_outside_active_recall_denominator():
         + inv["summary"]["passive_manual"]
         + inv["summary"]["unsupported"]
         == inv["summary"]["catalog_fixtures"]
-        == 155
+        == 158
     )
 
 
@@ -290,7 +290,7 @@ def test_inventory_supported_active_not_inflated_by_registry_alone():
     """Previously 48 came from cap_id presence; maturity may demote incomplete rows."""
     inv = build_fixture_inventory()
     s = inv["summary"]
-    assert s["catalog_fixtures"] == 155
+    assert s["catalog_fixtures"] == 158
     # Every supported_active row must be executable_* maturity
     for row in inv["fixtures"]:
         if row["support_classification"] == "supported_active":

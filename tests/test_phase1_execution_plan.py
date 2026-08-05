@@ -235,10 +235,10 @@ def test_stale_live_mark_not_kept_without_terminal_proof():
     assert row["capability_maturity_after"] == MATURITY_EXECUTABLE_UNVALIDATED
 
 
-def test_catalog_maturity_merge_reconciles_155():
+def test_catalog_maturity_merge_reconciles_158():
     clear_live_validated()
     inv = build_fixture_inventory()
     lifecycle = []
     counts = merge_catalog_maturity_counts(inv["fixtures"], lifecycle)
-    assert sum(counts.values()) == 155
+    assert sum(counts.values()) == 158
     assert counts.get(MATURITY_LIVE_VALIDATED, 0) == 0  # no stale marks

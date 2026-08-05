@@ -521,9 +521,15 @@ def assess_cors(
     from finding_proof import proof_has_cors_headers
 
     d = _detail_l(detail)
-    creds = "credential" in d
+    creds = "credential" in d or "acac=true" in d or "allow-credentials: true" in d
+    browser_confirmed = False
+    if isinstance(proof, dict):
+        nested = proof.get("cors") if isinstance(proof.get("cors"), dict) else {}
+        browser_confirmed = str(
+            nested.get("result_state") or proof.get("result_state") or ""
+        ) == "cors_browser_read_confirmed" or "cors_browser_read_confirmed" in d
     # Criticism fix: confirmed CORS requires ACAO (and ACAC when credentials claimed)
-    has_proof = proof_has_cors_headers(proof, require_credentials=creds)
+    has_proof = proof_has_cors_headers(proof, require_credentials=creds) or browser_confirmed
     if not has_proof:
         return ImpactResult(
             role="cors",
@@ -532,6 +538,19 @@ def assess_cors(
             summary="CORS configuration signal — impact unverified (no raw ACAO/ACAC proof stored).",
             validation="unverified",
             proof=None,
+        )
+    # Browser-readable canary confirmation from controlled proof origin.
+    if browser_confirmed:
+        return ImpactResult(
+            role="cors",
+            impact="confirmed" if creds else "possible",
+            severity="medium" if (creds or "canary=true" in d) else "low",
+            summary=(
+                "Controlled browser at a distinct proof origin read a canary-bound "
+                "cross-origin response (cors_browser_read_confirmed)."
+            ),
+            validation="confirmed",
+            proof=proof if isinstance(proof, (str, dict)) else None,
         )
     if not creds:
         return ImpactResult(

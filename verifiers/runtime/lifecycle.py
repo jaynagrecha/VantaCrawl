@@ -62,6 +62,23 @@ INCONCLUSIVE_COMPLETED_STATES = frozenset(
         "manual_validation_required",
         "behavior_changed",
         "input_identified",
+        # Phase-2 CORS non-confirming completed states
+        "passive_header_observed",
+        "reflected_origin_without_sensitive_read",
+        "uncredentialed_public_read",
+        "proof_origin_unavailable",
+        "controlled_session_unavailable",
+        "credential_prerequisite_missing",
+    }
+)
+
+# Explicit CORS negatives (completed probe, not vulnerable confirmation)
+CORS_TERMINAL_NEGATIVE_STATES = frozenset(
+    {
+        "browser_read_blocked",
+        "preflight_blocked",
+        "origin_not_allowed",
+        "wildcard_with_credentials_invalid",
     }
 )
 
@@ -108,6 +125,7 @@ def proof_type_for_state(result_state: str) -> str:
     st = (result_state or "").strip()
     mapping = {
         "browser_execution_confirmed": "browser_execution",
+        "cors_browser_read_confirmed": "cors_browser_read",
         "controlled_request_confirmed": "controlled_network_request",
         "oob_callback_confirmed": "oob_callback",
         "server_execution_confirmed": "server_side_execution",
@@ -156,6 +174,9 @@ def classify_lifecycle_outcome(row: Dict[str, Any]) -> str:
         return OUTCOME_TERMINAL_CONFIRMED
 
     if state == "negative" and probe_sent:
+        return OUTCOME_TERMINAL_NEGATIVE
+
+    if state in CORS_TERMINAL_NEGATIVE_STATES and probe_sent:
         return OUTCOME_TERMINAL_NEGATIVE
 
     if state in INCONCLUSIVE_COMPLETED_STATES and probe_sent:

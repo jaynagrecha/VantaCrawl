@@ -84,14 +84,71 @@ def csrf_action(handler, params: Dict[str, str], *, head_only: bool = False) -> 
     title="Overly permissive CORS",
     family="cors",
     expected="cors finding reflecting Origin with credentials",
-    tags=["passive"],
+    tags=["passive", "lab", "extended", "active"],
 )
 def cors_open(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
     origin = handler.headers.get("Origin") or "*"
+    canary = params.get("canary") or "CORS_CANARY_OPEN"
     headers = {
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Credentials": "true",
         "Vary": "Origin",
     }
-    body = page("CORS open", f"<pre> ACAO={html.escape(origin)} with credentials </pre>")
+    body = page(
+        "CORS open",
+        f"<pre> ACAO={html.escape(origin)} with credentials </pre>"
+        f"<pre>canary={html.escape(canary)}</pre>",
+    )
+    send(handler, 200, body, headers=headers, head_only=head_only)
+
+
+@register(
+    "/cors/public",
+    title="Public wildcard CORS without credentials",
+    family="cors",
+    expected="cross-origin public read is not high-severity without sensitive canary",
+    tags=["passive", "lab", "control"],
+)
+def cors_public(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Vary": "Origin",
+    }
+    body = page("CORS public", "<pre>public brochure text</pre>")
+    send(handler, 200, body, headers=headers, head_only=head_only)
+
+
+@register(
+    "/cors/trusted",
+    title="CORS allowlist trusted origin only",
+    family="cors",
+    expected="disallowed proof origin remains unreadable (negative control)",
+    tags=["passive", "lab", "control", "fp-guard"],
+)
+def cors_trusted(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
+    origin = handler.headers.get("Origin") or ""
+    trusted = "https://trusted.example"
+    headers = {"Vary": "Origin"}
+    if origin == trusted:
+        headers["Access-Control-Allow-Origin"] = trusted
+        headers["Access-Control-Allow-Credentials"] = "true"
+        body = page("CORS trusted", "<pre>canary=CORS_CANARY_TRUSTED</pre>")
+    else:
+        body = page("CORS trusted", "<pre>origin not allowed</pre>")
+    send(handler, 200, body, headers=headers, head_only=head_only)
+
+
+@register(
+    "/cors/wildcard-creds",
+    title="Invalid wildcard+credentials header pair",
+    family="cors",
+    expected="browsers block credentialed wildcard reads — must not confirm",
+    tags=["passive", "lab", "control", "fp-guard"],
+)
+def cors_wildcard_creds(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Credentials": "true",
+    }
+    body = page("CORS wildcard+creds", "<pre>canary=CORS_CANARY_STAR</pre>")
     send(handler, 200, body, headers=headers, head_only=head_only)

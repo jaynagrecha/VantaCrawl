@@ -1868,6 +1868,12 @@ async def _run_security_checks(
         if should_cors:
             stats._cors_hosts.add(host_key)
             cors_result = await check_cors(client, url)
+            # Always remember HTML/API URLs for Phase-2 browser CORS verification
+            cors_urls = getattr(stats, "_cors_candidate_urls", None)
+            if cors_urls is None:
+                stats._cors_candidate_urls = set()
+                cors_urls = stats._cors_candidate_urls
+            cors_urls.add(url)
             if cors_result:
                 if isinstance(cors_result, tuple) and len(cors_result) >= 2:
                     cors_issue, cors_proof = cors_result[0], cors_result[1]
@@ -2035,6 +2041,59 @@ async def _run_security_checks(
                             stats.active_probe_breaker = br.snapshot()
                     except Exception:
                         pass
+                # Phase-2 CORS browser verification (once per host candidate set)
+                try:
+                    from active_probe_kit import normalize_mode
+                    from verifiers.cors.verify import verify_cors_url
+
+                    cors_mode = normalize_mode(str(getattr(config, "active_probe_mode", "safe") or "safe"))
+                    if cors_mode in ("extended", "lab") and bool(getattr(config, "cors_check", True)):
+                        proof_base = str(getattr(config, "cors_proof_origin_base", "") or "").strip()
+                        proof_secret = str(getattr(config, "cors_proof_secret", "") or "").strip()
+                        done = getattr(stats, "_cors_verified_urls", None)
+                        if done is None:
+                            stats._cors_verified_urls = set()
+                            done = stats._cors_verified_urls
+                        # Prefer explicit CORS paths discovered on this page
+                        candidates = []
+                        path_l = (urlparse(url).path or "").lower()
+                        if "/cors/" in path_l or path_l.endswith("/cors"):
+                            candidates.append(url)
+                        for u in list(getattr(stats, "_cors_candidate_urls", set()) or []):
+                            if urlparse(u).netloc == urlparse(url).netloc:
+                                candidates.append(u)
+                        for cors_url in candidates:
+                            if cors_url in done:
+                                continue
+                            done.add(cors_url)
+                            browser_ok = str((cap or {}).get("browser_confirmation") or "") == "available"
+                            for item in await verify_cors_url(
+                                client,
+                                cors_url,
+                                mode=cors_mode,
+                                scan_id=scan_id,
+                                stats=stats,
+                                proof_origin_base=proof_base,
+                                proof_secret=proof_secret,
+                                browser_available=browser_ok,
+                                session_available=False,
+                                credential_mode="omit",
+                                output_callback=output_callback,
+                            ):
+                                category, severity, detail, evidence, meta = _unpack_finding(item)
+                                await emit(
+                                    category,
+                                    severity,
+                                    cors_url,
+                                    detail,
+                                    evidence=evidence,
+                                    verification=meta.get("verification"),
+                                    proof=meta.get("proof"),
+                                    confidence=meta.get("confidence"),
+                                    confidence_reason=meta.get("confidence_reason"),
+                                )
+                except Exception as cors_exc:
+                    output_callback(f"CORS active verify skipped: {type(cors_exc).__name__}")
             # Firebase Auth/Storage abuse when JS embeds firebaseConfig
             try:
                 from exploit_probes import probe_firebase_from_body

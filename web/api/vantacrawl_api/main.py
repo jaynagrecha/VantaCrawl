@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .bootstrap import startup
 from .config import get_settings
-from .routes import auth, jobs, meta, reports, settings_profiles
+from .routes import auth, cors_proof, jobs, meta, reports, settings_profiles
 from .services.embedded_worker import start_embedded_worker, stop_embedded_worker
 
 logging.basicConfig(level=logging.INFO)
@@ -46,6 +46,7 @@ app.include_router(jobs.router, prefix=PREFIX)
 app.include_router(reports.router, prefix=PREFIX)
 app.include_router(meta.router, prefix=PREFIX)
 app.include_router(settings_profiles.router, prefix=PREFIX)
+app.include_router(cors_proof.router, prefix=PREFIX)
 
 
 @app.get("/api/health")

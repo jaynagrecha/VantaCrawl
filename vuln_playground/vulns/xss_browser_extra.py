@@ -91,12 +91,19 @@ def clickjack(handler, params: Dict[str, str], *, head_only: bool = False) -> No
 )
 def cors_null(handler, params: Dict[str, str], *, head_only: bool = False) -> None:
     origin = handler.headers.get("Origin") or "null"
+    canary = params.get("canary") or "cors-null-session"
     # Reflect even null
     headers = {
         "Access-Control-Allow-Origin": origin if origin else "null",
         "Access-Control-Allow-Credentials": "true",
     }
-    send(handler, 200, page("CORS null", "<pre>secret=cors-null-session</pre>"), headers=headers, head_only=head_only)
+    send(
+        handler,
+        200,
+        page("CORS null", f"<pre>secret=cors-null-session</pre><pre>canary={canary}</pre>"),
+        headers=headers,
+        head_only=head_only,
+    )
 
 
 @register(
