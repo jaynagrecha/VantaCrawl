@@ -181,10 +181,21 @@ def apply_ledger_to_lifecycle(
             continue
 
         hits = _ledger_for_candidate(ledger, path=item.path, family=item.family)
-        probes = [h for h in hits if h.get("probe_role") == "probe"]
-        controls = [h for h in hits if h.get("probe_role") == "control"]
+        probes = [
+            h
+            for h in hits
+            if h.get("probe_role")
+            in ("probe", "cors_browser_proof", "cors_classified", "cors_browser_read_confirmed")
+        ]
+        controls = [
+            h
+            for h in hits
+            if h.get("probe_role") in ("control", "cors_negative_control")
+        ]
         baselines = [h for h in hits if h.get("probe_role") == "baseline"]
-        replays = [h for h in hits if h.get("probe_role") == "replay"]
+        replays = [
+            h for h in hits if h.get("probe_role") in ("replay", "cors_replay")
+        ]
         form_hits = [
             h
             for h in hits
@@ -196,7 +207,13 @@ def apply_ledger_to_lifecycle(
             h
             for h in hits
             if str(h.get("probe_role") or "").startswith("browser")
-            or h.get("result_state") in ("browser_execution_confirmed", "browser_execution_failed")
+            or str(h.get("probe_role") or "").startswith("cors_")
+            or h.get("result_state")
+            in (
+                "browser_execution_confirmed",
+                "browser_execution_failed",
+                "cors_browser_read_confirmed",
+            )
         ]
         # Route visit alone (crawl phase) never counts as verification — only active_probe hits.
         row["route_visited"] = bool(hits)
@@ -207,7 +224,9 @@ def apply_ledger_to_lifecycle(
         best = _best_state(states)
         # If probes ran but state empty → probe_sent nonterminal
         probe_sent = bool(probes) or any(
-            h.get("probe_role") in ("probe", "replay") for h in hits
+            h.get("probe_role")
+            in ("probe", "replay", "cors_browser_proof", "cors_replay", "cors_classified", "cors_browser_read_confirmed")
+            for h in hits
         )
         if probe_sent and not best:
             best = "probe_sent"

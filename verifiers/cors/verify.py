@@ -444,6 +444,26 @@ async def verify_cors_url(
             "passive_header_observed",
         )
 
+    # Canonical ledger row with classified state (not raw browser decision)
+    _record(
+        stats,
+        scan_id=scan_id,
+        candidate_id=candidate_id,
+        probe_id=probe_id,
+        nonce=nonce,
+        url=url,
+        result_state=state,
+        probe_role="cors_browser_read_confirmed" if is_confirmed(state) else "cors_classified",
+        meta={
+            "status": int((browser_result or {}).get("status") or status or 0),
+            "content_type": str((browser_result or {}).get("content_type") or obs.content_type or ""),
+            "body_len": int((browser_result or {}).get("body_len") or 0),
+            "browser_context_id": str((browser_result or {}).get("browser_context_id") or ""),
+            "probe_name": "cors_classified",
+            "classification": ",".join(obs.selection_reasons),
+        },
+    )
+
     if emit:
         sev = str(classified.get("severity") or "info")
         detail = f"CORS {state} on {urlparse(url).path or '/'}"

@@ -45,21 +45,23 @@ def classify_cors(
     rr = replay_result or {}
     nr = negative_result or {}
 
-    # Wildcard + credentials is invalid in browsers — never confirm from headers alone.
-    if acao == "*" and acac and not (br.get("readable") and br.get("canary_found")):
-        # If browser somehow ran, it should be blocked
-        if br.get("decision") in ("browser_read_blocked", "readable_canary_missing") or br.get("readable") is False:
+    # Wildcard + credentials is invalid for credentialed browser reads.
+    # Never emit cors_browser_read_confirmed for ACAO:* + ACAC:true — even if an
+    # uncredentialed fetch can read public body content under credentials:omit.
+    if acao == "*" and acac:
+        if br.get("readable") and not (credential_mode == "include"):
             return {
                 "result_state": STATE_WILDCARD_WITH_CREDENTIALS_INVALID,
                 "severity": "info",
                 "confidence": "high",
-                "verification": "not_exploitable",
+                "verification": "not_exploitable_wildcard_credentials",
+                "note": "uncredentialed_read_ignored_for_star_acac",
             }
         return {
             "result_state": STATE_WILDCARD_WITH_CREDENTIALS_INVALID,
             "severity": "info",
             "confidence": "high",
-            "verification": "header_only",
+            "verification": "not_exploitable",
         }
 
     if not proof_origin_available:

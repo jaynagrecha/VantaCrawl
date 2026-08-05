@@ -91,6 +91,32 @@ def test_wildcard_plus_credentials_not_confirmed():
     assert not is_confirmed(out["result_state"])
 
 
+def test_wildcard_plus_credentials_uncredentialed_read_still_not_confirmed():
+    """ACAO:* + ACAC:true must never become cors_browser_read_confirmed."""
+    out = classify_cors(
+        mode="lab",
+        selection_reasons=["wildcard_origin", "credentials_allowed", "wildcard_with_credentials_header"],
+        acao="*",
+        acac=True,
+        proof_origin_available=True,
+        browser_available=True,
+        credential_mode="omit",
+        session_available=False,
+        browser_result={
+            "readable": True,
+            "canary_found": True,
+            "decision": "confirmed_current_probe",
+            "correlation_ok": True,
+        },
+        replay_result={"readable": True, "canary_found": True, "correlation_ok": True},
+        negative_result={"readable": False, "canary_found": False, "correlation_ok": True},
+        sensitive=True,
+        public_only=False,
+    )
+    assert out["result_state"] == STATE_WILDCARD_WITH_CREDENTIALS_INVALID
+    assert not is_confirmed(out["result_state"])
+
+
 def test_public_uncredentialed_read_classification():
     out = classify_cors(
         mode="lab",
