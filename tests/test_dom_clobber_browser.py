@@ -132,6 +132,13 @@ def patch_analyze(monkeypatch):
 
         monkeypatch.setattr("dom_clobber.browser.analyze_clobber_page", _analyze)
         monkeypatch.setattr(
+            "dom_clobber.browser.open_and_inventory_page",
+            lambda driver, url, wait_seconds=0.8: {
+                "namedWindow": ["vendorConfig"],
+                "elements": [{"id": "vendorConfig", "name": ""}],
+            },
+        )
+        monkeypatch.setattr(
             "dom_clobber.browser.open_probe_url",
             lambda driver, url, wait_seconds=0.8: {
                 "browser_session_id": "bs_inv",

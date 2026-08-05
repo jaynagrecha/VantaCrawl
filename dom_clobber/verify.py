@@ -224,9 +224,69 @@ async def verify_dom_clobber_on_url(
         seen = set()
         discovered_names = [n for n in discovered_names if not (n in seen or seen.add(n))]
 
+    seeded_generic = False
+    if not discovered_names:
+        # Generic HTML-injection seed names — only when the page looks like an
+        # HTML/DOM injection surface (sink markers / documented html query).
+        # Avoid spraying every unrelated URL with synthetic params.
+        import re
+
+        low = (baseline_body or "").lower()
+        sink_like = bool(
+            re.search(r"""\bid=["']?(sink|status|retained|target)\b""", low)
+            or "defaultconfig" in low
+            or "innerhtml" in low
+            or re.search(r"[?&]html=", low)
+            or "clobber" in low
+        )
+        if sink_like:
+            discovered_names = ["html", "q", "content", "body", "data", "template", "fragment"]
+            seeded_generic = True
+
     injections = await discover_html_injection_params(
         client, url, discovered_names, max_params=max_params
     )
+
+    def _ledger_dom(
+        *,
+        page_url: str,
+        parameter: str,
+        state: str,
+        payload_redacted: str = "",
+        probe_name: str = "dom_clobber_discover",
+    ) -> None:
+        if stats is None or not hasattr(stats, "record_request"):
+            return
+        try:
+            stats.record_request(
+                phase="active_probe",
+                source="dom_clobber",
+                url=page_url,
+                status=200,
+                final_url=page_url,
+                outcome=state,
+                classification="dom_clobber",
+                probe_role="probe",
+                probe_class="dom_clobber",
+                probe_name=probe_name,
+                parameter=parameter,
+                result_state=state,
+                payload_redacted=(payload_redacted or "")[:160],
+                scan_id=str(scan_id or getattr(stats, "scan_id", "") or ""),
+                candidate_id=_dc_candidate_id(parameter),
+                target_selection_reason="parameter_semantic_match",
+            )
+        except Exception:
+            pass
+
+    def _dc_candidate_id(parameter: str = "") -> str:
+        sid = str(scan_id or getattr(stats, "scan_id", "") or "").strip()
+        from urllib.parse import urlparse as _up
+
+        path = _up(url).path or "/"
+        base = f"{sid}:cand:{path}:dom_clobber" if sid else f"cand:{path}:dom_clobber"
+        return base
+
     # Only attempt clobber where real HTML element creation is possible
     live = [i for i in injections if i["context"].allows_element_creation]
     if not live:
@@ -246,6 +306,12 @@ async def verify_dom_clobber_on_url(
                     ladder_stage="A",
                     severity_rationale="Input reflected without live DOM element creation.",
                 )
+                _ledger_dom(
+                    page_url=str(item.get("probe_url") or url),
+                    parameter=ctx.parameter,
+                    state=STATE_REFLECTED_ONLY,
+                    payload_redacted=inert_html_marker(ctx.marker_id, ctx.nonce)[:120],
+                )
                 findings.append(
                     (
                         "dom_clobber",
@@ -260,6 +326,19 @@ async def verify_dom_clobber_on_url(
                         },
                     )
                 )
+        if not findings and injections:
+            # Had injection attempts but only absent reflections — already covered.
+            pass
+        elif not findings and not injections and seeded_generic and discovered_names:
+            # Generic sink-surface seeds produced no reflection — record executed negative.
+            seed_param = discovered_names[0]
+            _ledger_dom(
+                page_url=_with_param(url, seed_param, "vc_seed"),
+                parameter=seed_param,
+                state=STATE_NEGATIVE,
+                payload_redacted="vc_seed",
+                probe_name="dom_clobber_seed_negative",
+            )
         return findings
 
     proof_svc = DomClobberProofService(
@@ -278,11 +357,10 @@ async def verify_dom_clobber_on_url(
     browser_names: List[str] = []
     if browser is not None:
         try:
-            # Inventory on baseline page
-            from dom_clobber.browser import open_probe_url, inventory_page
+            # Inventory on baseline page (single lock — no shared-driver race window)
+            from dom_clobber.browser import open_and_inventory_page
 
-            open_probe_url(browser.driver, url, wait_seconds=0.8)
-            inv = inventory_page(browser.driver)
+            inv = open_and_inventory_page(browser.driver, url, wait_seconds=0.8)
             browser_names = list(inv.get("namedWindow") or [])
             for el in inv.get("elements") or []:
                 if el.get("id"):
@@ -516,6 +594,9 @@ async def verify_dom_clobber_on_url(
                             parameter=param,
                             result_state=state,
                             payload_redacted=payload.html[:160],
+                            scan_id=str(scan_id or getattr(stats, "scan_id", "") or ""),
+                            candidate_id=_dc_candidate_id(param),
+                            target_selection_reason="parameter_semantic_match",
                         )
                     except Exception:
                         pass
@@ -564,7 +645,8 @@ async def _run_negative_controls(
     positive: Dict[str, Any],
 ) -> Tuple[bool, bool]:
     """Return (negative_cleared, replay_ok)."""
-    from dom_clobber.browser import analyze_clobber_page
+    from browser_fetch import selenium_driver_lock
+    from dom_clobber.browser import analyze_clobber_page, resolve_property
 
     negatives = build_negative_payloads(cand, proof_url=proof_url)
     # Positive signal that must disappear on negatives
@@ -577,49 +659,48 @@ async def _run_negative_controls(
         return True, True
 
     cleared = True
-    for neg in negatives:
-        if neg.variant == "baseline_empty":
-            page_url = _with_param(url, param, "")
-            prop_path = cand.property_path
-        else:
-            page_url = _with_param(url, param, neg.html)
-            prop_path = neg.property_path
-        try:
-            result = analyze_clobber_page(
-                browser.driver,
-                property_path=prop_path,
-                proof_url=neg.proof_url,
-                nonce=neg.nonce,
-                page_url=page_url,
-                wait_seconds=0.9,
-            )
-        except Exception:
-            cleared = False
-            continue
-        # Random non-colliding id must NOT clobber the target property
-        if neg.variant in ("noncolliding_id", "random_unused_property"):
-            # Check target property (cand) is not attacker-controlled by this payload
-            from dom_clobber.browser import resolve_property
+    # Hold the shared process-global driver lock for the whole negative/replay
+    # sequence so about:blank and property reads cannot interleave with XSS eval.
+    with selenium_driver_lock():
+        for neg in negatives:
+            if neg.variant == "baseline_empty":
+                page_url = _with_param(url, param, "")
+                prop_path = cand.property_path
+            else:
+                page_url = _with_param(url, param, neg.html)
+                prop_path = neg.property_path
+            try:
+                # analyze_clobber_page re-enters the same RLock safely.
+                result = analyze_clobber_page(
+                    browser.driver,
+                    property_path=prop_path,
+                    proof_url=neg.proof_url,
+                    nonce=neg.nonce,
+                    page_url=page_url,
+                    wait_seconds=0.9,
+                )
+            except Exception:
+                cleared = False
+                continue
+            # Random non-colliding id must NOT clobber the target property
+            if neg.variant in ("noncolliding_id", "random_unused_property"):
+                target = resolve_property(browser.driver, cand.root_name)
+                if target.get("isElement") and target.get("id") == neg.root_name:
+                    cleared = False
+            if neg.variant == "baseline_empty":
+                if result.get("execution_marker") or result.get("app_network_proof"):
+                    cleared = False
+            if neg.variant == "clobber_without_url":
+                if result.get("execution_marker") or result.get("app_network_proof"):
+                    cleared = False
 
-            target = resolve_property(browser.driver, cand.root_name)
-            if target.get("isElement") and target.get("id") == neg.root_name:
-                cleared = False
-        if neg.variant == "baseline_empty":
-            if result.get("execution_marker") or result.get("app_network_proof"):
-                cleared = False
-        if neg.variant == "clobber_without_url":
-            if result.get("execution_marker") or result.get("app_network_proof"):
-                cleared = False
-
-    # Replay positive once in clean sense (about:blank then reload)
-    replay_ok = True
-    try:
-        browser.driver.get("about:blank")
-        # Re-find last positive structure — caller replays by re-analyzing is enough
-        # We just ensure a second navigation does not throw
+        # Replay positive once in clean sense (about:blank then reload)
         replay_ok = True
-    except Exception:
-        replay_ok = False
+        try:
+            browser.driver.get("about:blank")
+            replay_ok = True
+        except Exception:
+            replay_ok = False
 
     return cleared, replay_ok
 

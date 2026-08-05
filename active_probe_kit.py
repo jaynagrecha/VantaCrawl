@@ -1067,6 +1067,58 @@ def _html_escape(s: str) -> str:
     )
 
 
+def _xss_live_event_markup(text: str, token: str) -> bool:
+    """True when an event-handler appears as live HTML/attribute (not entity-encoded)."""
+    if not token:
+        return False
+    body = text or ""
+    # Real open-tag carrying on* = ...token
+    if re.search(
+        rf"(?is)<[a-z][a-z0-9:_-]*\b[^>]*\bon[a-z]+\s*=[^>]*{re.escape(token)}",
+        body,
+    ):
+        return True
+    # Attribute-context injection: onfocus/onload present with token nearby,
+    # not sitting inside an HTML-entity-escaped blob (&lt;…&gt;).
+    for m in re.finditer(
+        rf"(?is)\bon(?:load|focus|error|click|mouseover)\s*=[^&<\n]{{0,160}}{re.escape(token)}",
+        body,
+    ):
+        prefix = body[max(0, m.start() - 24) : m.start()].lower()
+        if "&lt;" in prefix or "&#60;" in prefix:
+            continue
+        return True
+    return False
+
+
+def _xss_payload_structure_inert(text: str, payload: str, token: str) -> bool:
+    """True when the probe payload's HTML/event structure was HTML-encoded (inert)."""
+    pl = payload or ""
+    body = text or ""
+    if not pl or not token:
+        return False
+    structural = bool(
+        re.search(r"(?i)<(?:svg|img|script|iframe|math|body|input|b)\b", pl)
+        or "onload=" in pl
+        or "onfocus=" in pl
+        or "onerror=" in pl
+    )
+    if not structural:
+        return False
+    # Live markup / live attribute handlers → not inert.
+    if _xss_live_event_markup(body, token):
+        return False
+    if re.search(rf"(?is)<b\b[^>]*\bid=['\"]?{re.escape(token)}", body):
+        return False
+    if re.search(rf"(?is)<script\b[^>]*>[^<]{{0,200}}{re.escape(token)}", body):
+        return False
+    # Entity-encoded open tags → inert encoding control.
+    if "&lt;" in body.lower() or "&#60;" in body.lower():
+        return True
+    # Structural payload sent but no live handler/node with the token.
+    return token in body
+
+
 def classify_xss(body: str, token: str, baseline: str, *, payload: str = "", dom_id: str = "") -> Optional[Dict[str, str]]:
     text = body or ""
     base = baseline or ""
@@ -1080,6 +1132,10 @@ def classify_xss(body: str, token: str, baseline: str, *, payload: str = "", dom
                 continue
             return True
         return False
+
+    # Encoded / inert structural payloads (e.g. &lt;svg onload=...&gt;) → negative, not attr breakout.
+    if _xss_payload_structure_inert(text, payload, token):
+        return None
 
     # Encoded-only (e.g. &lt;VCXSS_a81f&gt;) → not vulnerable
     if not _raw_token_present(text) and not (dom_id and re.search(rf'(?is)<b\b[^>]*\bid=["\']?{re.escape(dom_id)}', text)):
@@ -1105,7 +1161,7 @@ def classify_xss(body: str, token: str, baseline: str, *, payload: str = "", dom
         }
 
     if re.search(r"(?is)<script\b[^>]*>[^<]{0,200}" + re.escape(token), text) or re.search(
-        r"(?is)\bon\w+\s*=\s*['\"][^'\"]{0,80}" + re.escape(token),
+        rf"(?is)<[a-z][a-z0-9:_-]*\b[^>]*\bon[a-z]+\s*=[^>]*{re.escape(token)}",
         text,
     ):
         return {
@@ -1117,8 +1173,9 @@ def classify_xss(body: str, token: str, baseline: str, *, payload: str = "", dom
             "verification": "detected",
         }
 
-    if "onload=" in payload or "onfocus=" in payload:
-        if _raw_token_present(text):
+    if "onload=" in payload or "onfocus=" in payload or "onerror=" in payload:
+        # Only escalate when the handler exists as live HTML/attribute — not when entity-encoded.
+        if _xss_live_event_markup(text, token):
             return {
                 "severity": "medium",
                 "detail_bit": "medium-confidence XSS candidate (attribute/event context; not browser-confirmed)",
@@ -1196,14 +1253,20 @@ async def run_active_probe_kit(
     if mode == "passive":
         return []
 
-    if mode == "passive":
-        settings.coverage_notes = {
-            "traversal_canary": "skipped",
-            "reason": "passive mode",
-            "xss_browser": "skipped",
-            "oob_callback": "skipped",
-        }
-        return []
+    # Canonical scan identity required before any ledger emission.
+    sid = str(getattr(settings, "scan_id", "") or "").strip()
+    if not sid and settings.stats is not None:
+        sid = str(getattr(settings.stats, "scan_id", "") or "").strip()
+    if not sid:
+        import uuid as _uuid
+
+        sid = str(_uuid.uuid4())
+    settings.scan_id = sid
+    if settings.stats is not None:
+        try:
+            setattr(settings.stats, "scan_id", sid)
+        except Exception:
+            pass
 
     nonce = new_probe_nonce()
     canary_path, canary_content = resolve_traversal_canary(settings, nonce)
@@ -1346,6 +1409,10 @@ async def run_active_probe_kit(
         result_state: str = "",
         values: Optional[dict] = None,
         target_selection_reason: str = "",
+        probe_id: str = "",
+        nonce: str = "",
+        candidate_id: str = "",
+        scan_id: str = "",
     ) -> None:
         if stats is None or not hasattr(stats, "record_request"):
             return
@@ -1396,6 +1463,10 @@ async def run_active_probe_kit(
                 payload_redacted=redact_payload(payload),
                 result_state=state_out,
                 target_selection_reason=reason_out,
+                probe_id=str(probe_id or "")[:160],
+                nonce=str(nonce or "")[:80],
+                candidate_id=str(candidate_id or "")[:200],
+                scan_id=str(scan_id or getattr(settings, "scan_id", "") or "")[:120],
             )
         except Exception:
             pass
@@ -1407,10 +1478,14 @@ async def run_active_probe_kit(
         parameter: str = "",
         target_selection_reason: str = "",
         prefer_roles: Optional[Sequence[str]] = None,
+        target_url: str = "",
+        probe_id: str = "",
     ) -> None:
         """Stamp the most recent matching active-probe ledger row with a final state.
 
         Prefer ``probe`` rows so replay/control stamps do not erase the probe verdict.
+        Binding requires matching URL path (and probe_id when present) so browser
+        confirmation for one candidate cannot overwrite another candidate's row.
         """
         if stats is None:
             return
@@ -1419,6 +1494,11 @@ async def run_active_probe_kit(
             return
         state_out = (result_state or "").strip() or STATE_INCONCLUSIVE
         role_order = list(prefer_roles or ("probe", "replay", "control", "baseline"))
+        want_path = (urlparse(target_url).path or "").rstrip("/") if target_url else ""
+
+        def _row_path(row: dict) -> str:
+            return (urlparse(str(row.get("url") or row.get("final_url") or "")).path or "").rstrip("/")
+
         for role in role_order:
             for row in reversed(ledger):
                 if not isinstance(row, dict) or row.get("phase") != "active_probe":
@@ -1429,9 +1509,28 @@ async def run_active_probe_kit(
                     continue
                 if parameter and row.get("parameter") != parameter:
                     continue
+                if want_path and _row_path(row) != want_path:
+                    continue
+                if probe_id:
+                    row_pid = str(row.get("probe_id") or "")
+                    if row_pid and row_pid != probe_id:
+                        continue
+                # Never let a stronger foreign confirmation overwrite an existing
+                # terminal confirmation belonging to a different probe_id/path.
+                prev = str(row.get("result_state") or "")
+                if (
+                    prev == STATE_BROWSER_EXEC
+                    and state_out == STATE_BROWSER_EXEC
+                    and probe_id
+                    and str(row.get("probe_id") or "")
+                    and str(row.get("probe_id") or "") != probe_id
+                ):
+                    continue
                 row["result_state"] = state_out[:80]
                 if target_selection_reason and not row.get("target_selection_reason"):
                     row["target_selection_reason"] = str(target_selection_reason)[:80]
+                if probe_id and not row.get("probe_id"):
+                    row["probe_id"] = str(probe_id)[:160]
                 return
 
     async def _send(
@@ -1447,6 +1546,9 @@ async def run_active_probe_kit(
         payload: str = "",
         result_state: str = "",
         target_selection_reason: str = "",
+        probe_id: str = "",
+        nonce: str = "",
+        candidate_id: str = "",
     ):
         t0 = time.monotonic()
         try:
@@ -1480,6 +1582,9 @@ async def run_active_probe_kit(
                 result_state=result_state or STATE_BASELINE_FAILED,
                 values=values,
                 target_selection_reason=target_selection_reason,
+                probe_id=probe_id,
+                nonce=nonce,
+                candidate_id=candidate_id,
             )
             raise
         duration_ms = (time.monotonic() - t0) * 1000.0
@@ -1537,6 +1642,9 @@ async def run_active_probe_kit(
             result_state=result_state or default_state or STATE_INCONCLUSIVE,
             values=values,
             target_selection_reason=target_selection_reason,
+            probe_id=probe_id,
+            nonce=nonce,
+            candidate_id=candidate_id,
         )
         try:
             setattr(resp, "_vc_duration_ms", duration_ms)
@@ -1640,6 +1748,15 @@ async def run_active_probe_kit(
             trial = dict(values)
             local_meta = dict(spec.meta or {})
             payload_value = spec.payload
+            # Per-candidate XSS probe nonce — never reuse a kit-wide token across probes.
+            if spec.kind == "xss":
+                old_tok = str(local_meta.get("token") or "")
+                probe_tok = f"VCXSS_{secrets.token_hex(4)}"
+                if old_tok:
+                    payload_value = str(payload_value).replace(old_tok, probe_tok)
+                    if str(local_meta.get("dom_id") or "") == old_tok:
+                        local_meta["dom_id"] = probe_tok
+                local_meta["token"] = probe_tok
             if _should_replace_mutation(spec, field):
                 trial[field] = payload_value
             elif _search_param(field) or spec.kind in ("sqli_error", "sqli_boolean", "sqli_time"):
@@ -1652,6 +1769,22 @@ async def run_active_probe_kit(
                 f"{spec.payload_class}:{field}:{urlparse(target).path}:{secrets.token_hex(4)}"
             )
             local_meta["probe_id"] = probe_id
+            # Stable candidate identity: scan + path + family (parameter is a separate field).
+            # Must match Phase-1 surface fixture_id shape: {scan_id}:cand:{path}:{family}
+            _sid = str(getattr(settings, "scan_id", "") or "").strip()
+            if not _sid:
+                raise RuntimeError(
+                    "active probe refused: scan_id missing before candidate_id generation"
+                )
+            _fam = KIND_TO_FAMILY.get(spec.kind) or spec.category
+            candidate_id = f"{_sid}:cand:{urlparse(target).path}:{_fam}"
+            local_meta["candidate_id"] = candidate_id
+            probe_nonce = str(
+                local_meta.get("token")
+                or local_meta.get("nonce")
+                or local_meta.get("marker")
+                or ""
+            )
 
             if oob is not None and spec.kind in ("ssrf", "xxe") and local_meta.get("callback"):
                 try:
@@ -1736,6 +1869,9 @@ async def run_active_probe_kit(
                     parameter=field,
                     payload=payload_value,
                     target_selection_reason=fam_reason,
+                    probe_id=probe_id,
+                    nonce=probe_nonce,
+                    candidate_id=candidate_id,
                 )
                 elapsed_ms = float(getattr(resp, "_vc_duration_ms", 0) or 0) or (
                     (time.monotonic() - t0) * 1000.0
@@ -1749,6 +1885,8 @@ async def run_active_probe_kit(
                         probe_name=spec.payload_class,
                         parameter=field,
                         target_selection_reason=fam_reason,
+                        target_url=target,
+                        probe_id=probe_id,
                     )
                     continue
 
@@ -1932,21 +2070,23 @@ async def run_active_probe_kit(
                         payload=payload_value,
                         dom_id=str(local_meta.get("dom_id") or ""),
                     )
-                    target_path = (urlparse(target).path or "").lower()
-                    # Horizon reflection/control fixtures must stay reflected_only even when
-                    # a browser evaluator is wired for the run (lab mode).
-                    reflection_only_fixture = any(
-                        frag in target_path
-                        for frag in ("/xss/reflected", "/xss/encoded", "/xss/attr")
-                    )
-                    if settings.browser_evaluate and not reflection_only_fixture and (
-                        local_meta.get("needs_browser")
-                        or (
-                            disp
-                            and disp.get("validation_state")
-                            in (STATE_ATTR_BREAKOUT, STATE_SINK_CANDIDATE)
-                        )
-                    ):
+                    # Browser confirmation is generic — never gate on fixture path names.
+                    # Require reflection/live-markup evidence first so encoded/inert
+                    # controls do not inherit browser attempts or foreign markers.
+                    # Reflection alone stays reflected_only; only current-probe nonce
+                    # execution may produce browser_execution_confirmed.
+                    browser_candidate = False
+                    if settings.browser_evaluate:
+                        if disp and disp.get("validation_state") in (
+                            STATE_ATTR_BREAKOUT,
+                            STATE_SINK_CANDIDATE,
+                        ):
+                            browser_candidate = True
+                        elif local_meta.get("needs_browser") and disp is not None:
+                            # needs_browser payloads still need some HTTP reflection
+                            # (reflected_only / html_injection / sink) before browser.
+                            browser_candidate = True
+                    if browser_candidate:
                         try:
                             from active_probe_browser import build_probe_page_url
 
@@ -1964,18 +2104,26 @@ async def run_active_probe_kit(
                                 probe_name=spec.payload_class,
                                 parameter=field,
                                 payload=payload_value,
+                                scan_id=str(getattr(settings, "scan_id", "") or ""),
+                                candidate_id=candidate_id,
+                                probe_id=probe_id,
+                                nonce=token,
+                                target_url=target,
+                                target_parameter=field,
                             )
                             executed = False
                             reproduced = False
+                            correlation_ok = True
                             if isinstance(eval_result, dict):
                                 executed = eval_result.get("executed") is True
                                 reproduced = bool(eval_result.get("reproduced", True))
+                                correlation_ok = eval_result.get("correlation_ok", True) is not False
                                 browser_meta = dict(eval_result)
                             else:
                                 executed = eval_result is True
                                 reproduced = executed
                                 browser_meta = {"executed": executed, "reproduced": reproduced}
-                            if executed and reproduced:
+                            if executed and reproduced and correlation_ok:
                                 hit = True
                                 finding_category = "xss"
                                 severity = "high"
@@ -2006,8 +2154,7 @@ async def run_active_probe_kit(
                         new_evidence = [detail_bit]
                         evidence_line = f"xss: {token}"
                         if (
-                            not reflection_only_fixture
-                            and not settings.browser_evaluate
+                            not settings.browser_evaluate
                             and validation_state != STATE_REFLECTED_ONLY
                         ):
                             detail_bit = (
@@ -2219,6 +2366,8 @@ async def run_active_probe_kit(
                                     parameter=field,
                                     target_selection_reason=fam_reason,
                                     prefer_roles=("probe",),
+                                    target_url=target,
+                                    probe_id=probe_id,
                                 )
                                 continue
                         elif reflected:
@@ -2484,6 +2633,8 @@ async def run_active_probe_kit(
                         probe_name=spec.payload_class,
                         parameter=field,
                         target_selection_reason=fam_reason,
+                        target_url=target,
+                        probe_id=probe_id,
                     )
                     continue
 
@@ -2501,6 +2652,8 @@ async def run_active_probe_kit(
                     parameter=field,
                     target_selection_reason=fam_reason,
                     prefer_roles=("probe",),
+                    target_url=target,
+                    probe_id=probe_id,
                 )
 
                 proof = build_proof(
@@ -2532,9 +2685,19 @@ async def run_active_probe_kit(
                         "console_errors": browser_meta.get("console_errors") or [],
                         "csp_blocked": browser_meta.get("csp_blocked") or [],
                         "browser_request_id": browser_meta.get("browser_request_id"),
+                        "browser_context_id": browser_meta.get("browser_context_id"),
                         "evidence": browser_meta.get("evidence"),
                         "observed_value": browser_meta.get("value"),
                         "method": browser_meta.get("method"),
+                        "scan_id": browser_meta.get("scan_id"),
+                        "candidate_id": browser_meta.get("candidate_id"),
+                        "probe_id": browser_meta.get("probe_id"),
+                        "nonce": browser_meta.get("nonce"),
+                        "marker_before": browser_meta.get("marker_before"),
+                        "marker_after": browser_meta.get("marker_after"),
+                        "correlation_ok": browser_meta.get("correlation_ok"),
+                        "correlation_reason": browser_meta.get("correlation_reason"),
+                        "correlation_decision": browser_meta.get("correlation_decision"),
                     }
                 # Only browser/server/OOB/canary proof may be validation=confirmed.
                 # Attribute/event XSS candidates stay unverified.
@@ -2566,6 +2729,8 @@ async def run_active_probe_kit(
                     probe_name=spec.payload_class,
                     parameter=field,
                     target_selection_reason=fam_reason,
+                    target_url=target,
+                    probe_id=probe_id,
                 )
                 continue
 
@@ -2574,25 +2739,36 @@ async def run_active_probe_kit(
         MIN_APPLICABILITY_SCORE,
         classify_applicability,
         path_only_url as _path_only_url,
+        primary_route_family,
+        seed_params_for_path,
         selection_coverage_report,
-        synthetic_params_for_path,
         with_query_params,
-        _fixture_family_for_path,
         _norm_path,
     )
 
     path = _norm_path(url)
-    fixture_fam = _fixture_family_for_path(path)
-    synth = synthetic_params_for_path(path)
+    route_fam = primary_route_family(path)
+    seeds, seed_fam, seed_reason = seed_params_for_path(path)
     parsed = urlparse(url)
     pairs = list(parse_qsl(parsed.query, keep_blank_values=True))
-    if synth:
+    targeting_param_source = "discovered_query"
+    if not pairs and seeds:
+        for k, v in seeds.items():
+            pairs.append((k, v))
+        targeting_param_source = seed_reason or "family_fallback_seed"
+        url = with_query_params(_path_only_url(url), dict(pairs))
+    elif pairs and seeds:
+        # Do not overwrite discovered params; seeds only fill missing keys when
+        # route semantics already justify the family.
         existing = {n for n, _ in pairs}
-        for k, v in synth.items():
+        filled = False
+        for k, v in seeds.items():
             if k not in existing:
                 pairs.append((k, v))
-        # Prefer a concrete injectable URL (path + synthetic/query params).
-        url = with_query_params(_path_only_url(url) if not pairs else url, dict(pairs))
+                filled = True
+        if filled:
+            targeting_param_source = "discovered_query_plus_family_seed"
+            url = with_query_params(url, dict(pairs))
 
     probe_families = ("sqli", "rce", "ssti", "ssrf", "traversal", "crlf", "redirect", "xss")
     selected_plan_paths: Dict[str, set] = {f: set() for f in probe_families}
@@ -2604,13 +2780,13 @@ async def run_active_probe_kit(
                 path=path,
                 param=pname,
                 family=family,
-                allow_generic_fallback=(fixture_fam is None),
+                allow_generic_fallback=(route_fam is None),
             )
-            if fixture_fam == family:
-                score = max(score, 100)
+            if route_fam == family:
+                score = max(score, 95)
                 reason = "route_semantic_match"
-            # Dedicated fixtures: only the matching family (prevents spray).
-            if fixture_fam and fixture_fam != family and score < 95:
+            # Strong route match: prefer matching family (prevents spray).
+            if route_fam and route_fam != family and score < 95:
                 continue
             min_score = MIN_APPLICABILITY_SCORE.get(reason, 40)
             if score < min_score:
@@ -2636,7 +2812,10 @@ async def run_active_probe_kit(
                 probe_class="baseline",
                 probe_name="baseline",
                 target_selection_reason=(
-                    "route_semantic_match" if fixture_fam else "parameter_semantic_match"
+                    targeting_param_source
+                    if targeting_param_source.startswith("family")
+                    or targeting_param_source.endswith("seed")
+                    else ("route_semantic_match" if route_fam else "parameter_semantic_match")
                 ),
             )
             baseline_status, baseline_body, base_hdrs, baseline_final = _meta(base_resp)
@@ -2697,7 +2876,7 @@ async def run_active_probe_kit(
             probed += 1
 
     # --- Forms (parameter-semantic; capped; never override dedicated fixture routing) ---
-    if forms and not fixture_fam:
+    if forms and not route_fam:
         for form in (forms or [])[: max(0, int(settings.max_forms or 3))]:
             action = form.get("action") or url
             method = (form.get("method") or "GET").upper()
@@ -2736,7 +2915,7 @@ async def run_active_probe_kit(
             for field in field_names[: settings.max_params]:
                 # Rebind path scoring to the form action.
                 path = form_path
-                fixture_fam = _fixture_family_for_path(path)
+                route_fam = primary_route_family(path)
                 allowed = _allowed_for_param(field)
                 if not allowed:
                     continue
@@ -2822,51 +3001,75 @@ async def run_active_probe_kit(
         except Exception:
             pass
 
-    # Explicit coverage-gap records for Horizon / supported fixtures.
+    # Catalog-driven coverage notes (no benchmark package imports).
+    # Phase-1 unresolved gaps are authoritative; this only records unsupported
+    # families discovered via runtime catalog metadata when present.
     if stats is not None:
         try:
-            from horizon_benchmark.evaluate import build_coverage_gaps
-            from horizon_benchmark.manifest import load_manifest
+            catalog = list(getattr(stats, "target_catalog", None) or [])
+            if catalog:
+                from active_probe_targeting import _norm_path as _np
 
-            gaps = build_coverage_gaps(stats=stats, mode=mode, manifest=load_manifest())
-            prev_gaps = list(getattr(stats, "benchmark_coverage_gaps", None) or [])
-            # Merge by path+reason
-            seen_g = {(str(g.get("path")), str(g.get("reason"))) for g in prev_gaps if isinstance(g, dict)}
-            for g in gaps:
-                key = (str(g.get("path")), str(g.get("reason")))
-                if key in seen_g:
-                    continue
-                prev_gaps.append(g)
-                seen_g.add(key)
-            stats.benchmark_coverage_gaps = prev_gaps[:500]  # type: ignore[attr-defined]
-            # Unsupported discovered fixtures → informational finding (never silent)
-            emitted = getattr(stats, "_unsupported_fixture_gaps_emitted", None)
-            if not isinstance(emitted, set):
-                emitted = set()
-                stats._unsupported_fixture_gaps_emitted = emitted  # type: ignore[attr-defined]
-            for g in gaps:
-                if g.get("reason") != "family_unsupported":
-                    continue
-                path = str(g.get("path") or "")
-                if not path or path in emitted:
-                    continue
-                emitted.add(path)
-                add(
-                    "coverage_gap",
-                    "info",
-                    f"Fixture discovered but no compatible active detector exists: {path}",
-                    f"unsupported_fixture:{path}",
-                    {
-                        "verification": "informational",
-                        "confidence": "high",
-                        "confidence_reason": "benchmark_coverage_gap",
-                        "proof": {
-                            "validation_state": STATE_NOT_APPLICABLE,
-                            "coverage_gap": g,
-                        },
-                        "validation": "unverified",
-                    },
-                )
+                discovered = set()
+                for u in list(getattr(stats, "discovered_urls", None) or []):
+                    try:
+                        discovered.add(_np(str(u)))
+                    except Exception:
+                        continue
+                prev_gaps = list(getattr(stats, "benchmark_coverage_gaps", None) or [])
+                seen_g = {
+                    (str(g.get("path")), str(g.get("reason")))
+                    for g in prev_gaps
+                    if isinstance(g, dict)
+                }
+                emitted = getattr(stats, "_unsupported_fixture_gaps_emitted", None)
+                if not isinstance(emitted, set):
+                    emitted = set()
+                    stats._unsupported_fixture_gaps_emitted = emitted  # type: ignore[attr-defined]
+                known_fams = set(probe_families) | {"dom_clobber", "csrf"}
+                for entry in catalog:
+                    if not isinstance(entry, dict):
+                        continue
+                    cpath = _np(str(entry.get("path") or ""))
+                    if not cpath or cpath not in discovered:
+                        continue
+                    tags = {str(t).lower() for t in (entry.get("tags") or [])}
+                    fam = str(entry.get("family") or "").lower()
+                    if "dom-clobber" in tags:
+                        fam = "dom_clobber"
+                    if fam in known_fams or fam in ("", "unknown"):
+                        continue
+                    gap = {
+                        "path": cpath,
+                        "family": fam,
+                        "reason": "family_unsupported",
+                        "detail": "Catalog family has no compatible active detector.",
+                        "mode": mode,
+                        "mandatory": False,
+                    }
+                    key = (cpath, "family_unsupported")
+                    if key not in seen_g:
+                        prev_gaps.append(gap)
+                        seen_g.add(key)
+                    if cpath not in emitted:
+                        emitted.add(cpath)
+                        add(
+                            "coverage_gap",
+                            "info",
+                            f"Catalog route discovered but no compatible active detector exists: {cpath}",
+                            f"unsupported_family:{cpath}",
+                            {
+                                "verification": "informational",
+                                "confidence": "high",
+                                "confidence_reason": "catalog_coverage_gap",
+                                "proof": {
+                                    "validation_state": STATE_NOT_APPLICABLE,
+                                    "coverage_gap": gap,
+                                },
+                                "validation": "unverified",
+                            },
+                        )
+                stats.benchmark_coverage_gaps = prev_gaps[:500]  # type: ignore[attr-defined]
         except Exception:
             pass
 

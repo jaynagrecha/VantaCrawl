@@ -17,6 +17,8 @@ _COOKIE_FINDING_NAME_RE = re.compile(r"(?i)cookie\s+`([^`]+)`")
 class CrawlStats:
     started_at: float = field(default_factory=time.time)
     finished_at: Optional[float] = None
+    # Canonical scan identity — set once at job/scan boundary before probes.
+    scan_id: str = ""
     pages_crawled: int = 0
     links_found: int = 0
     # Mapper-quality counters (invariants: raw >= unique >= queued-ish)
@@ -336,6 +338,12 @@ class CrawlStats:
             if value is None or key in row:
                 continue
             row[key] = value
+        # Canonical scan identity: if the scan boundary set stats.scan_id, every
+        # active-probe row must carry it even when a caller omits the kwarg.
+        if phase == "active_probe":
+            sid = str(row.get("scan_id") or getattr(self, "scan_id", "") or "").strip()
+            if sid:
+                row["scan_id"] = sid
         self.request_ledger.append(row)
         self.requests_retained = len(self.request_ledger)
 

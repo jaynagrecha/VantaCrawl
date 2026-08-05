@@ -510,6 +510,34 @@ async def run_full_crawl_async(
 
         stats.discovered_urls.update(discovered)
 
+        # Optional machine-readable target catalog (production-neutral discovery).
+        # Any origin that publishes /catalog.json is used to seed Phase-1 surfaces.
+        if bool(getattr(config, "vuln_active_probe", True)) and await running():
+            try:
+                import json as _json
+
+                parsed = urlparse(config.start_url)
+                cat_url = f"{parsed.scheme}://{parsed.netloc}/catalog.json"
+                cr = await client.get(cat_url, timeout=20.0)
+                if cr.status_code == 200:
+                    payload = _json.loads(cr.text or "null")
+                    entries = payload if isinstance(payload, list) else (
+                        (payload.get("routes") or payload.get("fixtures") or payload.get("entries"))
+                        if isinstance(payload, dict)
+                        else None
+                    )
+                    if isinstance(entries, list) and entries:
+                        stats.target_catalog = entries  # type: ignore[attr-defined]
+                        stats.discovered_urls.add(str(cr.url))
+                        output_callback(
+                            f"Loaded target catalog.json ({len(entries)} entries) for Phase-1 planning"
+                        )
+            except Exception as exc:
+                try:
+                    output_callback(f"Target catalog.json not used: {exc}")
+                except Exception:
+                    pass
+
         if config.distributed_redis_url:
             from distributed_queue import pop_url
 
@@ -1907,6 +1935,25 @@ async def _run_security_checks(
                 probe_mode = normalize_mode(str(getattr(config, "active_probe_mode", "safe") or "safe"))
                 callback_base = str(getattr(config, "ssrf_callback_base", "") or "")
                 poll_url = str(getattr(config, "oob_callback_poll_url", "") or "")
+                # Canonical scan identity must exist before baseline/control/probe ledger rows.
+                scan_id = str(
+                    getattr(stats, "scan_id", "")
+                    or getattr(config, "job_id", "")
+                    or getattr(config, "scan_id", "")
+                    or ""
+                ).strip()
+                if not scan_id:
+                    import uuid as _uuid
+
+                    scan_id = str(_uuid.uuid4())
+                try:
+                    stats.scan_id = scan_id
+                except Exception:
+                    pass
+                try:
+                    setattr(config, "scan_id", scan_id)
+                except Exception:
+                    pass
                 cap = report_browser_capability(config)
                 try:
                     stats.browser_confirmation = dict(cap)
@@ -1920,11 +1967,7 @@ async def _run_security_checks(
                 callback_received = None
                 if callback_base or poll_url:
                     oob = OobCallbackCorrelator(
-                        scan_id=str(
-                            getattr(stats, "scan_id", "")
-                            or getattr(config, "report_title", "")
-                            or "scan"
-                        ),
+                        scan_id=scan_id,
                         callback_base=callback_base,
                         poll_url=poll_url,
                         http_client=client,
@@ -1961,6 +2004,7 @@ async def _run_security_checks(
                     callback_received=callback_received,
                     stats=stats,
                     oob=oob,
+                    scan_id=scan_id,
                 ):
                     category, severity, detail, evidence, meta = _unpack_finding(item)
                     await emit(

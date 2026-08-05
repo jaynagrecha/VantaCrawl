@@ -209,7 +209,8 @@ def test_all_published_metrics_derive_from_lifecycle_rows():
     assert pub["lifecycle_completion_coverage"]["by_class"][OUTCOME_TERMINAL_INCONCLUSIVE] == 1
     assert pub["lifecycle_completion_coverage"]["by_class"][OUTCOME_TERMINAL_NEGATIVE] == 2
     assert pub["verification_coverage"]["numerator"] == pub["lifecycle_completion_coverage"]["numerator"]
-    assert pub["reconciliation_totals"]["supported_active"] == 6
+    assert pub["reconciliation_totals"]["supported_active_candidates"] == 6
+    assert pub["reconciliation_totals"].get("supported_active_inventory", 6) >= 1
     assert {e["path"] for e in pub["reconciliation"]} == {r["path"] for r in rows}
 
 

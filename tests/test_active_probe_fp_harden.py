@@ -87,6 +87,9 @@ class _Client:
             if m and "<b" in joined:
                 tok = m.group(0)
                 return _Resp(f'results: "><b id="{tok}">{tok}</b> done')
+            if m and ("svg" in joined or "onload" in joined or "onfocus" in joined):
+                # Reflect event-handler payloads as live HTML (authorized lab fixture)
+                return _Resp(f"results: {joined} done")
             return _Resp("hello world")
         if self.mode == "ssrf_reflect":
             if "169.254" in joined or "callback" in joined:
@@ -321,7 +324,17 @@ def test_active_xss_dom_node_medium():
 
 def test_active_xss_browser_confirm_optional():
     async def _eval(url, expr, **kwargs):
-        return {"executed": True, "reproduced": True, "final_url": url, "console_errors": [], "csp_blocked": []}
+        return {
+            "executed": True,
+            "reproduced": True,
+            "correlation_ok": True,
+            "final_url": url,
+            "console_errors": [],
+            "csp_blocked": [],
+            "marker_before": "",
+            "marker_after": kwargs.get("expected_token") or "",
+            "correlation_decision": {"confirmed": True},
+        }
 
     findings = asyncio.run(
         run_active_vuln_probes(
@@ -333,7 +346,7 @@ def test_active_xss_browser_confirm_optional():
             browser_evaluate=_eval,
         )
     )
-    # Browser confirm only on /xss/browser fixtures.
+    # Live reflected XSS with browser eval available → browser_execution_confirmed.
     assert isinstance(findings, list)
     assert any(
         f[0] == "xss" and f[4]["proof"]["validation_state"] == "browser_execution_confirmed"
@@ -341,11 +354,11 @@ def test_active_xss_browser_confirm_optional():
         if len(f) > 4
     )
 
-    # Non-browser reflected path must stay unverified even if a browser eval is available.
-    reflected = asyncio.run(
+    # Encoded/inert control must stay unconfirmed even when browser eval is wired.
+    encoded = asyncio.run(
         run_active_vuln_probes(
-            _Client("xss_breakout"),
-            "https://example.com/xss/reflected?q=test",
+            _Client("xss_encoded"),
+            "https://example.com/search?q=test",
             max_params=4,
             max_forms=0,
             mode="safe",
@@ -354,7 +367,7 @@ def test_active_xss_browser_confirm_optional():
     )
     assert not any(
         len(f) > 4 and f[4]["proof"]["validation_state"] == "browser_execution_confirmed"
-        for f in reflected
+        for f in encoded
     )
 
 

@@ -499,6 +499,18 @@ async def run_mode(
     }
 
     lifecycle[:] = annotate_lifecycle_outcomes(lifecycle)
+    inv_idents = [
+        {
+            "path": f.get("path"),
+            "fixture_id": f.get("fixture_id"),
+            "family": f.get("probe_family") or f.get("family"),
+            "classification": f.get("classification")
+            or ("control" if f.get("must_not_confirm") else "vulnerable"),
+            "must_not_confirm": bool(f.get("must_not_confirm")),
+        }
+        for f in (inventory.get("fixtures") or [])
+        if f.get("support_classification") == "supported_active"
+    ]
     published = compute_published_metrics(
         lifecycle,
         mode=mode_n,
@@ -509,6 +521,7 @@ async def run_mode(
             "catalog_fixtures": inventory["summary"]["catalog_fixtures"],
         },
         legacy_subset_recall=legacy_subset,
+        inventory_identities=inv_idents,
     )
     post_run_maturity = merge_catalog_maturity_counts(inventory.get("fixtures") or [], lifecycle)
     published["post_run_maturity_counts_catalog_155"] = post_run_maturity
