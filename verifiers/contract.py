@@ -49,6 +49,9 @@ STATUS_NEGATIVE_CONTROL_PASSED = "negative_control_passed"
 STATUS_MISSED = "missed_fixture"
 STATUS_INCONCLUSIVE = "inconclusive"
 
+# Phase-2 CORS confirmed browser-read state (imported as string to avoid cycles)
+STATE_CORS_BROWSER_READ = "cors_browser_read_confirmed"
+
 CONFIRMED_ACTIVE_STATES: FrozenSet[str] = frozenset(
     {
         STATE_BROWSER_EXEC,
@@ -60,6 +63,7 @@ CONFIRMED_ACTIVE_STATES: FrozenSet[str] = frozenset(
         STATE_STATE_CHANGE,
         STATE_SENSITIVE_RESOURCE,
         STATE_CONTROLLED_REQUEST,
+        STATE_CORS_BROWSER_READ,
     }
 )
 

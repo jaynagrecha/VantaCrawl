@@ -117,6 +117,23 @@ def _build_config_json(body: JobCreateRequest) -> dict:
         base = str(merged["ssrf_callback_base"]).rstrip("/")
         if base:
             merged["oob_callback_poll_url"] = f"{base}/poll"
+    # Phase-2 CORS proof origin defaults from API public URL + secret (never logged)
+    try:
+        settings = get_settings()
+        if not str(merged.get("cors_proof_origin_base") or "").strip():
+            base = str(getattr(settings, "cors_proof_origin_base", "") or "").strip()
+            if not base:
+                base = str(getattr(settings, "public_base_url", "") or "").strip()
+            if base:
+                merged["cors_proof_origin_base"] = base.rstrip("/")
+        if not str(merged.get("cors_proof_secret") or "").strip():
+            import os
+
+            secret = (os.environ.get("CORS_PROOF_SECRET") or settings.secret_key or "").strip()
+            if secret:
+                merged["cors_proof_secret"] = secret
+    except Exception:
+        pass
     if "traversal_fixture_installed" in merged:
         merged["traversal_fixture_installed"] = bool(merged.get("traversal_fixture_installed"))
     if body.target_urls:

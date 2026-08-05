@@ -44,6 +44,9 @@ class Settings(BaseSettings):
 
     cors_origins: str = "*"
     public_base_url: str = "http://localhost:8000"
+    # Distinct origin base for Phase-2 CORS browser proofs (usually public_base_url).
+    # Empty disables active CORS browser confirmation.
+    cors_proof_origin_base: str = ""
 
     job_queue_key: str = "vantacrawl:jobs"
     progress_channel_prefix: str = "vantacrawl:progress:"

@@ -40,6 +40,7 @@ from verifiers.runtime.surfaces import discover_surfaces_from_stats
 
 # Prefer stronger terminal states when multiple ledger rows exist for one candidate.
 _STATE_RANK = {
+    "cors_browser_read_confirmed": 100,
     "browser_execution_confirmed": 100,
     "server_execution_confirmed": 95,
     "execution_confirmed": 95,
@@ -83,12 +84,20 @@ def _deps_from_config_stats(config: Any, stats: Any) -> DependencyAvailability:
     except Exception:
         oob = False
     canary = bool(getattr(config, "traversal_fixture_installed", False))
+    cors_proof = False
+    try:
+        base = str(getattr(config, "cors_proof_origin_base", "") or "").strip()
+        secret = str(getattr(config, "cors_proof_secret", "") or "").strip()
+        cors_proof = bool(base and secret)
+    except Exception:
+        cors_proof = False
     return DependencyAvailability(
         http_client=True,
         browser=browser,
         oob_callback=oob,
         traversal_canary=canary,
         session=False,
+        cors_proof_origin=cors_proof,
     )
 
 

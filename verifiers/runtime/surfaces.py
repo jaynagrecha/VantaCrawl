@@ -32,6 +32,10 @@ PHASE1_FAMILIES = frozenset(
     }
 )
 
+# Phase-2 families participate in surface discovery / lifecycle when present in ledger.
+PHASE2_FAMILIES = frozenset({"cors"})
+VERIFIER_FAMILIES = PHASE1_FAMILIES | PHASE2_FAMILIES
+
 
 def _path_of(url: str) -> str:
     try:
@@ -90,13 +94,13 @@ def surfaces_from_target_catalog(
         fam = normalize_family(str(entry.get("family") or entry.get("probe_family") or ""))
         if "dom-clobber" in tags or "dom_clobber" in fam or fam.replace("-", "_") == "dom_clobber":
             fam = "dom_clobber"
-        if fam not in PHASE1_FAMILIES:
+        if fam not in VERIFIER_FAMILIES:
             continue
         matured = assess_capability_maturity(fam)
         from verifiers.maturity import classify_support_from_maturity
 
         support = classify_support_from_maturity(
-            bucket="supported" if ("active" in tags or "safe" in tags or "lab" in tags or "extended" in tags or "control" in tags or "oob" in tags or "dom-clobber" in tags) else "passive",
+            bucket="supported" if ("active" in tags or "safe" in tags or "lab" in tags or "extended" in tags or "control" in tags or "oob" in tags or "dom-clobber" in tags or "cors" in fam) else "passive",
             family=fam,
             path=path,
             path_demotion_reason="",
@@ -177,7 +181,7 @@ def discover_surfaces_from_stats(
         from_ledger: bool = False,
     ) -> None:
         fam = normalize_family(family)
-        if fam not in PHASE1_FAMILIES:
+        if fam not in VERIFIER_FAMILIES:
             return
         matured = assess_capability_maturity(fam)
         if get_verifier(fam) is None and not matured.get("registered"):
@@ -261,7 +265,7 @@ def discover_surfaces_from_stats(
         if probe_class in ("baseline", "nonce_control", ""):
             continue
         fam = normalize_family(probe_class)
-        if fam not in PHASE1_FAMILIES:
+        if fam not in VERIFIER_FAMILIES:
             continue
         url = str(row.get("url") or row.get("final_url") or "")
         if not url:
@@ -321,7 +325,7 @@ def discover_surfaces_from_stats(
             continue
         cat = str(finding.get("category") or finding.get("family") or "")
         fam = normalize_family(cat)
-        if fam not in PHASE1_FAMILIES:
+        if fam not in VERIFIER_FAMILIES:
             continue
         url = str(finding.get("url") or "")
         if not url:

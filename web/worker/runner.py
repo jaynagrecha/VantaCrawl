@@ -213,6 +213,24 @@ def _build_crawl_config(job: ScanJob) -> CrawlConfig:
         if base:
             overlay["oob_callback_poll_url"] = f"{base}/poll"
 
+    # Phase-2 CORS proof origin / HMAC secret defaults from service settings
+    try:
+        settings = get_settings()
+        if not str(overlay.get("cors_proof_origin_base") or "").strip():
+            base = str(getattr(settings, "cors_proof_origin_base", "") or "").strip()
+            if not base:
+                base = str(getattr(settings, "public_base_url", "") or "").strip()
+            if base:
+                overlay["cors_proof_origin_base"] = base.rstrip("/")
+        if not str(overlay.get("cors_proof_secret") or "").strip():
+            import os
+
+            secret = (os.environ.get("CORS_PROOF_SECRET") or settings.secret_key or "").strip()
+            if secret:
+                overlay["cors_proof_secret"] = secret
+    except Exception:
+        pass
+
     for key, value in overlay.items():
         if hasattr(cfg, key) and key not in {
             "start_url",

@@ -162,6 +162,10 @@ class CrawlConfig:
     # e.g. "Western Union, WU, westernunion" — also auto-derived from start URL
     secret_org_hints: str = ""
     cors_check: bool = True
+    # Phase-2: browser CORS proof origin (must be distinct from target). Empty = unavailable.
+    cors_proof_origin_base: str = ""
+    # Shared HMAC secret for proof tokens (usually API SECRET_KEY / CORS_PROOF_SECRET).
+    cors_proof_secret: str = ""
     vuln_scan: bool = True
     vuln_active_probe: bool = True  # safer baseline-compared probes; authorized targets only
     # passive | safe | extended | lab — lab never auto for public targets

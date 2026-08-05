@@ -49,6 +49,7 @@ class DependencyAvailability:
     oob_callback: bool = False
     traversal_canary: bool = False
     session: bool = False
+    cors_proof_origin: bool = False
 
 
 @dataclass
@@ -115,6 +116,11 @@ def family_requires(family: str) -> List[str]:
         req.append("browser")
     if fam == "ssrf" and "callback_base_or_oob" not in req:
         req.append("callback_base_or_oob")
+    if fam == "cors":
+        if "browser" not in req:
+            req.append("browser")
+        if "cors_proof_origin" not in req:
+            req.append("cors_proof_origin")
     return req
 
 
@@ -200,6 +206,18 @@ def build_execution_plan(
             item.exclusion_reason = "dependency_unavailable:browser"
             items.append(item)
             continue
+
+        if family == "cors" and mode_n in ("extended", "lab"):
+            if not deps.browser:
+                item.schedule_status = DEPENDENCY_UNAVAILABLE
+                item.exclusion_reason = "dependency_unavailable:browser"
+                items.append(item)
+                continue
+            if not deps.cors_proof_origin:
+                item.schedule_status = DEPENDENCY_UNAVAILABLE
+                item.exclusion_reason = "dependency_unavailable:cors_proof_origin"
+                items.append(item)
+                continue
 
         if family == "ssrf" and not deps.oob_callback and mode_n in ("extended", "lab"):
             item.requires = list(set(requires + ["callback_base_or_oob"]))
