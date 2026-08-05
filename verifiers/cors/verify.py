@@ -472,12 +472,36 @@ async def verify_cors_url(
             f"readable={bool((browser_result or {}).get('readable'))}; "
             f"canary={bool((browser_result or {}).get('canary_found'))}"
         )
+        proof_origin = origin_of(proof_base + "/") if proof_base else ""
+        req_status = int((browser_result or {}).get("status") or status or 0)
+        acao_line = obs.acao or ""
+        acac_line = "true" if obs.acac else "false"
+        # Store a redacted HTTP exchange so reporting/impact gates can see ACAO/ACAC
+        # without embedding cookies, Authorization, or response secrets.
+        http_request = (
+            f"GET {urlparse(url).path or '/'}\n"
+            f"Host: {urlparse(url).netloc}\n"
+            f"Origin: {proof_origin or '[proof-origin]'}\n"
+            f"Credential-Mode: {credential_mode if session_available else 'omit'}\n"
+        )
+        http_response = (
+            f"HTTP/1.1 {req_status or 200}\n"
+            f"Access-Control-Allow-Origin: {acao_line}\n"
+            f"Access-Control-Allow-Credentials: {acac_line}\n"
+            f"Content-Type: {obs.content_type or 'text/html'}\n"
+            f"\n[body redacted; readable={bool((browser_result or {}).get('readable'))}; "
+            f"canary_matched={bool((browser_result or {}).get('canary_found'))}; "
+            f"body_len={int((browser_result or {}).get('body_len') or 0)}]\n"
+        )
         meta = {
             "verification": classified.get("verification"),
             "confidence": classified.get("confidence"),
             "result_state": state,
             "lifecycle_outcome": lifecycle_outcome_for(state),
             "proof": {
+                "request": http_request,
+                "response": http_response,
+                "evidence": evidence,
                 "cors": report,
                 "headers_redacted": _redact_headers(headers),
                 "selection_reasons": list(obs.selection_reasons),

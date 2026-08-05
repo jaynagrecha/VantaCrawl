@@ -444,8 +444,25 @@ class CrawlStats:
         if category == "header_audit":
             dedupe_key = f"{category}|{detail_key}|{host}"
         elif category == "cors":
-            # Credentialed CORS is origin-wide — one finding per host
-            dedupe_key = f"cors|{host}"
+            # Phase-2: one finding per host+path (+ state signal) so confirmed
+            # browser-read proofs are not collapsed into an earlier public read.
+            try:
+                cpath = (urlparse(url).path or "/").rstrip("/") or "/"
+            except Exception:
+                cpath = "/"
+            state_sig = ""
+            for token in (
+                "cors_browser_read_confirmed",
+                "uncredentialed_public_read",
+                "wildcard_with_credentials_invalid",
+                "reflected_origin_without_sensitive_read",
+                "passive_header_observed",
+                "proof_origin_unavailable",
+            ):
+                if token in detail_key or token in evidence_key:
+                    state_sig = token
+                    break
+            dedupe_key = f"cors|{host}|{cpath}|{state_sig or detail_key[:96]}"
         elif category == "secrets_exposure" and evidence_key:
             # Same secret value = one finding even when product labels differ (Ript vs Text)
             dedupe_key = f"{category}|{host}|{evidence_key}"

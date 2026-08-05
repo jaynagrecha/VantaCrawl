@@ -47,6 +47,15 @@ _STATE_RANK = {
     "oob_callback_confirmed": 90,
     "canary_file_confirmed": 90,
     "controlled_request_confirmed": 85,
+    # Classified CORS outcomes outrank raw browser decisions.
+    "wildcard_with_credentials_invalid": 55,
+    "uncredentialed_public_read": 50,
+    "reflected_origin_without_sensitive_read": 50,
+    "browser_read_blocked": 48,
+    "origin_not_allowed": 48,
+    "preflight_blocked": 48,
+    "readable_without_canary": 35,
+    "confirmed_current_probe": 20,  # raw browser decision only
     "html_injection_confirmed": 40,
     "html_injection": 28,
     "differential_signal": 35,
@@ -59,6 +68,8 @@ _STATE_RANK = {
     "probe_sent": 5,
     "inconclusive": 8,
     "confirmation_unavailable": 8,
+    "passive_header_observed": 8,
+    "proof_origin_unavailable": 8,
 }
 
 
@@ -218,9 +229,15 @@ def apply_ledger_to_lifecycle(
         # Route visit alone (crawl phase) never counts as verification — only active_probe hits.
         row["route_visited"] = bool(hits)
         row["form_submitted"] = bool(form_hits) or bool(item.form_fields and form_hits)
-        states = [str(h.get("result_state") or "") for h in probes] or [
-            str(h.get("result_state") or "") for h in hits
+        # Prefer classified CORS ledger rows over raw browser decision rows.
+        classified_cors = [
+            h
+            for h in hits
+            if h.get("probe_role") in ("cors_classified", "cors_browser_read_confirmed")
         ]
+        states = [str(h.get("result_state") or "") for h in classified_cors] or [
+            str(h.get("result_state") or "") for h in probes
+        ] or [str(h.get("result_state") or "") for h in hits]
         best = _best_state(states)
         # If probes ran but state empty → probe_sent nonterminal
         probe_sent = bool(probes) or any(
@@ -578,7 +595,10 @@ def finalize_phase1_runtime(
                 {},
             )
             terminal_state = str(r.get("terminal_result_state") or "")
-            if terminal_state == "browser_execution_confirmed" and confirming_browser:
+            if terminal_state in (
+                "browser_execution_confirmed",
+                "cors_browser_read_confirmed",
+            ) and confirming_browser:
                 decision = "confirmed_current_probe"
             elif browser_rows:
                 decision = "rejected_or_absent"

@@ -442,3 +442,59 @@ def test_lock_used_by_browser_module_source():
     text = Path("verifiers/cors/browser.py").read_text(encoding="utf-8")
     assert "selenium_driver_lock" in text
     assert "with selenium_driver_lock()" in text
+
+
+def test_finalize_prefers_classified_cors_state_over_raw_browser_decision():
+    from verifiers.runtime.execution_plan import (
+        CandidateSurface,
+        DependencyAvailability,
+        build_execution_plan,
+    )
+    from verifiers.runtime.finalize import apply_ledger_to_lifecycle
+
+    surf = CandidateSurface(
+        candidate_id="s:cand:/cors/wildcard-creds:cors",
+        url="https://target.example/cors/wildcard-creds",
+        path="/cors/wildcard-creds",
+        family="cors",
+        capability_id="cors_browser_read",
+        classification="control",
+        must_not_confirm=True,
+        modes=["lab", "extended"],
+        support_classification="supported_active",
+    )
+    plan = build_execution_plan(
+        mode="lab",
+        surfaces=[surf],
+        deps=DependencyAvailability(browser=True, cors_proof_origin=True),
+    )
+    assert plan and plan[0].schedule_status == "attempted"
+    ledger = [
+        {
+            "phase": "active_probe",
+            "probe_class": "cors",
+            "url": "https://target.example/cors/wildcard-creds",
+            "probe_role": "cors_browser_proof",
+            "result_state": "confirmed_current_probe",
+            "scan_id": "s",
+            "candidate_id": surf.candidate_id,
+        },
+        {
+            "phase": "active_probe",
+            "probe_class": "cors",
+            "url": "https://target.example/cors/wildcard-creds",
+            "probe_role": "cors_classified",
+            "result_state": "wildcard_with_credentials_invalid",
+            "scan_id": "s",
+            "candidate_id": surf.candidate_id,
+        },
+    ]
+    rows = apply_ledger_to_lifecycle(
+        plan,
+        mode="lab",
+        ledger=ledger,
+        findings=[],
+        scan_id="s",
+    )
+    assert rows[0]["terminal_result_state"] == "wildcard_with_credentials_invalid"
+    assert rows[0]["lifecycle_outcome"] == "terminal_negative"
