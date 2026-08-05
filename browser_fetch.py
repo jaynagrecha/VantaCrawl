@@ -656,12 +656,16 @@ def apply_selenium_login(config, output: Optional[Callable[[str], Any]] = None, 
         ua = pick_user_agent_for_selenium(config)
     except Exception:
         ua = ""
-    cookies, message = selenium_login(
-        config.login_url,
-        config.login_username,
-        config.login_password,
-        driver_factory=lambda: get_selenium_driver(config.proxy_url, user_agent=ua),
-    )
+    # Hold the shared process-global RLock for the entire browser-dependent
+    # login transaction (navigate → form fill → submit → cookie/URL extract).
+    # Cookie jar materialization below is non-browser and stays outside the lock.
+    with selenium_driver_lock():
+        cookies, message = selenium_login(
+            config.login_url,
+            config.login_username,
+            config.login_password,
+            driver_factory=lambda: get_selenium_driver(config.proxy_url, user_agent=ua),
+        )
     if output:
         output(message)
     if cookies:

@@ -460,6 +460,7 @@ def test_no_horizon_paths_in_production_runtime_packages():
         root / "active_probe_browser.py",
         root / "active_probe_targeting.py",
         root / "browser_fetch.py",
+        root / "auth_login.py",
         root / "crawl_orchestrator.py",
         root / "crawl_stats.py",
         root / "reporting.py",
@@ -494,6 +495,9 @@ def test_no_horizon_paths_in_production_runtime_packages():
     assert any(p.name == "browser_fetch.py" for p in prod_files), (
         "browser_fetch.py must be in the audited production file set"
     )
+    assert any(p.name == "auth_login.py" for p in prod_files), (
+        "auth_login.py must be in the audited production file set"
+    )
 
     entry_mods = [
         "reporting",
@@ -503,6 +507,7 @@ def test_no_horizon_paths_in_production_runtime_packages():
         "active_probe_browser",
         "active_probe_targeting",
         "browser_fetch",
+        "auth_login",
         "report_status",
         "dom_clobber.verify",
         "dom_clobber.browser",
@@ -600,6 +605,9 @@ def test_no_horizon_paths_in_production_runtime_packages():
     assert seen, "production import closure unexpectedly empty"
     assert "browser_fetch" in seen, (
         f"browser_fetch missing from import closure; seen={sorted(seen)[:40]}"
+    )
+    assert "auth_login" in seen, (
+        f"auth_login missing from import closure; seen={sorted(seen)[:40]}"
     )
     assert hz_importers == [], (
         "production modules import horizon_benchmark: " + "; ".join(hz_importers)

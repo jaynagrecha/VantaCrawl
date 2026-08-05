@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 from typing import Callable, Optional, Tuple
-from urllib.parse import urljoin
 
 
 def cookies_to_header(cookies: list) -> str:
@@ -15,6 +14,28 @@ def cookies_to_header(cookies: list) -> str:
         if name and value is not None:
             parts.append(f"{name}={value}")
     return "; ".join(parts)
+
+
+def _require_shared_selenium_lock() -> None:
+    """Fail closed unless the process-global shared driver lock is held.
+
+    Lazy-imports browser_fetch to avoid an import cycle at module load
+    (browser_fetch imports selenium_login).
+    """
+    from browser_fetch import selenium_driver_lock
+
+    lock = selenium_driver_lock()
+    owned = getattr(lock, "_is_owned", None)
+    if not callable(owned):
+        raise RuntimeError(
+            "selenium_login cannot verify selenium_driver_lock ownership "
+            "(RLock._is_owned unavailable)"
+        )
+    if not owned():
+        raise RuntimeError(
+            "selenium_login requires browser_fetch.selenium_driver_lock "
+            "to be held by the calling thread"
+        )
 
 
 def selenium_login(
@@ -31,9 +52,13 @@ def selenium_login(
     """
     Perform form login via Selenium. Returns (cookie_string, message).
     Authorized targets only.
+
+    Callers must hold browser_fetch.selenium_driver_lock for the entire
+    shared-driver transaction. apply_selenium_login is the production entry.
     """
     if driver_factory is None:
         raise RuntimeError("driver_factory required")
+    _require_shared_selenium_lock()
 
     driver = driver_factory()
     try:
